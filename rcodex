@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+#
+# rcodex - One-shot task runner for OpenAI Codex CLI
+# Launches Codex in unattended mode with no approval prompts
+#
+
+set -euo pipefail
+
+# Defaults
+OUTPUT_JSON=false
+TRACK_STATUS=true
+STATUS_ONLY=false
+USE_LOCK=false
+WORK_DIR=""
+MODEL="gpt-5.2-codex"
+EFFORT="xhigh"
+CODE_BASE="$HOME/Desktop/_code"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Task shortcuts - predefined task templates
+declare -A TASKS=(
+    ["audit"]="Run a complete audit of this code. Write a detailed report you store in _codex. INCLUDE PATCH-READY DIFFS. Save your file as code_audit_report_[date].md but make [date] in this format: YYYY-MM-DD-HH. DO NOT EDIT CODE."
+    ["test"]="Analyze the codebase and propose comprehensive unit tests for untested code. Write a detailed report you store in _codex. INCLUDE PATCH-READY DIFFS. Save your file as code_test_report_[date].md but make [date] in this format: YYYY-MM-DD-HH. DO NOT EDIT CODE."
+    ["fix"]="Analyze the codebase for bugs, issues, and code smells. Fix any problems found and explain what was changed. INCLUDE PATCH-READY DIFFS. Write a detailed report you store in _codex. Save your file as code_fix_report_[date].md but make [date] in this format: YYYY-MM-DD-HH. DO NOT EDIT CODE."
+    ["refactor"]="Review the codebase for opportunities to improve code quality, reduce duplication, and improve maintainability. No need to include patch-ready diffs. Write a detailed report you store in _codex. Save your file as code_refactor_report_[date].md but make [date] in this format: YYYY-MM-DD-HH. DO NOT EDIT CODE."
+    ["all"]="Run a complete analysis of this codebase. Generate 4 separate reports in _codex, using [date] format YYYY-MM-DD-HH for all filenames: (1) code_audit_report_[date].md - Complete security and code quality audit with PATCH-READY DIFFS. (2) code_test_report_[date].md - Propose comprehensive unit tests for untested code with PATCH-READY DIFFS. (3) code_fix_report_[date].md - Identify bugs, issues, and code smells with fixes and PATCH-READY DIFFS. (4) code_refactor_report_[date].md - Opportunities to improve code quality, reduce duplication, improve maintainability (no diffs needed). DO NOT EDIT CODE. Only write the report files."
+)
+
+usage() {
+    cat <<EOF
+Usage: rcodex [OPTIONS] "<task>"
+
+Run Codex CLI in unattended mode with a one-shot task.
+
+Options:
+  -c, --code <path>   Project path relative to ~/Desktop/_code (e.g., docbox, _icebox/setibox)
+  -d, --dir <path>    Set working directory to absolute path
+  -e, --effort <lvl>  Reasoning effort: low, medium, high, xhigh (default: xhigh)
+  -j, --json          Output as newline-delimited JSON
+  -l, --lock          Queue behind other running rcodex instances
+  -m, --model <name>  Specify model (default: gpt-5.2-codex)
+  -s, --status        Track credit usage before/after task (default: on)
+  -S, --no-status     Disable credit usage tracking
+  -x, --status-only   Just show current credit status and exit
+  -t, --tasks         List available task shortcuts
+  -h, --help          Show this help message
+
+Task Shortcuts:
+  audit, test, fix, refactor, all (use -t to see full descriptions)
+
+Examples:
+  rcodex -c docbox audit
+  rcodex -c _icebox/setibox fix
+  rcodex all -c solstice
+  rcodex --json "Refactor the database layer"
+  rcodex -d /absolute/path/to/project fix
+
+Security Note:
+  This script runs Codex with --dangerously-bypass-approvals-and-sandbox,
+  which disables all approval prompts and sandbox restrictions.
+  Use with caution and only on trusted codebases.
+EOF
+}
+
+# List tasks helper
+list_tasks() {
+    echo "Available task shortcuts:"
+    for key in "${!TASKS[@]}"; do
+        echo ""
+        echo "  $key:"
+        # Show first line only for readability
+        echo "    ${TASKS[$key]}" | head -1
+    done
+}
+
+# Colors
+BOLD='\033[1m'
+DIM='\033[2m'
+GREEN='\033[32m'
+CYAN='\033[36m'
+YELLOW='\033[33m'
+MAGENTA='\033[35m'
+RESET='\033[0m'
+
+# Save original command for report (reconstruct with proper quoting)
+ORIGINAL_CMD=""
+for arg in "$@"; do
+    if [[ "$arg" =~ [[:space:]] ]]; then
+        ORIGINAL_CMD+="\"$arg\" "
+    else
+        ORIGINAL_CMD+="$arg "
+    fi
+done
+ORIGINAL_CMD="${ORIGINAL_CMD% }"  # Remove trailing space
+
+# Parse arguments
+TASK=""
+TASK_SHORTCUT=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -c|--code)
+            WORK_DIR="$CODE_BASE/$2"
+            shift 2
+            ;;
+        -d|--dir)
+            WORK_DIR="$2"
+            shift 2
+            ;;
+        -e|--effort)
+            EFFORT="$2"
+            shift 2
+            ;;
+        -j|--json)
+            OUTPUT_JSON=true
+            shift
+            ;;
+        -s|--status)
+            TRACK_STATUS=true
+            shift
+            ;;
+        -S|--no-status)
+            TRACK_STATUS=false
+            shift
+            ;;
+        -l|--lock)
+            USE_LOCK=true
+            shift
+            ;;
+        -x|--status-only)
+            STATUS_ONLY=true
+            shift
+            ;;
+        -t|--tasks)
+            list_tasks
+            exit 0
+            ;;
+        -m|--model)
+            MODEL="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -*)
+            echo "Error: Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+        *)
+            if [[ -z "$TASK" ]]; then
+                TASK="$1"
+            else
+                echo "Error: Multiple tasks provided. Wrap your task in quotes." >&2
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Validate task provided (skip if status-only mode)
+if [[ "$STATUS_ONLY" != true && -z "$TASK" ]]; then
+    echo "Error: No task provided." >&2
+    usage >&2
+    exit 1
+fi
+
+# Validate working directory if specified
+if [[ -n "$WORK_DIR" ]] && [[ ! -d "$WORK_DIR" ]]; then
+    echo "Error: Directory does not exist: $WORK_DIR" >&2
+    exit 1
+fi
+
+# Expand task shortcut if it matches
+if [[ -n "$TASK" && -n "${TASKS[$TASK]+isset}" ]]; then
+    TASK_SHORTCUT="$TASK"
+    TASK="${TASKS[$TASK]}"
+fi
+
+# If lock mode, acquire lock with timer display
+if [[ "$USE_LOCK" == true ]]; then
+    LOCK_FILE="/tmp/rcodex.lock"
+    LOCK_INFO_FILE="/tmp/rcodex.lock.info"
+    MY_CODEBASE="${WORK_DIR:-$(pwd)}"
+    MY_CODEBASE="${MY_CODEBASE##*/}"  # Just the folder name
+
+    # Try non-blocking first to see if we need to wait
+    exec 200>"$LOCK_FILE"
+    if ! flock -n 200 2>/dev/null; then
+        # Lock is held, read who has it
+        HOLDER="unknown"
+        if [[ -f "$LOCK_INFO_FILE" ]]; then
+            HOLDER=$(cat "$LOCK_INFO_FILE" 2>/dev/null || echo "unknown")
+        fi
+        START_WAIT=$SECONDS
+        echo -e "${DIM}Waiting for ${CYAN}${HOLDER}${RESET}${DIM} to finish...${RESET}"
+        while ! flock -n 200 2>/dev/null; do
+            sleep 5
+            ELAPSED=$((SECONDS - START_WAIT))
+            if [[ -f "$LOCK_INFO_FILE" ]]; then
+                HOLDER=$(cat "$LOCK_INFO_FILE" 2>/dev/null || echo "unknown")
+            fi
+            echo -e "${DIM}  Still waiting for ${CYAN}${HOLDER}${RESET}${DIM}... ${ELAPSED}s${RESET}"
+        done
+        ELAPSED=$((SECONDS - START_WAIT))
+        echo -e "\r${GREEN}Lock acquired${RESET} ${DIM}(waited ${ELAPSED}s for ${HOLDER})${RESET}     "
+    else
+        echo -e "${DIM}Lock acquired${RESET}"
+    fi
+
+    # Write our info so others know who has the lock
+    echo "$MY_CODEBASE" > "$LOCK_INFO_FILE"
+
+    # Lock is now held via FD 200 until script exits
+fi
+
+# Status tracking helper (disable errexit temporarily)
+get_status() {
+    local output
+    local exit_code
+    set +e
+    output=$(/opt/homebrew/bin/python3.13 "$SCRIPT_DIR/get_codex_status.py" 2>&1)
+    exit_code=$?
+    set -e
+    if [[ $exit_code -ne 0 ]]; then
+        echo "{\"error\": \"exit code $exit_code: $output\"}"
+    elif [[ -z "$output" ]]; then
+        echo "{\"error\": \"empty output\"}"
+    else
+        echo "$output"
+    fi
+}
+
+# Parse JSON value helper (basic, no jq dependency)
+json_val() {
+    local json="$1"
+    local key="$2"
+    local val
+    # Try quoted string value first (handles "key": "value" with space)
+    val=$(echo "$json" | grep -oE "\"$key\": ?\"[^\"]*\"" 2>/dev/null | sed "s/\"$key\": *\"//" | sed 's/"$//')
+    if [[ -z "$val" ]]; then
+        # Try unquoted value (numbers, null)
+        val=$(echo "$json" | grep -oE "\"$key\": ?[^,}]+" 2>/dev/null | sed "s/\"$key\": *//" | tr -d ' ')
+    fi
+    echo "$val"
+}
+
+# Handle status-only mode (no task required)
+if [[ "$STATUS_ONLY" == true ]]; then
+    echo -e "${DIM}Fetching Codex credit status...${RESET}"
+    STATUS=$(get_status)
+    ERROR_MSG=$(json_val "$STATUS" "error")
+    if [[ -n "$ERROR_MSG" && "$ERROR_MSG" != "null" ]]; then
+        echo -e "${YELLOW}Error: Could not fetch status${RESET}" >&2
+        echo "  $ERROR_MSG" >&2
+        exit 1
+    fi
+
+    CURR_5H=$(json_val "$STATUS" "5h_left")
+    CURR_WEEKLY=$(json_val "$STATUS" "weekly_left")
+    RESET_5H=$(json_val "$STATUS" "5h_resets")
+    RESET_WEEKLY=$(json_val "$STATUS" "weekly_resets")
+
+    [[ "$CURR_5H" == "null" || -z "$CURR_5H" ]] && CURR_5H=""
+    [[ "$CURR_WEEKLY" == "null" || -z "$CURR_WEEKLY" ]] && CURR_WEEKLY=""
+    [[ "$RESET_5H" == "null" || -z "$RESET_5H" ]] && RESET_5H=""
+    [[ "$RESET_WEEKLY" == "null" || -z "$RESET_WEEKLY" ]] && RESET_WEEKLY=""
+
+    echo ""
+    echo -e "${BOLD}${CYAN}══════════════════════════════════════════${RESET}"
+    echo -e "${BOLD}${CYAN}  Codex Credit Status${RESET}"
+    echo -e "${BOLD}${CYAN}══════════════════════════════════════════${RESET}"
+    if [[ -n "$CURR_5H" ]]; then
+        RESET_5H_DISPLAY=""
+        RESET_WEEKLY_DISPLAY=""
+        [[ -n "$RESET_5H" ]] && RESET_5H_DISPLAY=" ${DIM}resets ${RESET_5H}${RESET}"
+        [[ -n "$RESET_WEEKLY" ]] && RESET_WEEKLY_DISPLAY=" ${DIM}resets ${RESET_WEEKLY}${RESET}"
+        echo -e "  ${DIM}5h limit:${RESET}     ${GREEN}${CURR_5H}%${RESET} left${RESET_5H_DISPLAY}"
+        echo -e "  ${DIM}Weekly:${RESET}       ${GREEN}${CURR_WEEKLY}%${RESET} left${RESET_WEEKLY_DISPLAY}"
+    else
+        echo -e "  ${YELLOW}Credit data not available${RESET}"
+    fi
+    echo -e "${BOLD}${CYAN}══════════════════════════════════════════${RESET}"
+    exit 0
+fi
+
+# Capture status before task (if tracking enabled)
+STATUS_BEFORE=""
+BEFORE_5H=""
+BEFORE_WEEKLY=""
+RESETS_5H=""
+RESETS_WEEKLY=""
+if [[ "$TRACK_STATUS" == true ]]; then
+    echo -e "${DIM}Capturing credit status before task...${RESET}"
+    STATUS_BEFORE=$(get_status)
+    ERROR_MSG=$(json_val "$STATUS_BEFORE" "error")
+    if [[ -n "$ERROR_MSG" && "$ERROR_MSG" != "null" ]]; then
+        echo "Warning: Could not capture status before task" >&2
+        echo "  Error: $ERROR_MSG" >&2
+        TRACK_STATUS=false
+    else
+        BEFORE_5H=$(json_val "$STATUS_BEFORE" "5h_left")
+        BEFORE_WEEKLY=$(json_val "$STATUS_BEFORE" "weekly_left")
+        RESETS_5H=$(json_val "$STATUS_BEFORE" "5h_resets")
+        RESETS_WEEKLY=$(json_val "$STATUS_BEFORE" "weekly_resets")
+        # Handle null values
+        [[ "$BEFORE_5H" == "null" || -z "$BEFORE_5H" ]] && BEFORE_5H=""
+        [[ "$BEFORE_WEEKLY" == "null" || -z "$BEFORE_WEEKLY" ]] && BEFORE_WEEKLY=""
+        [[ "$RESETS_5H" == "null" || -z "$RESETS_5H" ]] && RESETS_5H=""
+        [[ "$RESETS_WEEKLY" == "null" || -z "$RESETS_WEEKLY" ]] && RESETS_WEEKLY=""
+        if [[ -n "$BEFORE_5H" ]]; then
+            echo -e "  ${DIM}5h limit:${RESET}     ${BEFORE_5H}% left"
+            echo -e "  ${DIM}Weekly limit:${RESET} ${BEFORE_WEEKLY}% left"
+            echo ""
+        else
+            echo -e "  ${DIM}Credits:${RESET}      ${YELLOW}data not available yet${RESET}"
+            echo ""
+        fi
+    fi
+fi
+
+# Build final command
+CMD=(codex exec)
+CMD+=(--dangerously-bypass-approvals-and-sandbox)
+CMD+=(--skip-git-repo-check)
+CMD+=(--model "$MODEL")
+CMD+=(-c "model_reasoning_effort=\"$EFFORT\"")
+
+if [[ -n "$WORK_DIR" ]]; then
+    CMD+=(-C "$WORK_DIR")
+fi
+
+if [[ "$OUTPUT_JSON" == true ]]; then
+    CMD+=(--json)
+fi
+
+CMD+=("$TASK")
+
+# Record start time
+START_TIME=$(date +%s)
+START_TIME_FMT=$(date "+%Y-%m-%d %H:%M:%S")
+
+# Execute task
+"${CMD[@]}"
+TASK_EXIT_CODE=$?
+
+# Record end time and calculate duration
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+DURATION_MIN=$((DURATION / 60))
+DURATION_SEC=$((DURATION % 60))
+
+# Capture status after task (if tracking enabled)
+AFTER_5H=""
+AFTER_WEEKLY=""
+USED_5H=""
+USED_WEEKLY=""
+if [[ "$TRACK_STATUS" == true ]]; then
+    echo ""
+    echo -e "${DIM}Capturing credit status after task...${RESET}"
+    STATUS_AFTER=$(get_status)
+    ERROR_MSG=$(json_val "$STATUS_AFTER" "error")
+    if [[ -z "$ERROR_MSG" || "$ERROR_MSG" == "null" ]]; then
+        AFTER_5H=$(json_val "$STATUS_AFTER" "5h_left")
+        AFTER_WEEKLY=$(json_val "$STATUS_AFTER" "weekly_left")
+        # Handle null values
+        [[ "$AFTER_5H" == "null" || -z "$AFTER_5H" ]] && AFTER_5H=""
+        [[ "$AFTER_WEEKLY" == "null" || -z "$AFTER_WEEKLY" ]] && AFTER_WEEKLY=""
+        # Only calculate if we have valid before and after values
+        if [[ -n "$BEFORE_5H" && -n "$AFTER_5H" ]]; then
+            USED_5H=$((BEFORE_5H - AFTER_5H))
+            USED_WEEKLY=$((BEFORE_WEEKLY - AFTER_WEEKLY))
+        fi
+    fi
+fi
+
+# Display summary report
+echo ""
+echo -e "${BOLD}${CYAN}══════════════════════════════════════════${RESET}"
+echo -e "${BOLD}${CYAN}  Run Summary${RESET}"
+echo -e "${BOLD}${CYAN}══════════════════════════════════════════${RESET}"
+echo -e "  ${DIM}Command:${RESET}      rcodex $ORIGINAL_CMD"
+if [[ -n "$TASK_SHORTCUT" ]]; then
+    echo -e "  ${DIM}Shortcut:${RESET}     ${MAGENTA}${TASK_SHORTCUT}${RESET}"
+fi
+echo -e "  ${DIM}Started:${RESET}      $START_TIME_FMT"
+echo -e "  ${DIM}Duration:${RESET}     ${YELLOW}${DURATION_MIN}m ${DURATION_SEC}s${RESET}"
+echo -e "  ${DIM}Model:${RESET}        $MODEL"
+echo -e "  ${DIM}Effort:${RESET}       $EFFORT"
+echo -e "  ${DIM}Directory:${RESET}    ${WORK_DIR:-$(pwd)}"
+if [[ $TASK_EXIT_CODE -eq 0 ]]; then
+    echo -e "  ${DIM}Exit code:${RESET}    ${GREEN}$TASK_EXIT_CODE${RESET}"
+else
+    echo -e "  ${DIM}Exit code:${RESET}    ${YELLOW}$TASK_EXIT_CODE${RESET}"
+fi
+if [[ "$TRACK_STATUS" == true ]]; then
+    echo -e "  ${DIM}───────────────────────────────────────${RESET}"
+    if [[ -n "$AFTER_5H" && -n "$BEFORE_5H" ]]; then
+        RESETS_5H_DISPLAY=""
+        RESETS_WEEKLY_DISPLAY=""
+        if [[ -n "$RESETS_5H" ]]; then
+            RESETS_5H_DISPLAY=" ${DIM}resets ${RESETS_5H}${RESET}"
+        fi
+        if [[ -n "$RESETS_WEEKLY" ]]; then
+            RESETS_WEEKLY_DISPLAY=" ${DIM}resets ${RESETS_WEEKLY}${RESET}"
+        fi
+        echo -e "  ${DIM}5h limit:${RESET}     ${BEFORE_5H}% → ${GREEN}${AFTER_5H}%${RESET} ${DIM}(used ${USED_5H}%)${RESET}${RESETS_5H_DISPLAY}"
+        echo -e "  ${DIM}Weekly:${RESET}       ${BEFORE_WEEKLY}% → ${GREEN}${AFTER_WEEKLY}%${RESET} ${DIM}(used ${USED_WEEKLY}%)${RESET}${RESETS_WEEKLY_DISPLAY}"
+    else
+        echo -e "  ${DIM}Credits:${RESET}      ${YELLOW}data not available${RESET}"
+    fi
+fi
+echo -e "${BOLD}${CYAN}══════════════════════════════════════════${RESET}"
+
+exit $TASK_EXIT_CODE
