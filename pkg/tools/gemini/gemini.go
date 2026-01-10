@@ -63,6 +63,7 @@ func (t *Tool) BuildCommand(cfg *runner.Config, workDir, task string) *exec.Cmd 
 	args := []string{
 		"-p", task,
 		"--output-format", "stream-json",
+		"--yolo", // Auto-approve all tool operations (like Claude's --dangerously-skip-permissions)
 	}
 
 	// Only add model flag if different from default
@@ -164,7 +165,8 @@ func (t *Tool) PrintToolSpecificSummaryFields(cfg *runner.Config) {
 // SecurityWarning returns the security warning text
 func (t *Tool) SecurityWarning() []string {
 	return []string{
-		"This tool runs Gemini CLI with automated prompts.",
+		"This tool runs Gemini CLI with --yolo mode,",
+		"which auto-approves all tool operations.",
 		"Use with caution and only on trusted codebases.",
 	}
 }
