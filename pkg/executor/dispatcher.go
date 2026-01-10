@@ -8,6 +8,13 @@ import (
 	"rcodegen/pkg/workspace"
 )
 
+func init() {
+	// Register dispatcher factory with orchestrator to break circular dependency
+	orchestrator.DispatcherFactory = func(tools map[string]runner.Tool) orchestrator.StepExecutor {
+		return NewDispatcher(tools)
+	}
+}
+
 type Dispatcher struct {
 	tool     *ToolExecutor
 	parallel *ParallelExecutor
