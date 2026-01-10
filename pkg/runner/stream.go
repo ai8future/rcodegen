@@ -281,7 +281,7 @@ func (p *StreamParser) handleResult(event StreamEvent) {
 }
 
 // ProcessReader processes a stream of JSON lines from a reader
-func (p *StreamParser) ProcessReader(r io.Reader) {
+func (p *StreamParser) ProcessReader(r io.Reader) error {
 	scanner := bufio.NewScanner(r)
 	// Handle very long lines from stream output
 	buf := make([]byte, 0, 64*1024)
@@ -290,4 +290,6 @@ func (p *StreamParser) ProcessReader(r io.Reader) {
 	for scanner.Scan() {
 		p.ProcessLine(scanner.Text())
 	}
+
+	return scanner.Err()
 }

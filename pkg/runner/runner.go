@@ -310,7 +310,9 @@ func (r *Runner) executeWithStreamParser(cfg *Config, cmd *exec.Cmd) int {
 
 	// Parse and format the output
 	parser := NewStreamParser(os.Stdout)
-	parser.ProcessReader(stdout)
+	if err := parser.ProcessReader(stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "%sWarning:%s Stream parsing error: %v\n", Yellow, Reset, err)
+	}
 
 	// Capture token usage from parser
 	if parser.Usage != nil {
