@@ -1,0 +1,27 @@
+{
+  "name": "weather-review",
+  "description": "Claude builds, Gemini and Codex review, Claude grades",
+  "inputs": [],
+  "steps": [
+    {
+      "name": "build",
+      "tool": "claude",
+      "task": "Write a simple Python script that checks the weather for a given city using the OpenWeatherMap API. Include error handling and a main function."
+    },
+    {
+      "name": "gemini-review",
+      "tool": "gemini",
+      "task": "Review this code for bugs, security issues, and improvements. Be specific.\n\n${steps.build.result}"
+    },
+    {
+      "name": "codex-review",
+      "tool": "codex",
+      "task": "Review this code for bugs, security issues, and improvements. Be specific.\n\n${steps.build.result}"
+    },
+    {
+      "name": "grade",
+      "tool": "claude",
+      "task": "Grade the implementation 0-100 based on the reviews.\n\nOriginal Code:\n${steps.build.result}\n\nGemini Review:\n${steps.gemini-review.result}\n\nCodex Review:\n${steps.codex-review.result}\n\nProvide a final score and summary."
+    }
+  ]
+}
