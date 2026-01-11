@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.4] - 2026-01-11
+
+### Fixed
+- Weather v2 CLI returns non-zero when required fields are missing in API responses
+- Weather v2 CLI surfaces API error messages from HTTP error bodies and differentiates timeouts
+
+### Changed
+- Weather v2 CLI parses responses into a typed structure before display
+- Weather v2 CLI sends an explicit user agent header and adds an optional request timeout flag
+- Weather v2 CLI warns when API keys are provided as positional arguments
+
 ## [1.3.3] - 2026-01-11
 
 ### Fixed
