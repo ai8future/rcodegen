@@ -17,8 +17,12 @@ const (
 	Reset = "\033[0m"
 )
 
-// Lock timeout duration
-const lockTimeout = 5 * time.Minute
+// Lock timing constants
+const (
+	lockTimeout      = 5 * time.Minute // Maximum time to wait for lock
+	lockPollInterval = 5 * time.Second // How often to check if lock is available
+	maxIdentifierLen = 100             // Maximum length for lock identifier
+)
 
 // sanitizeIdentifier cleans the identifier for safe use in file
 func sanitizeIdentifier(id string) string {
@@ -33,8 +37,8 @@ func sanitizeIdentifier(id string) string {
 		return r
 	}, id)
 	// Limit length
-	if len(result) > 100 {
-		result = result[:100]
+	if len(result) > maxIdentifierLen {
+		result = result[:maxIdentifierLen]
 	}
 	return result
 }
@@ -68,7 +72,7 @@ func Acquire(identifier string, useLock bool) (*FileLock, error) {
 
 	// Create lock directory with secure permissions (owner only)
 	if err := os.MkdirAll(lockDir, 0700); err != nil {
-		return nil, fmt.Errorf("could not create lock directory: %w", err)
+		return nil, fmt.Errorf("could not create lock directory %s: %w", lockDir, err)
 	}
 
 	lockPath := filepath.Join(lockDir, "rcodegen.lock")
@@ -79,7 +83,7 @@ func Acquire(identifier string, useLock bool) (*FileLock, error) {
 
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		return nil, fmt.Errorf("could not open lock file: %w", err)
+		return nil, fmt.Errorf("could not open lock file %s: %w", lockPath, err)
 	}
 
 	// Try non-blocking lock first
@@ -100,7 +104,7 @@ func Acquire(identifier string, useLock bool) (*FileLock, error) {
 				lockFile.Close()
 				return nil, fmt.Errorf("timed out waiting for lock after %v", lockTimeout)
 			}
-			time.Sleep(5 * time.Second)
+			time.Sleep(lockPollInterval)
 			err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 			if err == nil {
 				break

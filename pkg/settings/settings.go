@@ -122,12 +122,12 @@ func Load() (*Settings, error) {
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read settings: %w", err)
+		return nil, fmt.Errorf("failed to read %s: %w", configPath, err)
 	}
 
 	var settings Settings
 	if err := json.Unmarshal(data, &settings); err != nil {
-		return nil, fmt.Errorf("invalid settings.json: %w", err)
+		return nil, fmt.Errorf("invalid JSON in %s: %w", configPath, err)
 	}
 
 	// Expand tilde in paths

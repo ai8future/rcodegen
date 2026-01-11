@@ -13,6 +13,14 @@ const (
 	Reset   = "\033[0m"
 )
 
+// Display formatting constants
+const (
+	MaxDisplayTaskLen = 50 // Max length for task display in banner
+	TruncatedTaskLen  = 47 // Length before adding "..."
+	MaxDisplayDescLen = 50 // Max length for description display
+	MaxDescPrefixLen  = 47 // Length before adding "..."
+)
+
 // Config holds the runtime configuration for any tool
 type Config struct {
 	// Common fields

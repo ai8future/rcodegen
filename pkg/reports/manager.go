@@ -17,6 +17,9 @@ const (
 	Reset  = "\033[0m"
 )
 
+// reviewScanLines is the number of lines to scan for the review marker
+const reviewScanLines = 10
+
 // ShouldSkipTask checks if we should skip a task because the previous report wasn't reviewed
 // Returns true if we should SKIP (previous report exists but has no "Date Modified:")
 // Returns false if we should RUN (no previous report, or previous report was reviewed)
@@ -81,7 +84,7 @@ func IsReportReviewed(filepath string) bool {
 
 	scanner := bufio.NewScanner(file)
 	lineCount := 0
-	for scanner.Scan() && lineCount < 10 {
+	for scanner.Scan() && lineCount < reviewScanLines {
 		line := scanner.Text()
 		if strings.Contains(line, "Date Modified:") {
 			return true

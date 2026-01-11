@@ -25,8 +25,8 @@ func PrintStartupBanner(tool Tool, cfg *Config) {
 	} else {
 		// Truncate custom task if too long
 		task := cfg.Task
-		if len(task) > 50 {
-			task = task[:47] + "..."
+		if len(task) > MaxDisplayTaskLen {
+			task = task[:TruncatedTaskLen] + "..."
 		}
 		fmt.Printf("%s\"%s\"%s", Yellow, task, Reset)
 	}
