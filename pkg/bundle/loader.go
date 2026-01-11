@@ -6,14 +6,41 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 //go:embed builtin/*.json
 var builtinBundles embed.FS
 
+// validBundleNamePattern matches alphanumeric, hyphens, underscores only
+var validBundleNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+// validateBundleName checks if a bundle name is safe to use in file paths
+func validateBundleName(name string) error {
+	if name == "" {
+		return fmt.Errorf("invalid bundle name: empty")
+	}
+	if len(name) > 100 {
+		return fmt.Errorf("invalid bundle name: too long (max 100 chars)")
+	}
+	if !validBundleNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid bundle name: must contain only alphanumeric, hyphens, underscores")
+	}
+	return nil
+}
+
 func Load(name string) (*Bundle, error) {
+	// Validate bundle name to prevent path traversal
+	if err := validateBundleName(name); err != nil {
+		return nil, err
+	}
+
 	// Try user bundles first
-	userPath := filepath.Join(os.Getenv("HOME"), ".rcodegen", "bundles", name+".json")
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = os.Getenv("HOME") // Fallback for compatibility
+	}
+	userPath := filepath.Join(homeDir, ".rcodegen", "bundles", name+".json")
 	if data, err := os.ReadFile(userPath); err == nil {
 		var b Bundle
 		if err := json.Unmarshal(data, &b); err != nil {
@@ -47,7 +74,11 @@ func List() ([]string, error) {
 	}
 
 	// List user bundles
-	userDir := filepath.Join(os.Getenv("HOME"), ".rcodegen", "bundles")
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = os.Getenv("HOME") // Fallback for compatibility
+	}
+	userDir := filepath.Join(homeDir, ".rcodegen", "bundles")
 	if entries, err := os.ReadDir(userDir); err == nil {
 		for _, e := range entries {
 			if filepath.Ext(e.Name()) == ".json" {
