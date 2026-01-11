@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strconv"
+	"sync"
 
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/settings"
@@ -13,11 +14,13 @@ import (
 
 // Tool implements the runner.Tool interface for Claude Code CLI
 type Tool struct {
-	settings       *settings.Settings
-	currentModel   string // Track current model for status calculations
-	isClaudeMax    bool   // True if user has Claude Max subscription
-	maxChecked     bool   // True if we've checked for Claude Max
-	cachedStatus   *tracking.ClaudeStatus // Cached status from initial check
+	settings     *settings.Settings
+	currentModel string // Track current model for status calculations
+
+	// Thread-safe status caching using sync.Once
+	checkOnce    sync.Once
+	isClaudeMax  bool                   // True if user has Claude Max subscription
+	cachedStatus *tracking.ClaudeStatus // Cached status from initial check
 }
 
 // New creates a new Claude tool
@@ -27,17 +30,14 @@ func New() *Tool {
 
 // checkClaudeMax checks if user has Claude Max subscription and caches the result
 func (t *Tool) checkClaudeMax() {
-	if t.maxChecked {
-		return
-	}
-	t.maxChecked = true
-
-	// Try to get status - if successful, user has Claude Max
-	status := tracking.GetClaudeStatus()
-	if status.Error == "" && (status.SessionLeft != nil || status.WeeklyAllLeft != nil) {
-		t.isClaudeMax = true
-		t.cachedStatus = status
-	}
+	t.checkOnce.Do(func() {
+		// Try to get status - if successful, user has Claude Max
+		status := tracking.GetClaudeStatus()
+		if status.Error == "" && (status.SessionLeft != nil || status.WeeklyAllLeft != nil) {
+			t.isClaudeMax = true
+			t.cachedStatus = status
+		}
+	})
 }
 
 // IsClaudeMax returns true if user has Claude Max subscription
@@ -89,12 +89,25 @@ func (t *Tool) BuildCommand(cfg *runner.Config, workDir, task string) *exec.Cmd 
 	// Store model for status tracking
 	t.currentModel = cfg.Model
 
-	args := []string{
-		"-p", task,
-		"--dangerously-skip-permissions",
-		"--no-session-persistence",
-		"--model", cfg.Model,
-		"--max-budget-usd", cfg.MaxBudget,
+	var args []string
+
+	// If we have a session ID, resume it instead of starting new
+	if cfg.SessionID != "" {
+		args = []string{
+			"--resume", cfg.SessionID,
+			"-p", task,
+			"--dangerously-skip-permissions",
+			"--model", cfg.Model,
+			"--max-budget-usd", cfg.MaxBudget,
+		}
+	} else {
+		// Don't use --no-session-persistence so sessions can be resumed
+		args = []string{
+			"-p", task,
+			"--dangerously-skip-permissions",
+			"--model", cfg.Model,
+			"--max-budget-usd", cfg.MaxBudget,
+		}
 	}
 
 	// Claude CLI requires stream-json output format for non-TTY environments
