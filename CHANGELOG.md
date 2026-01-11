@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.3] - 2026-01-11
+
+### Added
+- Colorful completion banners for build and article bundles
+- Extract and display Overview from IMPLEMENTATION_SUMMARY.md
+- Color-coded grade display (green=A, yellow=B, red=C/D/F)
+- Bold cost display with green highlight
+- Yellow time display for quick scanning
+- Blue output path display for visibility
+
+### Changed
+- Improved final summary layout with box-drawing characters
+- Article completion banner uses magenta theme
+- Build completion banner uses green theme
+- Grade display shows letter prominently with score in parentheses
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.6.2] - 2026-01-11
 
 ### Added

@@ -229,15 +229,32 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 		reportPath := filepath.Join(outputDir, "Run Report.md")
 		generateRunReport(reportPath, ws.JobID, b.Name, duration, totalCost, stepStats, ctx, outputDir)
 
+		// Print final summary box
+		fmt.Printf("\n  %s╭─────────────────────────────────────────────────────────────────╮%s\n", colorMagenta, colorReset)
+		fmt.Printf("  %s│%s  %s✎ ARTICLES COMPLETE%s                                            %s│%s\n",
+			colorMagenta, colorReset, colorBold+colorMagenta, colorReset, colorMagenta, colorReset)
+		fmt.Printf("  %s╰─────────────────────────────────────────────────────────────────╯%s\n\n", colorMagenta, colorReset)
+
 		// Print generated articles
 		articles := findArticleFilesInDir(outputDir)
 		if len(articles) > 0 {
-			fmt.Printf("  %sGenerated Articles:%s\n", colorDim, colorReset)
+			fmt.Printf("  %sGenerated Articles:%s\n", colorCyan+colorBold, colorReset)
 			for _, a := range articles {
-				fmt.Printf("    %s•%s %s\n", colorGreen, colorReset, filepath.Base(a))
+				fmt.Printf("    %s✓%s %s%s%s\n", colorGreen, colorReset, colorWhite, filepath.Base(a), colorReset)
 			}
 			fmt.Println()
 		}
+
+		// Print cost and time with colors
+		fmt.Printf("  %sCost:%s        %s$%.2f%s\n",
+			colorCyan, colorReset,
+			colorGreen+colorBold, totalCost, colorReset)
+		fmt.Printf("  %sTime:%s        %s%s%s\n",
+			colorCyan, colorReset,
+			colorYellow, duration.Round(time.Second), colorReset)
+		fmt.Printf("  %sOutput:%s      %s%s%s\n\n",
+			colorCyan, colorReset,
+			colorBlue, outputDir, colorReset)
 	}
 
 	// Generate final-report.json and copy bundle for build bundles
@@ -271,18 +288,44 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 				ctx,
 			)
 
+			// Print final summary box
+			fmt.Printf("\n  %s╭─────────────────────────────────────────────────────────────────╮%s\n", colorGreen, colorReset)
+			fmt.Printf("  %s│%s  %s✓ BUILD COMPLETE%s                                              %s│%s\n",
+				colorGreen, colorReset, colorBold+colorGreen, colorReset, colorGreen, colorReset)
+			fmt.Printf("  %s╰─────────────────────────────────────────────────────────────────╯%s\n\n", colorGreen, colorReset)
+
+			// Extract and print overview from IMPLEMENTATION_SUMMARY.md
+			overview := extractOverviewFromSummary(filepath.Join(projectDir, "IMPLEMENTATION_SUMMARY.md"))
+			if overview != "" {
+				fmt.Printf("  %sOverview:%s\n", colorCyan+colorBold, colorReset)
+				fmt.Printf("  %s%s%s\n\n", colorWhite, overview, colorReset)
+			}
+
 			// Print grade if available
 			grade := extractGradeFromReport(filepath.Join(projectDir, "final-report.md"))
 			if grade != nil {
-				fmt.Printf("  %sGrade:%s %s%s%s (%d/100)\n",
-					colorDim, colorReset,
-					colorGreen, grade.Letter, colorReset,
-					grade.Score)
-				fmt.Println()
+				gradeColor := colorGreen
+				if grade.Score < 70 {
+					gradeColor = colorRed
+				} else if grade.Score < 85 {
+					gradeColor = colorYellow
+				}
+				fmt.Printf("  %sGrade:%s       %s%s%s %s(%d/100)%s\n",
+					colorCyan, colorReset,
+					gradeColor+colorBold, grade.Letter, colorReset,
+					colorDim, grade.Score, colorReset)
 			}
 
-			// Print output directory
-			fmt.Printf("  %sProject Output:%s %s\n\n", colorDim, colorReset, projectDir)
+			// Print cost and time with colors
+			fmt.Printf("  %sCost:%s        %s$%.2f%s\n",
+				colorCyan, colorReset,
+				colorGreen+colorBold, totalCost, colorReset)
+			fmt.Printf("  %sTime:%s        %s%s%s\n",
+				colorCyan, colorReset,
+				colorYellow, duration.Round(time.Second), colorReset)
+			fmt.Printf("  %sOutput:%s      %s%s%s\n\n",
+				colorCyan, colorReset,
+				colorBlue, projectDir, colorReset)
 		}
 	}
 
@@ -1097,6 +1140,49 @@ func extractGradeFromReport(path string) *GradeInfo {
 	}
 
 	return &gradeWrapper.Grade
+}
+
+// extractOverviewFromSummary extracts the Overview section from IMPLEMENTATION_SUMMARY.md
+func extractOverviewFromSummary(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+
+	content := string(data)
+	lines := strings.Split(content, "\n")
+
+	// Find "## Overview" section
+	inOverview := false
+	var overviewLines []string
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "## Overview") {
+			inOverview = true
+			continue
+		}
+		if inOverview {
+			// Stop at next section header
+			if strings.HasPrefix(line, "## ") || strings.HasPrefix(line, "# ") {
+				break
+			}
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" {
+				overviewLines = append(overviewLines, trimmed)
+			}
+		}
+	}
+
+	if len(overviewLines) == 0 {
+		return ""
+	}
+
+	// Return first meaningful line (or combine if short)
+	overview := strings.Join(overviewLines, " ")
+	if len(overview) > 100 {
+		overview = overview[:97] + "..."
+	}
+	return overview
 }
 
 // getVersion returns the rcodegen version from the VERSION file
