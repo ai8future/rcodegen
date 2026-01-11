@@ -335,7 +335,7 @@ func RunInteractiveSetup() (*Settings, bool) {
 
 	input, err := reader.ReadString('\n')
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\n%sError reading input: %v%s\n", yellow, err, reset)
+		fmt.Fprintf(os.Stderr, "\n%sError:%s reading input: %v\n", yellow, reset, err)
 		return nil, false
 	}
 
@@ -363,7 +363,7 @@ func RunInteractiveSetup() (*Settings, bool) {
 
 		if confirm == "" || confirm == "y" || confirm == "yes" {
 			if err := os.MkdirAll(expandedPath, 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError creating directory: %v%s\n", yellow, err, reset)
+				fmt.Fprintf(os.Stderr, "%sError:%s creating directory: %v\n", yellow, reset, err)
 				return nil, false
 			}
 			fmt.Printf("%sCreated: %s%s\n", green, expandedPath, reset)
@@ -480,7 +480,7 @@ func RunInteractiveSetup() (*Settings, bool) {
 	// Create config directory
 	configDir := GetConfigDir()
 	if err := os.MkdirAll(configDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "%sError creating config directory: %v%s\n", yellow, err, reset)
+		fmt.Fprintf(os.Stderr, "%sError:%s creating config directory: %v\n", yellow, reset, err)
 		return nil, false
 	}
 
@@ -488,12 +488,12 @@ func RunInteractiveSetup() (*Settings, bool) {
 	configPath := GetConfigPath()
 	data, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%sError encoding settings: %v%s\n", yellow, err, reset)
+		fmt.Fprintf(os.Stderr, "%sError:%s encoding settings: %v\n", yellow, reset, err)
 		return nil, false
 	}
 
 	if err := os.WriteFile(configPath, data, 0600); err != nil {
-		fmt.Fprintf(os.Stderr, "%sError writing settings: %v%s\n", yellow, err, reset)
+		fmt.Fprintf(os.Stderr, "%sError:%s writing settings: %v\n", yellow, reset, err)
 		return nil, false
 	}
 

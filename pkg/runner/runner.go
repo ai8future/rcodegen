@@ -105,10 +105,7 @@ func (r *Runner) Run() *RunResult {
 			return runError(1, fmt.Errorf("error creating output directory %s: %v", reportDir, err))
 		}
 	}
-	for name, prompt := range r.TaskConfig.Tasks {
-		r.TaskConfig.Tasks[name] = strings.ReplaceAll(prompt, "{report_dir}", reportDir)
-	}
-	// Also substitute in the already-expanded cfg.Task (from parseArgs)
+	// Substitute {report_dir} in the task being executed (don't mutate shared TaskConfig)
 	cfg.Task = strings.ReplaceAll(cfg.Task, "{report_dir}", reportDir)
 
 	// Handle status-only mode
@@ -274,6 +271,14 @@ func (r *Runner) runForWorkDir(cfg *Config, workDir string) int {
 	return exitCode
 }
 
+// getTask returns a task prompt with placeholders substituted
+// This avoids mutating the shared TaskConfig
+func (r *Runner) getTask(cfg *Config, workDir, taskName string) string {
+	task := r.TaskConfig.Tasks[taskName]
+	reportDir := r.getReportDir(cfg, workDir)
+	return strings.ReplaceAll(task, "{report_dir}", reportDir)
+}
+
 // getReportDir returns the report directory path for a working directory
 func (r *Runner) getReportDir(cfg *Config, workDir string) string {
 	// Use custom output dir if specified (replaces tool-specific _claude/_codex)
@@ -391,7 +396,7 @@ func (r *Runner) runMultipleReports(cfg *Config, workDir string) int {
 
 		// Handle dry run mode
 		if cfg.DryRun {
-			task := r.TaskConfig.Tasks[reportType]
+			task := r.getTask(cfg, workDir, reportType)
 			cmd := r.Tool.BuildCommand(cfg, workDir, task)
 			fmt.Printf("%s%sDry run - would execute %s:%s\n", Bold, Cyan, reportType, Reset)
 			fmt.Printf("  %sCommand:%s %s\n", Dim, Reset, cmd.Path)
@@ -402,7 +407,7 @@ func (r *Runner) runMultipleReports(cfg *Config, workDir string) int {
 		}
 
 		reportStart := time.Now()
-		exitCode := r.executeCommand(cfg, workDir, r.TaskConfig.Tasks[reportType])
+		exitCode := r.executeCommand(cfg, workDir, r.getTask(cfg, workDir, reportType))
 		reportDuration := time.Since(reportStart)
 		PrintReportProgress(reportType, reportDuration, exitCode)
 		if exitCode != 0 {

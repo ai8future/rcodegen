@@ -86,7 +86,7 @@ func ShowClaudeStatusOnly() {
 			fmt.Printf("     Preferences > General > Magic > Enable Python API\n")
 			fmt.Printf("  2. Install Python package: %spip install iterm2%s\n", Green, Reset)
 		default:
-			fmt.Printf("  %sError: Could not fetch status%s\n", Yellow, Reset)
+			fmt.Printf("  %sError:%s Could not fetch status\n", Yellow, Reset)
 			if status.Message != "" {
 				fmt.Printf("  %s\n", status.Message)
 			} else {

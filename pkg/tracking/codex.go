@@ -153,7 +153,7 @@ func ShowStatusOnly() {
 	status := GetStatus()
 
 	if status.Error != "" {
-		fmt.Fprintf(os.Stderr, "%sError: Could not fetch status%s\n", Yellow, Reset)
+		fmt.Fprintf(os.Stderr, "%sError:%s Could not fetch status\n", Yellow, Reset)
 		fmt.Fprintf(os.Stderr, "  %s\n", status.Error)
 		os.Exit(1)
 	}
