@@ -18,7 +18,11 @@ import json
 import re
 import sys
 import os
+import tempfile
 from datetime import datetime, timedelta
+
+# Debug mode - set RCODEX_DEBUG=1 to enable debug output
+DEBUG_MODE = os.environ.get('RCODEX_DEBUG', '').lower() in ('1', 'true', 'yes')
 
 # Wrapper script that sets up PATH and runs codex
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -166,18 +170,30 @@ async def main(connection):
             screen_text = await get_screen_text(new_session)
             clean_text = strip_ansi(screen_text)
 
-            # Debug: write raw output to temp file
-            debug_file = "/tmp/rcodex_status_debug.txt"
-            with open(debug_file, "w") as f:
-                f.write(f"=== ATTEMPT {attempt} ===\n")
-                f.write("=== RAW SCREEN ===\n")
-                f.write(screen_text)
-                f.write("\n\n=== CLEANED ===\n")
-                f.write(clean_text)
+            # Debug: write raw output to secure temp file (only if debug mode enabled)
+            debug_file = None
+            if DEBUG_MODE:
+                # Create secure temp file with restricted permissions (owner read/write only)
+                fd, debug_file = tempfile.mkstemp(prefix='rcodex_status_', suffix='.txt')
+                try:
+                    with os.fdopen(fd, 'w') as f:
+                        f.write(f"=== ATTEMPT {attempt} ===\n")
+                        f.write("=== RAW SCREEN ===\n")
+                        f.write(screen_text)
+                        f.write("\n\n=== CLEANED ===\n")
+                        f.write(clean_text)
+                except Exception:
+                    # If write fails, close fd and continue without debug
+                    try:
+                        os.close(fd)
+                    except Exception:
+                        pass
+                    debug_file = None
 
             # Parse the status
             status = parse_status_output(clean_text)
-            status["_debug"] = debug_file
+            if debug_file:
+                status["_debug"] = debug_file
             return status
 
         # First attempt
@@ -195,8 +211,8 @@ async def main(connection):
         # Close the tab
         try:
             await new_tab.async_close()
-        except:
-            pass
+        except Exception as e:
+            print(f"Warning: Failed to close iTerm2 tab: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":
