@@ -197,7 +197,11 @@ func OutputStatsJSON(tool Tool, cfg *Config, startTime, endTime time.Time, exitC
 		stats.ToolSpecific = toolFields
 	}
 
-	jsonData, _ := json.MarshalIndent(stats, "", "  ")
+	jsonData, err := json.MarshalIndent(stats, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sError: Failed to encode JSON stats: %v%s\n", Yellow, err, Reset)
+		return
+	}
 	fmt.Println(string(jsonData))
 }
 
