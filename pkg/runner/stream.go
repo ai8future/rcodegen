@@ -239,8 +239,8 @@ func extractToolInfo(toolName string, input map[string]interface{}) string {
 
 // shortenPath shortens a file path for display
 func shortenPath(path string) string {
-	home := os.Getenv("HOME")
-	if home == "" {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
 		return path
 	}
 

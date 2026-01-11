@@ -59,7 +59,11 @@ type TaskConfig struct {
 
 // GetConfigDir returns the path to the config directory (~/.rcodegen)
 func GetConfigDir() string {
-	return filepath.Join(os.Getenv("HOME"), ConfigDirName)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.Getenv("HOME") // fallback for legacy systems
+	}
+	return filepath.Join(home, ConfigDirName)
 }
 
 // GetConfigPath returns the full path to settings.json
@@ -69,11 +73,28 @@ func GetConfigPath() string {
 
 // expandTilde expands ~ to the user's home directory
 func expandTilde(path string) string {
+	if path == "" {
+		return path
+	}
 	if strings.HasPrefix(path, "~/") {
-		return filepath.Join(os.Getenv("HOME"), path[2:])
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = os.Getenv("HOME") // fallback for legacy systems
+			if home == "" {
+				return path
+			}
+		}
+		return filepath.Join(home, path[2:])
 	}
 	if path == "~" {
-		return os.Getenv("HOME")
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = os.Getenv("HOME")
+			if home == "" {
+				return path
+			}
+		}
+		return home
 	}
 	return path
 }
@@ -105,8 +126,12 @@ func Load() (*Settings, error) {
 
 // GetDefaultSettings returns settings with sensible defaults
 func GetDefaultSettings() *Settings {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.Getenv("HOME")
+	}
 	return &Settings{
-		CodeDir: filepath.Join(os.Getenv("HOME"), "Desktop/_code"),
+		CodeDir: filepath.Join(home, "Desktop/_code"),
 		Defaults: Defaults{
 			Codex: CodexDefaults{
 				Model:  "gpt-5.2-codex",
@@ -258,7 +283,10 @@ func RunInteractiveSetup() (*Settings, bool) {
 	fmt.Printf("%s(Enter the parent directory containing your projects)%s\n", dim, reset)
 
 	// Suggest common locations
-	home := os.Getenv("HOME")
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		home = os.Getenv("HOME")
+	}
 	suggestions := []string{
 		filepath.Join(home, "Desktop/_code"),
 		filepath.Join(home, "code"),
