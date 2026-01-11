@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.9] - 2026-01-11
+
+### Changed
+- Rewrote the productivity article in Seth Levine's style for docs/draft-codex.md
+
 ## [1.3.8] - 2026-01-11
 
 ### Changed
