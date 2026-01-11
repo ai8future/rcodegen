@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.3] - 2026-01-11
+
+### Fixed
+- Weather v2 CLI handles non-object payloads and body-level API error codes
+- Weather v2 CLI reports rate limit responses with retry hints when available
+- Weather v2 CLI avoids misleading zero defaults by showing N/A for missing values
+
+### Changed
+- Weather v2 CLI trims city input and sends an explicit JSON accept header
+
 ## [1.3.2] - 2026-01-11
 
 ### Fixed
