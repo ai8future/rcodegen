@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -124,14 +125,10 @@ func DeleteOldReports(reportDir string, shortcuts []string, reportPatterns map[s
 			}
 		}
 
-		// Sort newest first
-		for i := 0; i < len(files)-1; i++ {
-			for j := i + 1; j < len(files); j++ {
-				if files[j].modTime.After(files[i].modTime) {
-					files[i], files[j] = files[j], files[i]
-				}
-			}
-		}
+		// Sort newest first (O(n log n) instead of O(n²) bubble sort)
+		sort.Slice(files, func(i, j int) bool {
+			return files[i].modTime.After(files[j].modTime)
+		})
 
 		// Delete all but the newest
 		for i := 1; i < len(files); i++ {
