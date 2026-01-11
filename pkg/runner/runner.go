@@ -293,6 +293,15 @@ func (r *Runner) getReportDir(cfg *Config, workDir string) string {
 
 // runSingleTask runs a single task
 func (r *Runner) runSingleTask(cfg *Config, workDir string) int {
+	if cfg.DryRun {
+		cmd := r.Tool.BuildCommand(cfg, workDir, cfg.Task)
+		fmt.Printf("%s%sDry run - would execute:%s\n", Bold, Cyan, Reset)
+		fmt.Printf("  %sCommand:%s %s\n", Dim, Reset, cmd.Path)
+		fmt.Printf("  %sArgs:%s %v\n", Dim, Reset, cmd.Args[1:])
+		fmt.Printf("  %sDir:%s %s\n", Dim, Reset, cmd.Dir)
+		fmt.Printf("  %sTask:%s\n%s\n", Dim, Reset, cfg.Task)
+		return 0
+	}
 	return r.executeCommand(cfg, workDir, cfg.Task)
 }
 
@@ -505,6 +514,8 @@ func (r *Runner) parseArgs() (*Config, error) {
 	flag.BoolVar(&cfg.StatsJSON, "J", false, "Output run statistics as JSON")
 	flag.BoolVar(&cfg.StatsJSON, "stats-json", false, "Output run statistics as JSON")
 	flag.BoolVar(&cfg.StatusOnly, "status-only", false, "Show status and exit")
+	flag.BoolVar(&cfg.DryRun, "n", false, "Dry run - show command without executing")
+	flag.BoolVar(&cfg.DryRun, "dry-run", false, "Dry run - show command without executing")
 	flag.BoolVar(&showTasks, "t", false, "List available task shortcuts")
 	flag.BoolVar(&showTasks, "tasks", false, "List available task shortcuts")
 	flag.BoolVar(&showHelp, "h", false, "Show help message")
@@ -776,6 +787,7 @@ func (r *Runner) printUsage() {
 	// Execution Options
 	fmt.Printf("%s%sExecution Options:%s\n", Bold, Cyan, Reset)
 	fmt.Printf("  %s-m%s, %s--model%s %s<name>%s    Specify model %s(default: %s)%s\n", Green, Reset, Green, Reset, Yellow, Reset, Dim, r.Tool.DefaultModel(), Reset)
+	fmt.Printf("  %s-n%s, %s--dry-run%s         Show command without executing\n", Green, Reset, Green, Reset)
 	fmt.Printf("  %s-l%s, %s--lock%s            Queue behind other running %s instances\n", Green, Reset, Green, Reset, toolName)
 	fmt.Printf("  %s-j%s, %s--json%s            Output as newline-delimited JSON\n", Green, Reset, Green, Reset)
 	fmt.Printf("  %s-J%s, %s--stats-json%s      Output run statistics as JSON at completion\n\n", Green, Reset, Green, Reset)
