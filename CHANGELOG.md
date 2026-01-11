@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.2] - 2026-01-11
+
+### Fixed
+- Weather CLI treats non-dict payloads and body-level error codes as API errors
+- Weather CLI reports HTTP 429 rate limit responses explicitly
+- Weather CLI guards against malformed sections when formatting output
+
 ## [1.3.1] - 2026-01-10
 
 ### Fixed

@@ -1,147 +1,198 @@
 #!/usr/bin/env python3
 """
-Weather Check Script using OpenWeatherMap API
+Weather checker using OpenWeatherMap API.
+Retrieves current weather information for a specified city.
 """
 
 import os
 import sys
-from typing import Any, Dict
-
-# Check for requests library
-try:
-    import requests
-except ImportError:
-    print("Error: The 'requests' library is not installed.", file=sys.stderr)
-    print("Please install it with: pip install requests", file=sys.stderr)
-    sys.exit(1)
-
-BASE_URL = "https://api.openweathermap.org/data/2.5/weather"
-REQUEST_TIMEOUT_SECONDS = 10
-UNITS = "metric"
+import json
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
+from urllib.parse import urlencode
+from typing import Optional, Dict, Any
 
 
 class WeatherAPIError(Exception):
     """Custom exception for weather API errors."""
+    pass
 
 
-def _parse_weather_response(response: "requests.Response") -> Dict[str, Any]:
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise WeatherAPIError("Received invalid JSON response from API") from exc
-    if not isinstance(data, dict):
-        raise WeatherAPIError("Received unexpected API response format")
-    return data
-
-
-def get_weather(city: str, api_key: str) -> Dict[str, Any]:
+def get_weather(city: str, api_key: Optional[str] = None) -> Dict[str, Any]:
     """
-    Fetch weather data for a given city from OpenWeatherMap API.
+    Fetch weather data for a given city using OpenWeatherMap API.
 
     Args:
-        city: Name of the city to check weather for
-        api_key: OpenWeatherMap API key
+        city (str): Name of the city to check weather for
+        api_key (str, optional): OpenWeatherMap API key. If not provided,
+                                will attempt to read from OPENWEATHER_API_KEY env var
 
     Returns:
-        Dictionary containing weather data
+        dict: Weather data containing temperature, description, humidity, etc.
 
     Raises:
-        WeatherAPIError: If the API request fails
+        WeatherAPIError: If API request fails or returns an error
+        ValueError: If city name is empty or API key is missing
     """
-    params = {"q": city, "appid": api_key, "units": UNITS}
+    if not city or not city.strip():
+        raise ValueError("City name cannot be empty")
 
-    try:
-        response = requests.get(BASE_URL, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
-        response.raise_for_status()
-    except requests.exceptions.Timeout as exc:
-        raise WeatherAPIError(f"Request timed out while fetching weather for {city}") from exc
-    except requests.exceptions.HTTPError as exc:
-        status_code = exc.response.status_code if exc.response is not None else 0
-        if status_code == 401:
-            raise WeatherAPIError("Invalid API key") from exc
-        if status_code == 404:
-            raise WeatherAPIError(f"City '{city}' not found") from exc
-        if status_code == 429:
-            raise WeatherAPIError("API rate limit exceeded") from exc
-        raise WeatherAPIError(f"HTTP error occurred (Status: {status_code})") from exc
-    except requests.exceptions.RequestException as exc:
-        raise WeatherAPIError("Network error occurred while connecting to the API") from exc
-
-    return _parse_weather_response(response)
-
-
-def format_weather_data(data: Dict[str, Any]) -> str:
-    """
-    Format weather data into a readable string.
-
-    Args:
-        data: Weather data dictionary from API
-
-    Returns:
-        Formatted weather information string
-    """
-    city = data.get("name", "Unknown")
-    country = data.get("sys", {}).get("country", "")
-    location = f"{city}, {country}" if country else city
-    temp = data.get("main", {}).get("temp")
-    feels_like = data.get("main", {}).get("feels_like")
-    humidity = data.get("main", {}).get("humidity")
-    wind_speed = data.get("wind", {}).get("speed")
-
-    weather_list = data.get("weather")
-    if isinstance(weather_list, list) and weather_list:
-        description = weather_list[0].get("description") or "No description"
-    else:
-        description = "No description"
-
-    def format_value(value: Any, suffix: str = "") -> str:
-        if isinstance(value, (int, float)):
-            return f"{value}{suffix}"
-        return "N/A"
-
-    lines = [
-        f"Weather for {location}:",
-        "-----------------------------",
-        f"Temperature: {format_value(temp, ' C')} (feels like {format_value(feels_like, ' C')})",
-        f"Conditions: {description.capitalize()}",
-        f"Humidity: {format_value(humidity, '%')}",
-        f"Wind Speed: {format_value(wind_speed, ' m/s')}",
-    ]
-    return "\n".join(lines)
-
-
-def main():
-    """Main function to run the weather checker."""
-    # Get API key from environment variable
-    api_key = os.getenv("OPENWEATHER_API_KEY")
+    if api_key is None:
+        api_key = os.environ.get('OPENWEATHER_API_KEY')
 
     if not api_key:
-        print("Error: OPENWEATHER_API_KEY environment variable not set", file=sys.stderr)
-        print("Please set it with: export OPENWEATHER_API_KEY='your_api_key'", file=sys.stderr)
-        sys.exit(1)
+        raise ValueError(
+            "API key is required. Set OPENWEATHER_API_KEY environment variable "
+            "or pass api_key parameter"
+        )
 
-    # Get city from command line argument or use default
-    if len(sys.argv) > 1:
-        city = " ".join(sys.argv[1:]).strip()
-    else:
-        print("Usage: python weather_check.py <city_name>")
-        print("Example: python weather_check.py London")
-        sys.exit(1)
+    base_url = "https://api.openweathermap.org/data/2.5/weather"
+    params = {
+        'q': city.strip(),
+        'appid': api_key,
+        'units': 'metric'
+    }
 
-    if not city:
-        print("Error: City name cannot be empty", file=sys.stderr)
-        sys.exit(1)
+    url = f"{base_url}?{urlencode(params)}"
 
     try:
-        weather_data = get_weather(city, api_key)
-        print(format_weather_data(weather_data))
-    except WeatherAPIError as e:
+        request = Request(url)
+        request.add_header('User-Agent', 'WeatherChecker/1.0')
+
+        with urlopen(request, timeout=10) as response:
+            try:
+                payload = response.read().decode('utf-8')
+            except UnicodeDecodeError as exc:
+                raise WeatherAPIError("Failed to decode API response") from exc
+
+            data = json.loads(payload)
+            if not isinstance(data, dict):
+                raise WeatherAPIError("Unexpected API response format")
+
+            # Check for API error codes in 200 responses
+            # OpenWeatherMap sometimes returns 200 with an error 'cod' in body
+            cod = data.get('cod')
+            if cod is not None and str(cod) != '200':
+                message = data.get('message') or 'Unknown error'
+                raise WeatherAPIError(f"API Error {cod}: {message}")
+
+            return data
+
+    except HTTPError as e:
+        if e.code == 404:
+            raise WeatherAPIError(f"City '{city}' not found")
+        elif e.code == 401:
+            raise WeatherAPIError("Invalid API key")
+        elif e.code == 429:
+            raise WeatherAPIError("Rate limit exceeded (HTTP 429)")
+        else:
+            raise WeatherAPIError(f"HTTP error {e.code}: {e.reason}")
+
+    except URLError as e:
+        raise WeatherAPIError(f"Network error: {e.reason}")
+
+    except json.JSONDecodeError:
+        raise WeatherAPIError("Failed to parse API response")
+
+    except Exception as e:
+        # Re-raise WeatherAPIError directly
+        if isinstance(e, WeatherAPIError):
+            raise e
+        raise WeatherAPIError(f"Unexpected error: {str(e)}")
+
+
+def format_weather_output(weather_data: Dict[str, Any]) -> str:
+    """
+    Format weather data into a human-readable string.
+
+    Args:
+        weather_data (dict): Raw weather data from API
+
+    Returns:
+        str: Formatted weather information
+    """
+    city_name = weather_data.get('name') or 'Unknown'
+    if not isinstance(city_name, str):
+        city_name = str(city_name)
+
+    sys_data = weather_data.get('sys')
+    if not isinstance(sys_data, dict):
+        sys_data = {}
+    country = sys_data.get('country', '')
+    if country and not isinstance(country, str):
+        country = str(country)
+
+    main_data = weather_data.get('main')
+    if not isinstance(main_data, dict):
+        main_data = {}
+    temp = main_data.get('temp')
+    feels_like = main_data.get('feels_like')
+    humidity = main_data.get('humidity')
+
+    # Safe access for weather description
+    weather_list = weather_data.get('weather')
+    weather_desc = 'N/A'
+    if isinstance(weather_list, list) and weather_list:
+        first_weather = weather_list[0]
+        if isinstance(first_weather, dict):
+            desc = first_weather.get('description')
+            if desc:
+                weather_desc = str(desc).capitalize()
+
+    wind_data = weather_data.get('wind')
+    if not isinstance(wind_data, dict):
+        wind_data = {}
+    wind_speed = wind_data.get('speed')
+
+    location = f"{city_name}, {country}" if country else city_name
+
+    # Helper to format values that might be None
+    def fmt(val: Any, unit: str = "") -> str:
+        return f"{val}{unit}" if val is not None else "N/A"
+
+    output = [
+        f"Weather for {location}:",
+        f"  Condition: {weather_desc}",
+        f"  Temperature: {fmt(temp, '°C')} (feels like {fmt(feels_like, '°C')})",
+        f"  Humidity: {fmt(humidity, '%')}",
+        f"  Wind Speed: {fmt(wind_speed, ' m/s')}"
+    ]
+
+    return '\n'.join(output)
+
+
+def main() -> int:
+    """Main function to run the weather checker."""
+    if len(sys.argv) < 2:
+        print("Usage: python weather_check.py <city_name>")
+        print("Example: python weather_check.py London")
+        print("\nNote: Set OPENWEATHER_API_KEY environment variable with your API key")
+        sys.exit(1)
+
+    city = ' '.join(sys.argv[1:])
+
+    try:
+        weather_data = get_weather(city)
+        output = format_weather_output(weather_data)
+        print(output)
+        return 0
+
+    except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception:
-        print("Unexpected error occurred", file=sys.stderr)
-        sys.exit(1)
+        return 1
+
+    except WeatherAPIError as e:
+        print(f"Weather API Error: {e}", file=sys.stderr)
+        return 1
+
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user", file=sys.stderr)
+        return 130
+
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
+        return 1
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    sys.exit(main())
