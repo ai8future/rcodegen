@@ -48,6 +48,7 @@ func Load(name string) (*Bundle, error) {
 		if err := json.Unmarshal(data, &b); err != nil {
 			return nil, fmt.Errorf("invalid bundle %s: %w", name, err)
 		}
+		b.SourcePath = userPath
 		return &b, nil
 	}
 
@@ -61,7 +62,46 @@ func Load(name string) (*Bundle, error) {
 	if err := json.Unmarshal(data, &b); err != nil {
 		return nil, fmt.Errorf("invalid builtin bundle %s: %w", name, err)
 	}
+	// For builtin bundles, find the source path relative to the executable
+	b.SourcePath = findBuiltinBundlePath(name)
 	return &b, nil
+}
+
+// findBuiltinBundlePath attempts to locate the source file for a builtin bundle
+// This is useful for copying the bundle to output directories
+func findBuiltinBundlePath(name string) string {
+	// Try common development locations
+	candidates := []string{
+		filepath.Join("pkg", "bundle", "builtin", name+".json"),
+	}
+
+	// Try relative to executable
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "pkg", "bundle", "builtin", name+".json"),
+			filepath.Join(exeDir, "..", "pkg", "bundle", "builtin", name+".json"),
+		)
+	}
+
+	// Try relative to working directory
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(wd, "pkg", "bundle", "builtin", name+".json"),
+		)
+	}
+
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err == nil {
+			if abs, err := filepath.Abs(path); err == nil {
+				return abs
+			}
+			return path
+		}
+	}
+
+	// Return a placeholder path if we can't find it (the embedded data will still be used)
+	return "builtin/" + name + ".json"
 }
 
 func List() ([]string, error) {

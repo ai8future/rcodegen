@@ -3,6 +3,7 @@
 package orchestrator
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,18 +70,23 @@ func New(s *settings.Settings) *Orchestrator {
 func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelope.Envelope, error) {
 	start := time.Now()
 
-	// Validate required inputs
+	// Validate required inputs and apply defaults
 	for _, input := range b.Inputs {
-		if input.Required {
-			if _, ok := inputs[input.Name]; !ok {
-				if input.Default != "" {
-					inputs[input.Name] = input.Default
-				} else {
-					return envelope.New().
-						Failure("MISSING_INPUT", "Required input: "+input.Name).
-						Build(), nil
-				}
+		if _, ok := inputs[input.Name]; !ok {
+			if input.Default != "" {
+				inputs[input.Name] = input.Default
+			} else if input.Required {
+				return envelope.New().
+					Failure("MISSING_INPUT", "Required input: "+input.Name).
+					Build(), nil
 			}
+		}
+	}
+
+	// Apply settings-based defaults for output_dir if not specified
+	if _, hasOutputDir := inputs["output_dir"]; !hasOutputDir {
+		if o.settings != nil && o.settings.DefaultBuildDir != "" {
+			inputs["output_dir"] = o.settings.DefaultBuildDir
 		}
 	}
 
@@ -220,6 +226,39 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 	if strings.HasPrefix(b.Name, "article") && outputDir != "" {
 		reportPath := filepath.Join(outputDir, "Run Report.md")
 		generateRunReport(reportPath, ws.JobID, b.Name, duration, totalCost, stepStats, ctx, outputDir)
+	}
+
+	// Generate final-report.json and copy bundle for build bundles
+	if projectName, hasProject := inputs["project_name"]; hasProject {
+		outputDir := inputs["output_dir"]
+		if outputDir != "" {
+			projectDir := filepath.Join(outputDir, projectName)
+
+			// Copy bundle to output directory
+			if b.SourcePath != "" {
+				bundleDest := filepath.Join(projectDir, "bundle-used.json")
+				if bundleData, err := os.ReadFile(b.SourcePath); err == nil {
+					os.WriteFile(bundleDest, bundleData, 0644)
+				}
+			}
+
+			// Generate final-report.json
+			generateFinalReportJSON(
+				projectDir,
+				ws.JobID,
+				b,
+				start,
+				duration,
+				totalCost,
+				totalInputTokens,
+				totalOutputTokens,
+				totalCacheRead,
+				totalCacheWrite,
+				stepStats,
+				inputs,
+				ctx,
+			)
+		}
 	}
 
 	return envelope.New().
@@ -716,4 +755,339 @@ func extractOpening(path string) string {
 		return line
 	}
 	return "Unknown"
+}
+
+// FinalReportJSON is the structure for the machine-readable final report
+type FinalReportJSON struct {
+	Meta    MetaInfo               `json:"meta"`
+	Summary SummaryInfo            `json:"summary"`
+	Costs   CostsInfo              `json:"costs"`
+	Steps   []StepInfo             `json:"steps"`
+	Outputs OutputsInfo            `json:"outputs"`
+	Grade   *GradeInfo             `json:"grade,omitempty"`
+	Inputs  map[string]string      `json:"inputs"`
+}
+
+type MetaInfo struct {
+	JobID          string `json:"job_id"`
+	Bundle         string `json:"bundle"`
+	BundleSource   string `json:"bundle_source"`
+	TimestampStart string `json:"timestamp_start"`
+	TimestampEnd   string `json:"timestamp_end"`
+	Status         string `json:"status"`
+}
+
+type SummaryInfo struct {
+	TotalCostUSD    float64  `json:"total_cost_usd"`
+	DurationSeconds int64    `json:"duration_seconds"`
+	DurationHuman   string   `json:"duration_human"`
+	RcodegenVersion string   `json:"rcodegen_version"`
+	StepsTotal      int      `json:"steps_total"`
+	StepsSucceeded  int      `json:"steps_succeeded"`
+	StepsFailed     int      `json:"steps_failed"`
+	ModelsUsed      []string `json:"models_used"`
+}
+
+type CostsInfo struct {
+	TotalUSD float64               `json:"total_usd"`
+	ByModel  map[string]ModelCosts `json:"by_model"`
+	Totals   TokenTotals           `json:"totals"`
+}
+
+type ModelCosts struct {
+	CostUSD          float64  `json:"cost_usd"`
+	InputTokens      int      `json:"input_tokens"`
+	OutputTokens     int      `json:"output_tokens"`
+	CacheReadTokens  int      `json:"cache_read_tokens"`
+	CacheWriteTokens int      `json:"cache_write_tokens"`
+	Steps            []string `json:"steps"`
+}
+
+type TokenTotals struct {
+	InputTokens      int `json:"input_tokens"`
+	OutputTokens     int `json:"output_tokens"`
+	CacheReadTokens  int `json:"cache_read_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
+}
+
+type StepInfo struct {
+	Name             string            `json:"name"`
+	Tool             string            `json:"tool"`
+	Versions         map[string]string `json:"versions,omitempty"`
+	Status           string            `json:"status"`
+	CostUSD          float64           `json:"cost_usd"`
+	InputTokens      int               `json:"input_tokens"`
+	OutputTokens     int               `json:"output_tokens"`
+	CacheReadTokens  int               `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int               `json:"cache_write_tokens,omitempty"`
+	DurationSeconds  int64             `json:"duration_seconds,omitempty"`
+}
+
+type OutputsInfo struct {
+	Directory string     `json:"directory"`
+	Files     []FileInfo `json:"files"`
+	Stats     OutputStats `json:"stats"`
+}
+
+type FileInfo struct {
+	Path      string `json:"path"`
+	Type      string `json:"type"`
+	SizeBytes int64  `json:"size_bytes"`
+	Lines     int    `json:"lines,omitempty"`
+}
+
+type OutputStats struct {
+	TotalSourceFiles int `json:"total_source_files"`
+	TotalSourceLines int `json:"total_source_lines"`
+	TotalDocWords    int `json:"total_doc_words"`
+}
+
+type GradeInfo struct {
+	Score          int `json:"score"`
+	Letter         string `json:"letter"`
+	Functionality  int `json:"functionality"`
+	CodeQuality    int `json:"code_quality"`
+	Security       int `json:"security"`
+	UserExperience int `json:"user_experience"`
+	Architecture   int `json:"architecture"`
+	Testing        int `json:"testing"`
+	Innovation     int `json:"innovation"`
+	Documentation  int `json:"documentation"`
+}
+
+// generateFinalReportJSON creates a machine-readable JSON report for build bundles
+func generateFinalReportJSON(
+	projectDir string,
+	jobID string,
+	b *bundle.Bundle,
+	startTime time.Time,
+	duration time.Duration,
+	totalCost float64,
+	totalInputTokens int,
+	totalOutputTokens int,
+	totalCacheRead int,
+	totalCacheWrite int,
+	stepStats []StepStats,
+	inputs map[string]string,
+	ctx *Context,
+) {
+	endTime := startTime.Add(duration)
+
+	// Build model costs map
+	modelCosts := make(map[string]ModelCosts)
+	modelsUsed := make(map[string]bool)
+	stepsSucceeded := 0
+	stepsFailed := 0
+
+	var steps []StepInfo
+	for _, s := range stepStats {
+		if s.Tool != "" {
+			modelsUsed[s.Tool] = true
+			mc := modelCosts[s.Tool]
+			mc.CostUSD += s.Cost
+			mc.InputTokens += s.InputTokens
+			mc.OutputTokens += s.OutputTokens
+			mc.Steps = append(mc.Steps, s.Name)
+			modelCosts[s.Tool] = mc
+		}
+
+		steps = append(steps, StepInfo{
+			Name:         s.Name,
+			Tool:         s.Tool,
+			Status:       "success", // We wouldn't get here if a step failed
+			CostUSD:      s.Cost,
+			InputTokens:  s.InputTokens,
+			OutputTokens: s.OutputTokens,
+		})
+		stepsSucceeded++
+	}
+
+	// Build models list
+	var modelsList []string
+	for m := range modelsUsed {
+		modelsList = append(modelsList, m)
+	}
+
+	// Scan output files
+	files, stats := scanOutputFiles(projectDir)
+
+	// Try to extract grade from final-report.md
+	grade := extractGradeFromReport(filepath.Join(projectDir, "final-report.md"))
+
+	report := FinalReportJSON{
+		Meta: MetaInfo{
+			JobID:          jobID,
+			Bundle:         b.Name,
+			BundleSource:   b.SourcePath,
+			TimestampStart: startTime.Format(time.RFC3339),
+			TimestampEnd:   endTime.Format(time.RFC3339),
+			Status:         "success",
+		},
+		Summary: SummaryInfo{
+			TotalCostUSD:    totalCost,
+			DurationSeconds: int64(duration.Seconds()),
+			DurationHuman:   duration.Round(time.Second).String(),
+			RcodegenVersion: getVersion(),
+			StepsTotal:      len(stepStats),
+			StepsSucceeded:  stepsSucceeded,
+			StepsFailed:     stepsFailed,
+			ModelsUsed:      modelsList,
+		},
+		Costs: CostsInfo{
+			TotalUSD: totalCost,
+			ByModel:  modelCosts,
+			Totals: TokenTotals{
+				InputTokens:      totalInputTokens,
+				OutputTokens:     totalOutputTokens,
+				CacheReadTokens:  totalCacheRead,
+				CacheWriteTokens: totalCacheWrite,
+			},
+		},
+		Steps:   steps,
+		Outputs: OutputsInfo{
+			Directory: projectDir,
+			Files:     files,
+			Stats:     stats,
+		},
+		Grade:  grade,
+		Inputs: inputs,
+	}
+
+	// Write JSON file
+	jsonPath := filepath.Join(projectDir, "final-report.json")
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to generate final-report.json: %v\n", err)
+		return
+	}
+	if err := os.WriteFile(jsonPath, data, 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to write final-report.json: %v\n", err)
+	}
+}
+
+// scanOutputFiles scans a directory and returns file info and stats
+func scanOutputFiles(dir string) ([]FileInfo, OutputStats) {
+	var files []FileInfo
+	var stats OutputStats
+
+	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+
+		relPath, _ := filepath.Rel(dir, path)
+		fileType := categorizeFile(relPath)
+
+		fi := FileInfo{
+			Path:      relPath,
+			Type:      fileType,
+			SizeBytes: info.Size(),
+		}
+
+		// Count lines for source files
+		if fileType == "source" {
+			if data, err := os.ReadFile(path); err == nil {
+				lines := len(strings.Split(string(data), "\n"))
+				fi.Lines = lines
+				stats.TotalSourceLines += lines
+				stats.TotalSourceFiles++
+			}
+		}
+
+		// Count words for docs
+		if fileType == "docs" || fileType == "report" {
+			if data, err := os.ReadFile(path); err == nil {
+				stats.TotalDocWords += len(strings.Fields(string(data)))
+			}
+		}
+
+		files = append(files, fi)
+		return nil
+	})
+
+	return files, stats
+}
+
+// categorizeFile determines the type of a file based on its path
+func categorizeFile(path string) string {
+	lower := strings.ToLower(path)
+	ext := strings.ToLower(filepath.Ext(path))
+
+	if strings.HasPrefix(lower, "src/") || strings.HasPrefix(lower, "lib/") {
+		return "source"
+	}
+	if ext == ".py" || ext == ".go" || ext == ".js" || ext == ".ts" || ext == ".rb" || ext == ".rs" {
+		return "source"
+	}
+	if strings.HasPrefix(lower, "samples/") || strings.HasPrefix(lower, "test") {
+		return "sample"
+	}
+	if ext == ".pdf" {
+		return "output"
+	}
+	if strings.Contains(lower, "report") {
+		return "report"
+	}
+	if ext == ".md" || strings.Contains(lower, "readme") {
+		return "docs"
+	}
+	if ext == ".json" {
+		return "config"
+	}
+	return "other"
+}
+
+// extractGradeFromReport parses the final-report.md to extract the JSON grade block
+func extractGradeFromReport(path string) *GradeInfo {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+
+	content := string(data)
+
+	// Look for JSON block with grade
+	jsonBlockStart := strings.Index(content, "```json")
+	if jsonBlockStart == -1 {
+		return nil
+	}
+	jsonBlockEnd := strings.Index(content[jsonBlockStart+7:], "```")
+	if jsonBlockEnd == -1 {
+		return nil
+	}
+
+	jsonStr := strings.TrimSpace(content[jsonBlockStart+7 : jsonBlockStart+7+jsonBlockEnd])
+
+	// Try to parse the grade JSON
+	var gradeWrapper struct {
+		Grade GradeInfo `json:"grade"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &gradeWrapper); err != nil {
+		// Try parsing as direct grade object
+		var grade GradeInfo
+		if err := json.Unmarshal([]byte(jsonStr), &grade); err != nil {
+			return nil
+		}
+		return &grade
+	}
+
+	return &gradeWrapper.Grade
+}
+
+// getVersion returns the rcodegen version from the VERSION file
+func getVersion() string {
+	// Try common locations
+	candidates := []string{
+		"VERSION",
+		"../VERSION",
+		"../../VERSION",
+	}
+
+	for _, path := range candidates {
+		if data, err := os.ReadFile(path); err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+
+	return "unknown"
 }

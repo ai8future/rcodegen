@@ -47,10 +47,11 @@ type Defaults struct {
 
 // Settings holds all configuration for rcodegen tools
 type Settings struct {
-	CodeDir   string             `json:"code_dir"`             // Default code directory (supports ~ expansion)
-	OutputDir string             `json:"output_dir,omitempty"` // Custom output directory (replaces _claude/_codex)
-	Defaults  Defaults           `json:"defaults"`             // Default settings for each tool
-	Tasks     map[string]TaskDef `json:"tasks"`                // Task shortcuts
+	CodeDir         string             `json:"code_dir"`                    // Default code directory (supports ~ expansion)
+	OutputDir       string             `json:"output_dir,omitempty"`        // Custom output directory (replaces _claude/_codex)
+	DefaultBuildDir string             `json:"default_build_dir,omitempty"` // Default output directory for build bundles
+	Defaults        Defaults           `json:"defaults"`                    // Default settings for each tool
+	Tasks           map[string]TaskDef `json:"tasks"`                       // Task shortcuts
 }
 
 // TaskConfig is the legacy format used by the rest of the codebase
@@ -135,6 +136,7 @@ func Load() (*Settings, error) {
 	// Expand tilde in paths
 	settings.CodeDir = expandTilde(settings.CodeDir)
 	settings.OutputDir = expandTilde(settings.OutputDir)
+	settings.DefaultBuildDir = expandTilde(settings.DefaultBuildDir)
 
 	return &settings, nil
 }
@@ -146,7 +148,8 @@ func GetDefaultSettings() *Settings {
 		home = os.Getenv("HOME")
 	}
 	return &Settings{
-		CodeDir: filepath.Join(home, "Desktop/_code"),
+		CodeDir:         filepath.Join(home, "Desktop/_code"),
+		DefaultBuildDir: filepath.Join(home, "Desktop/_code"),
 		Defaults: Defaults{
 			Codex: CodexDefaults{
 				Model:  "gpt-5.2-codex",
@@ -186,6 +189,9 @@ func LoadWithFallback() (*Settings, bool) {
 	}
 	if settings.Defaults.Gemini.Model == "" {
 		settings.Defaults.Gemini.Model = "gemini-3"
+	}
+	if settings.DefaultBuildDir == "" {
+		settings.DefaultBuildDir = settings.CodeDir // Default to code_dir if not set
 	}
 	return settings, true
 }

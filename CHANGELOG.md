@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-01-11
+
+### Added
+- **Machine-readable final-report.json** - Detailed JSON report generated alongside final-report.md with full cost breakdowns by model, per-step token usage, file inventory, and extracted grades
+- **Bundle auto-copy** - Bundle JSON copied to output directory as `bundle-used.json` for reproducibility
+- **default_build_dir setting** - New settings field for default output directory in build bundles
+- **Standardized grading rubric** - Audit step enforces consistent grading categories (functionality, code_quality, security, user_experience, architecture, testing, innovation, documentation) with bonus points allowed
+- **Positional task argument** - CLI now accepts task description as positional argument: `rcodegen build-review-audit project_name=foo "Build X"`
+
+### Changed
+- **build-review-audit bundle** - Now generic (not Quarto-specific), accepts `task` and `project_name` inputs
+- Bundle struct now tracks `SourcePath` for copying to output directories
+- Settings `LoadWithFallback()` now defaults `DefaultBuildDir` to `CodeDir` if not set
+
+### Technical Details
+- `generateFinalReportJSON()` in orchestrator creates comprehensive JSON report
+- `extractGradeFromReport()` parses JSON grade block from audit output
+- `scanOutputFiles()` inventories output directory with file types and stats
+- Grade extraction supports both wrapped `{"grade":{...}}` and direct format
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.4.0] - 2026-01-11
 
 ### Security

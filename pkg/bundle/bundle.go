@@ -5,6 +5,7 @@ type Bundle struct {
 	Description string  `json:"description"`
 	Inputs      []Input `json:"inputs,omitempty"`
 	Steps       []Step  `json:"steps"`
+	SourcePath  string  `json:"-"` // Path to bundle file (not serialized)
 }
 
 type Input struct {

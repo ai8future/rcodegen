@@ -46,7 +46,7 @@ func runBundle() {
 		os.Exit(1)
 	}
 
-	// Parse remaining args as inputs (key=value)
+	// Parse remaining args as inputs (key=value or positional task)
 	inputs := make(map[string]string)
 	if *codebase != "" {
 		inputs["codebase"] = expandPath(*codebase)
@@ -55,6 +55,9 @@ func runBundle() {
 	for _, arg := range fs.Args()[1:] {
 		if idx := strings.Index(arg, "="); idx != -1 {
 			inputs[arg[:idx]] = arg[idx+1:]
+		} else {
+			// Positional argument without = is treated as "task" input
+			inputs["task"] = arg
 		}
 	}
 

@@ -1,34 +1,36 @@
 {
   "name": "build-review-audit",
-  "description": "Multi-model workflow: build, review, improve, test, and audit a Quarto PDF generator",
+  "description": "Multi-model workflow: build, review, improve, test, and audit any software project",
   "inputs": [
-    {"name": "output_dir", "required": true, "description": "Base directory for generated files"}
+    {"name": "output_dir", "required": false, "description": "Base directory for generated files (default from settings)"},
+    {"name": "project_name", "required": true, "description": "Project subdirectory name"},
+    {"name": "task", "required": true, "description": "What to build"}
   ],
   "steps": [
     {
       "name": "build",
       "tool": "claude",
-      "task": "Build a Quarto-based CLI tool that converts Markdown to PDF.\n\nRequirements:\n1. Create a Python CLI application using argparse\n2. The tool should accept: --input file.md --output file.pdf\n3. Check if Quarto is installed; if not, print clear installation instructions and exit gracefully\n4. Use Quarto's PDF rendering capabilities\n5. Handle errors gracefully with helpful messages\n\nAlso create 3 sample Markdown files that will each produce approximately 3-page PDFs. Include varied content:\n- Sample 1: Technical documentation with code blocks, tables, and headings\n- Sample 2: A report with bullet points, numbered lists, and block quotes\n- Sample 3: An article with images (use placeholder URLs), footnotes, and links\n\nSave the Python CLI code to: ${inputs.output_dir}/quarto-pdf-generator/src/\nSave the sample Markdown files to: ${inputs.output_dir}/quarto-pdf-generator/samples/\n\nMake sure the code is well-structured, has proper error handling, and includes a README with usage instructions."
+      "task": "${inputs.task}\n\nRequirements:\n- Create well-structured, production-ready code\n- Include proper error handling and input validation\n- Add a README with usage instructions\n- Create sample files or test data as appropriate\n\nSave code to: ${inputs.output_dir}/${inputs.project_name}/src/\nSave samples/test data to: ${inputs.output_dir}/${inputs.project_name}/samples/\nSave README to: ${inputs.output_dir}/${inputs.project_name}/README.md"
     },
     {
       "name": "review",
       "tool": "gemini",
-      "task": "Review the Quarto PDF generator code that was just created.\n\nContext from the build step:\n${steps.build.stdout}\n\nYour task:\n1. Read all the code files in ${inputs.output_dir}/quarto-pdf-generator/src/\n2. Identify and FIX any obvious bugs or problems directly in the code\n3. For larger suggestions that need discussion, document them but don't implement\n\nWrite a code review report that includes:\n- Summary of what you found\n- List of bugs/issues you fixed (with before/after)\n- List of larger suggestions for the next reviewer to consider\n- Any security concerns\n- Code quality observations\n\nSave your review to: ${inputs.output_dir}/quarto-pdf-generator/review.md"
+      "task": "Review the code that was just created.\n\nContext:\n${steps.build.stdout}\n\nYour task:\n1. Read all code in ${inputs.output_dir}/${inputs.project_name}/src/\n2. Identify and FIX any obvious bugs directly\n3. Document larger suggestions for the next reviewer\n\nWrite a review covering:\n- Bugs/issues you fixed (before/after)\n- Suggestions for improvement\n- Security concerns\n- Code quality observations\n\nSave to: ${inputs.output_dir}/${inputs.project_name}/review.md"
     },
     {
       "name": "improve",
       "tool": "claude",
-      "task": "Review Gemini's code review and decide which suggestions to implement.\n\nGemini's review:\n${steps.review.stdout}\n\nYour task:\n1. Read the current code in ${inputs.output_dir}/quarto-pdf-generator/src/\n2. Read Gemini's review at ${inputs.output_dir}/quarto-pdf-generator/review.md\n3. For each suggestion Gemini made:\n   - Evaluate if it's a good idea\n   - If you agree, implement it\n   - If you disagree, explain why\n4. Apply your own improvements if you see opportunities\n\nCreate a decision log that documents:\n- Each suggestion from Gemini\n- Your decision (accepted/rejected)\n- Your reasoning\n- What you implemented\n\nSave the decision log to: ${inputs.output_dir}/quarto-pdf-generator/decisions.md"
+      "task": "Review the code review and implement improvements.\n\nReview:\n${steps.review.stdout}\n\n1. Read code in ${inputs.output_dir}/${inputs.project_name}/src/\n2. Read review at ${inputs.output_dir}/${inputs.project_name}/review.md\n3. For each suggestion: evaluate, accept/reject with reasoning, implement if accepted\n\nSave decision log to: ${inputs.output_dir}/${inputs.project_name}/decisions.md"
     },
     {
       "name": "test",
       "tool": "gemini",
-      "task": "Test the Quarto PDF generator tool by actually using it.\n\nContext from previous steps:\n${steps.improve.stdout}\n\nYour task:\n1. Navigate to ${inputs.output_dir}/quarto-pdf-generator/\n2. Run the tool against each sample Markdown file in the samples/ directory\n3. Save the generated PDFs to ${inputs.output_dir}/quarto-pdf-generator/output/\n4. Verify that:\n   - The tool runs without errors\n   - PDFs are actually created\n   - The PDFs have reasonable content (check file sizes, page counts if possible)\n5. Note any UX or functionality improvements\n\nWrite a test report that includes:\n- Test results for each sample file\n- Any errors encountered\n- Observations about the output quality\n- Suggested improvements for better user experience\n- Any edge cases that should be handled\n\nSave test results to: ${inputs.output_dir}/quarto-pdf-generator/test-results.md"
+      "task": "Test the implementation.\n\nContext:\n${steps.improve.stdout}\n\n1. Navigate to ${inputs.output_dir}/${inputs.project_name}/\n2. Run the code against sample inputs\n3. Verify it works correctly\n4. Note any issues or UX improvements\n\nSave test results to: ${inputs.output_dir}/${inputs.project_name}/test-results.md"
     },
     {
       "name": "audit",
       "tool": "claude",
-      "task": "Perform a final audit of the Quarto PDF generator and write a comprehensive report.\n\nContext from Gemini's testing:\n${steps.test.stdout}\n\nYour task:\n1. Review Gemini's test results at ${inputs.output_dir}/quarto-pdf-generator/test-results.md\n2. Consider Gemini's suggestions and implement any that you agree with\n3. Read all the code in ${inputs.output_dir}/quarto-pdf-generator/src/\n4. Run your own comprehensive audit looking for:\n   - Bugs or logic errors\n   - Security vulnerabilities\n   - Code style issues\n   - Architecture problems\n   - Missing error handling\n   - Documentation gaps\n5. Run the tool yourself to verify it works\n\nAssign a grade:\n- Numeric score: 0-100\n- Letter grade: A, B, C, D, or F\n- Be fair but rigorous\n\nWrite a final report that includes:\n- Executive summary\n- What was built and what it can do\n- Strengths of the implementation\n- Weaknesses and areas for improvement\n- The multi-model collaboration process (how Claude and Gemini worked together)\n- Final grade with detailed justification\n- Recommendations for future development\n\nSave the final report to: ${inputs.output_dir}/quarto-pdf-generator/final-report.md"
+      "task": "Final audit and grading.\n\nContext:\n${steps.test.stdout}\n\n1. Review test results at ${inputs.output_dir}/${inputs.project_name}/test-results.md\n2. Read all code in ${inputs.output_dir}/${inputs.project_name}/src/\n3. Run your own verification\n4. Audit for: bugs, security, code quality, architecture, documentation\n\nGrade using this rubric (bonus points allowed for exceptional work):\n- functionality (20 max): Does it work as specified?\n- code_quality (20 max): Clean, readable, documented\n- security (10 max): No vulnerabilities\n- user_experience (20 max): Intuitive, helpful errors\n- architecture (10 max): Clean separation, maintainable\n- testing (10 max): Verification coverage\n- innovation (5 max): Creative solutions\n- documentation (5 max): README, comments, guides\n\nWrite a comprehensive final-report.md including:\n- Executive summary\n- What was built\n- Strengths of the implementation\n- Weaknesses and areas for improvement\n- Multi-model collaboration analysis\n- Final grade with detailed justification\n- Recommendations for future development\n\nIMPORTANT: At the END of your report, output this exact JSON block with your scores:\n```json\n{\"grade\":{\"score\":N,\"letter\":\"X\",\"functionality\":N,\"code_quality\":N,\"security\":N,\"user_experience\":N,\"architecture\":N,\"testing\":N,\"innovation\":N,\"documentation\":N}}\n```\n\nSave to: ${inputs.output_dir}/${inputs.project_name}/final-report.md"
     }
   ]
 }
