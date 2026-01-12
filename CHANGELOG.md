@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.3] - 2026-01-12
+
+### Fixed
+- **Create logs directory** - Fixed live display showing "Working..." by creating `logs/` directory before writing step logs
+- Box alignment fix - Header borders now align properly with correct visual padding calculation
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.7.2] - 2026-01-12
 
 ### Changed

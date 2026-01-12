@@ -275,17 +275,18 @@ func (d *LiveDisplay) render() {
 	// Elapsed time and cost in header
 	elapsedStr := formatDuration(elapsed)
 	costStr := fmt.Sprintf("$%.2f", d.totalCost)
-	infoLine := fmt.Sprintf("  %s%s%s  %s·%s  %s%s%s",
-		colorYellow, elapsedStr, colorReset,
-		colorDim, colorReset,
-		colorGreen, costStr, colorReset)
-	infoPadding := w - 2 - len(elapsedStr) - 5 - len(costStr)
+	// Visual format: "  {elapsed}  ·  {cost}" = 2 + elapsed + 5 + cost
+	infoLineVisualLen := 2 + len(elapsedStr) + 5 + len(costStr)
+	infoPadding := w - 2 - infoLineVisualLen
 	if infoPadding < 0 {
 		infoPadding = 0
 	}
-	fmt.Printf("%s%s%s%s%s%s%s\n",
+	fmt.Printf("%s%s%s  %s%s%s  %s·%s  %s%s%s%s%s%s\n",
 		colorCyan, boxVertical, colorReset,
-		infoLine, strings.Repeat(" ", infoPadding),
+		colorYellow, elapsedStr, colorReset,
+		colorDim, colorReset,
+		colorGreen, costStr, colorReset,
+		strings.Repeat(" ", infoPadding),
 		colorCyan+boxVertical+colorReset, clearLine)
 
 	fmt.Printf("%s%s%s%s%s%s\n",

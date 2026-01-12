@@ -65,7 +65,9 @@ func (e *ToolExecutor) Execute(step *bundle.Step, ctx *orchestrator.Context, ws 
 	cmd := tool.BuildCommand(cfg, workDir, task)
 
 	// Create log file for real-time output
-	logPath := filepath.Join(ws.JobDir, "logs", step.Name+".log")
+	logDir := filepath.Join(ws.JobDir, "logs")
+	os.MkdirAll(logDir, 0755)
+	logPath := filepath.Join(logDir, step.Name+".log")
 	logFile, logErr := os.Create(logPath)
 
 	var stdout, stderr bytes.Buffer
