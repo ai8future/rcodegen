@@ -212,21 +212,32 @@ func extractMeaningfulContent(line string) string {
 		return "[Processing...]"
 	}
 
-	// Look for tool use indicators
-	if strings.Contains(line, `"tool_use"`) || strings.Contains(line, `"tool_name"`) {
-		if strings.Contains(line, "Read") || strings.Contains(line, "read") {
+	// Look for tool use indicators (Claude uses "name":"ToolName", Gemini may use "tool_name")
+	if strings.Contains(line, `"tool_use"`) || strings.Contains(line, `"name":"`) {
+		if strings.Contains(line, `"name":"Read"`) || strings.Contains(line, `"Read"`) {
 			return "Reading files..."
 		}
-		if strings.Contains(line, "Write") || strings.Contains(line, "write") {
+		if strings.Contains(line, `"name":"Write"`) || strings.Contains(line, `"Write"`) {
 			return "Writing code..."
 		}
-		if strings.Contains(line, "Bash") || strings.Contains(line, "bash") {
+		if strings.Contains(line, `"name":"Bash"`) || strings.Contains(line, `"Bash"`) {
 			return "Running command..."
 		}
-		if strings.Contains(line, "Edit") || strings.Contains(line, "edit") {
+		if strings.Contains(line, `"name":"Edit"`) || strings.Contains(line, `"Edit"`) {
 			return "Editing files..."
 		}
-		return "Using tools..."
+		if strings.Contains(line, `"name":"Glob"`) || strings.Contains(line, `"Glob"`) {
+			return "Searching files..."
+		}
+		if strings.Contains(line, `"name":"Grep"`) || strings.Contains(line, `"Grep"`) {
+			return "Searching content..."
+		}
+		if strings.Contains(line, `"name":"TodoWrite"`) {
+			return "Updating tasks..."
+		}
+		if strings.Contains(line, `"tool_use"`) {
+			return "Using tools..."
+		}
 	}
 
 	// If line is short enough and looks like status, use it

@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.2] - 2026-01-12
+
+### Changed
+- **Live display is now default** - Animated display enabled by default, use `--static` to disable
+- Fixed tool detection for Claude's stream-json format (`"name":"Write"` vs `"tool_name"`)
+- Added detection for Glob, Grep, TodoWrite tools
+
+### Fixed
+- Content extraction now correctly parses Claude's tool use format
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.7.1] - 2026-01-12
 
 ### Added
