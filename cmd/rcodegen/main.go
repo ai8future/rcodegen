@@ -37,6 +37,7 @@ func runBundle() {
 	fs := flag.NewFlagSet("bundle", flag.ExitOnError)
 	codebase := fs.String("c", "", "Codebase path")
 	jsonOutput := fs.Bool("j", false, "Output JSON")
+	liveMode := fs.Bool("live", false, "Enable animated live display")
 
 	fs.Parse(os.Args[2:])
 
@@ -73,6 +74,9 @@ func runBundle() {
 
 	// Run
 	orch := orchestrator.New(s)
+	if *liveMode {
+		orch.SetLiveMode(true)
+	}
 	env, err := orch.Run(b, inputs)
 
 	if *jsonOutput {

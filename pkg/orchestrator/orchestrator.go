@@ -39,6 +39,16 @@ type StepExecutor interface {
 	Execute(step *bundle.Step, ctx *Context, ws *workspace.Workspace) (*envelope.Envelope, error)
 }
 
+// Display is the interface for progress display implementations
+type Display interface {
+	Start()
+	Stop()
+	SetStepRunning(stepIndex int)
+	SetStepComplete(stepIndex int, cost float64, duration time.Duration, tokens int, success bool)
+	SetStepSkipped(stepIndex int)
+	PrintFinalSummary(totalCost float64, totalInputTokens, totalOutputTokens int, cacheRead, cacheWrite int)
+}
+
 // DispatcherFactory creates a dispatcher from a tool registry.
 // This is set by the executor package to break the circular dependency.
 var DispatcherFactory func(tools map[string]runner.Tool) StepExecutor
@@ -46,6 +56,12 @@ var DispatcherFactory func(tools map[string]runner.Tool) StepExecutor
 type Orchestrator struct {
 	settings   *settings.Settings
 	dispatcher StepExecutor
+	liveMode   bool
+}
+
+// SetLiveMode enables or disables the animated live display
+func (o *Orchestrator) SetLiveMode(enabled bool) {
+	o.liveMode = enabled
 }
 
 func New(s *settings.Settings) *Orchestrator {
@@ -117,9 +133,15 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 		inputs["output_dir"] = outputDir
 	}
 
-	// Initialize progress display
-	progress := NewProgressDisplay(b, ws.JobID, inputs)
-	progress.PrintHeader()
+	// Initialize display (live animated or static)
+	var display Display
+	if o.liveMode {
+		display = NewLiveDisplay(b, ws.JobID, inputs)
+	} else {
+		display = NewProgressDisplay(b, ws.JobID, inputs)
+	}
+	display.Start()
+	defer display.Stop()
 
 	// Create context
 	ctx := NewContext(inputs)
@@ -133,11 +155,11 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 	// Execute steps
 	for i, step := range b.Steps {
 		stepStart := time.Now()
-		progress.PrintStepStart(i)
+		display.SetStepRunning(i)
 
 		// Check condition
 		if step.If != "" && !EvaluateCondition(step.If, ctx) {
-			progress.PrintStepSkipped(i)
+			display.SetStepSkipped(i)
 			ctx.SetResult(step.Name, &envelope.Envelope{Status: envelope.StatusSkipped})
 			continue
 		}
@@ -203,25 +225,19 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 			Duration:     stepDuration,
 		})
 
-		// Update progress display
+		// Update display
 		success := env.Status != envelope.StatusFailure
-		progress.PrintStepComplete(i, stepCost, stepDuration, stepIn+stepOut, success)
+		display.SetStepComplete(i, stepCost, stepDuration, stepIn+stepOut, success)
 
 		if env.Status == envelope.StatusFailure {
-			progress.PrintFailure(step.Name, fmt.Errorf("step failed"))
 			return env, fmt.Errorf("step %s failed", step.Name)
-		}
-
-		// Print remaining pending steps
-		if i < len(b.Steps)-1 {
-			progress.PrintPendingSteps(i + 1)
 		}
 	}
 
 	duration := time.Since(start)
 
 	// Print summary
-	progress.PrintSummary(totalCost, totalInputTokens, totalOutputTokens, totalCacheRead, totalCacheWrite)
+	display.PrintFinalSummary(totalCost, totalInputTokens, totalOutputTokens, totalCacheRead, totalCacheWrite)
 	fmt.Printf("  %sOutput:%s %s\n\n", colorDim, colorReset, ws.JobDir)
 
 	// Generate run report for article bundles

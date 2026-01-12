@@ -162,6 +162,38 @@ func stateColor(state StepState) string {
 	}
 }
 
+// Start implements Display interface - prints the header
+func (p *ProgressDisplay) Start() {
+	p.PrintHeader()
+}
+
+// Stop implements Display interface - no-op for static display
+func (p *ProgressDisplay) Stop() {}
+
+// SetStepRunning implements Display interface
+func (p *ProgressDisplay) SetStepRunning(stepIndex int) {
+	p.PrintStepStart(stepIndex)
+}
+
+// SetStepComplete implements Display interface
+func (p *ProgressDisplay) SetStepComplete(stepIndex int, cost float64, duration time.Duration, tokens int, success bool) {
+	p.PrintStepComplete(stepIndex, cost, duration, tokens, success)
+	// Print remaining pending steps
+	if stepIndex < len(p.steps)-1 {
+		p.PrintPendingSteps(stepIndex + 1)
+	}
+}
+
+// SetStepSkipped implements Display interface
+func (p *ProgressDisplay) SetStepSkipped(stepIndex int) {
+	p.PrintStepSkipped(stepIndex)
+}
+
+// PrintFinalSummary implements Display interface
+func (p *ProgressDisplay) PrintFinalSummary(totalCost float64, totalInputTokens, totalOutputTokens int, cacheRead, cacheWrite int) {
+	p.PrintSummary(totalCost, totalInputTokens, totalOutputTokens, cacheRead, cacheWrite)
+}
+
 // PrintHeader prints the initial header
 func (p *ProgressDisplay) PrintHeader() {
 	w := p.width

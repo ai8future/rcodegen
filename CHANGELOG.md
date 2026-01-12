@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0] - 2026-01-12
+
+### Added
+- **Animated live display mode** - New `--live` flag enables TUI-style animated progress
+- Real-time spinner animation for running steps (braille dots)
+- Live elapsed time counter updates every 100ms
+- Live cost display updates as steps complete
+- Display interface for pluggable progress implementations
+- New `pkg/orchestrator/live_display.go` with full-screen animated display
+
+### Technical Details
+- LiveDisplay uses goroutine for animation loop at 100ms intervals
+- ANSI cursor control for in-place screen updates
+- Supports cursor hide/show, screen clear, home positioning
+- Display interface abstracts ProgressDisplay and LiveDisplay
+- Both implementations support: Start(), Stop(), SetStepRunning(), SetStepComplete(), SetStepSkipped(), PrintFinalSummary()
+
+### Usage
+```bash
+rcodegen build-review-audit --live project_name=foo "Build X"
+```
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.6.3] - 2026-01-11
 
 ### Added
