@@ -39,6 +39,7 @@ func runBundle() {
 	jsonOutput := fs.Bool("j", false, "Output JSON")
 	liveMode := fs.Bool("live", true, "Enable animated live display (default: true)")
 	staticMode := fs.Bool("static", false, "Use static display instead of animated")
+	opusOnly := fs.Bool("opus-only", false, "Force all Claude steps to use Opus model")
 
 	fs.Parse(os.Args[2:])
 
@@ -78,6 +79,9 @@ func runBundle() {
 	// Live mode is default unless --static is set or -j (JSON) output is requested
 	if *liveMode && !*staticMode && !*jsonOutput {
 		orch.SetLiveMode(true)
+	}
+	if *opusOnly {
+		orch.SetOpusOnly(true)
 	}
 	env, err := orch.Run(b, inputs)
 

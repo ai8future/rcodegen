@@ -59,11 +59,17 @@ type Orchestrator struct {
 	settings   *settings.Settings
 	dispatcher StepExecutor
 	liveMode   bool
+	opusOnly   bool
 }
 
 // SetLiveMode enables or disables the animated live display
 func (o *Orchestrator) SetLiveMode(enabled bool) {
 	o.liveMode = enabled
+}
+
+// SetOpusOnly forces all Claude steps to use Opus model
+func (o *Orchestrator) SetOpusOnly(enabled bool) {
+	o.opusOnly = enabled
 }
 
 func New(s *settings.Settings) *Orchestrator {
@@ -186,8 +192,17 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 			continue
 		}
 
+		// Apply model overrides
+		execStep := &step
+		if o.opusOnly && step.Tool == "claude" {
+			// Create a copy with opus model
+			stepCopy := step
+			stepCopy.Model = "opus"
+			execStep = &stepCopy
+		}
+
 		// Execute step
-		env, err := o.dispatcher.Execute(&step, ctx, ws)
+		env, err := o.dispatcher.Execute(execStep, ctx, ws)
 		if err != nil {
 			return env, err
 		}

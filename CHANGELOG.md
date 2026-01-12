@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.8] - 2026-01-12
+
+### Added
+- **`--opus-only` flag** - Force all Claude steps to use Opus model
+  ```bash
+  rcodegen build-review-audit --opus-only project_name=foo "task"
+  ```
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.7.7] - 2026-01-12
 
 ### Added
