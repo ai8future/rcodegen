@@ -34,6 +34,27 @@ func main() {
 }
 
 func runBundle() {
+	// Pre-process args to separate flags from positional args
+	// This allows flags like --opus-only to appear anywhere
+	// Flags that take values: -c
+	flagsWithValues := map[string]bool{"-c": true}
+
+	var flagArgs, positionalArgs []string
+	args := os.Args[2:]
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "-") {
+			flagArgs = append(flagArgs, arg)
+			// Check if this flag takes a value and the next arg is that value
+			if flagsWithValues[arg] && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				flagArgs = append(flagArgs, args[i])
+			}
+		} else {
+			positionalArgs = append(positionalArgs, arg)
+		}
+	}
+
 	fs := flag.NewFlagSet("bundle", flag.ExitOnError)
 	codebase := fs.String("c", "", "Codebase path")
 	jsonOutput := fs.Bool("j", false, "Output JSON")
@@ -41,13 +62,13 @@ func runBundle() {
 	staticMode := fs.Bool("static", false, "Use static display instead of animated")
 	opusOnly := fs.Bool("opus-only", false, "Force all Claude steps to use Opus model")
 
-	fs.Parse(os.Args[2:])
+	fs.Parse(flagArgs)
 
-	bundleName := fs.Arg(0)
-	if bundleName == "" {
+	if len(positionalArgs) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: bundle name required")
 		os.Exit(1)
 	}
+	bundleName := positionalArgs[0]
 
 	// Parse remaining args as inputs (key=value or positional task)
 	inputs := make(map[string]string)
@@ -55,7 +76,7 @@ func runBundle() {
 		inputs["codebase"] = expandPath(*codebase)
 	}
 
-	for _, arg := range fs.Args()[1:] {
+	for _, arg := range positionalArgs[1:] {
 		if idx := strings.Index(arg, "="); idx != -1 {
 			inputs[arg[:idx]] = arg[idx+1:]
 		} else {

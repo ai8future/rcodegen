@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.12] - 2026-01-12
+
+### Fixed
+- **Flags work anywhere** - `--opus-only` and other flags now work at end of command
+  ```bash
+  rcodegen build-review-audit project_name=foo "task" --opus-only  # Now works!
+  ```
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.7.11] - 2026-01-12
 
 ### Fixed
