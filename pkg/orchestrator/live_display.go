@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"rcodegen/pkg/bundle"
 )
@@ -261,7 +262,7 @@ func (d *LiveDisplay) render() {
 		boxTopRight, colorReset, clearLine)
 
 	title := fmt.Sprintf("  rcodegen · %s", d.bundleName)
-	padding := w - 2 - len(title)
+	padding := w - 2 - utf8.RuneCountInString(title)
 	if padding < 0 {
 		padding = 0
 	}

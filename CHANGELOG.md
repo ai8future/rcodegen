@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.5] - 2026-01-12
+
+### Fixed
+- **Grade extraction** - Now searches ALL JSON blocks in final-report.md to find the grade block (was only checking the first block)
+- **Box alignment** - Fixed title padding to use `utf8.RuneCountInString` for correct Unicode character width
+- **BUILD COMPLETE box** - Fixed alignment with correct padding
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.7.4] - 2026-01-12
 
 ### Fixed

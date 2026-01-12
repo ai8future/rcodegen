@@ -308,7 +308,7 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 
 			// Print final summary box
 			fmt.Printf("\n  %s╭─────────────────────────────────────────────────────────────────╮%s\n", colorGreen, colorReset)
-			fmt.Printf("  %s│%s  %s✓ BUILD COMPLETE%s                                              %s│%s\n",
+			fmt.Printf("  %s│%s  %s✓ BUILD COMPLETE%s                                               %s│%s\n",
 				colorGreen, colorReset, colorBold+colorGreen, colorReset, colorGreen, colorReset)
 			fmt.Printf("  %s╰─────────────────────────────────────────────────────────────────╯%s\n\n", colorGreen, colorReset)
 
@@ -1132,32 +1132,41 @@ func extractGradeFromReport(path string) *GradeInfo {
 
 	content := string(data)
 
-	// Look for JSON block with grade
-	jsonBlockStart := strings.Index(content, "```json")
-	if jsonBlockStart == -1 {
-		return nil
-	}
-	jsonBlockEnd := strings.Index(content[jsonBlockStart+7:], "```")
-	if jsonBlockEnd == -1 {
-		return nil
-	}
-
-	jsonStr := strings.TrimSpace(content[jsonBlockStart+7 : jsonBlockStart+7+jsonBlockEnd])
-
-	// Try to parse the grade JSON
-	var gradeWrapper struct {
-		Grade GradeInfo `json:"grade"`
-	}
-	if err := json.Unmarshal([]byte(jsonStr), &gradeWrapper); err != nil {
-		// Try parsing as direct grade object
-		var grade GradeInfo
-		if err := json.Unmarshal([]byte(jsonStr), &grade); err != nil {
-			return nil
+	// Find all JSON blocks and look for one containing "grade"
+	remaining := content
+	for {
+		jsonBlockStart := strings.Index(remaining, "```json")
+		if jsonBlockStart == -1 {
+			break
 		}
-		return &grade
+		jsonBlockEnd := strings.Index(remaining[jsonBlockStart+7:], "```")
+		if jsonBlockEnd == -1 {
+			break
+		}
+
+		jsonStr := strings.TrimSpace(remaining[jsonBlockStart+7 : jsonBlockStart+7+jsonBlockEnd])
+
+		// Check if this block contains grade data
+		if strings.Contains(jsonStr, `"grade"`) || strings.Contains(jsonStr, `"score"`) {
+			// Try to parse the grade JSON
+			var gradeWrapper struct {
+				Grade GradeInfo `json:"grade"`
+			}
+			if err := json.Unmarshal([]byte(jsonStr), &gradeWrapper); err == nil && gradeWrapper.Grade.Score > 0 {
+				return &gradeWrapper.Grade
+			}
+			// Try parsing as direct grade object
+			var grade GradeInfo
+			if err := json.Unmarshal([]byte(jsonStr), &grade); err == nil && grade.Score > 0 {
+				return &grade
+			}
+		}
+
+		// Move to next block
+		remaining = remaining[jsonBlockStart+7+jsonBlockEnd:]
 	}
 
-	return &gradeWrapper.Grade
+	return nil
 }
 
 // extractOverviewFromSummary extracts the Overview section from IMPLEMENTATION_SUMMARY.md
