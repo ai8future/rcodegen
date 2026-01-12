@@ -136,7 +136,9 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 	// Initialize display (live animated or static)
 	var display Display
 	if o.liveMode {
-		display = NewLiveDisplay(b, ws.JobID, inputs)
+		ld := NewLiveDisplay(b, ws.JobID, inputs)
+		ld.SetLogDir(filepath.Join(ws.JobDir, "logs"))
+		display = ld
 	} else {
 		display = NewProgressDisplay(b, ws.JobID, inputs)
 	}

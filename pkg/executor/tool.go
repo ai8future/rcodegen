@@ -5,7 +5,9 @@ package executor
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -62,9 +64,21 @@ func (e *ToolExecutor) Execute(step *bundle.Step, ctx *orchestrator.Context, ws 
 	start := time.Now()
 	cmd := tool.BuildCommand(cfg, workDir, task)
 
+	// Create log file for real-time output
+	logPath := filepath.Join(ws.JobDir, "logs", step.Name+".log")
+	logFile, logErr := os.Create(logPath)
+
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	if logErr == nil {
+		// Write to both buffer and log file simultaneously
+		cmd.Stdout = io.MultiWriter(&stdout, logFile)
+		cmd.Stderr = io.MultiWriter(&stderr, logFile)
+		defer logFile.Close()
+	} else {
+		// Fallback to buffer only
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+	}
 
 	err := cmd.Run()
 	duration := time.Since(start)

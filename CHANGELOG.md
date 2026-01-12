@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.1] - 2026-01-12
+
+### Added
+- **Real-time log streaming** - Tool output now written to log files in real-time using io.MultiWriter
+- **Live activity display** - LiveDisplay tails step log files to show current activity
+- Intelligent content extraction from stream-json format (detects Read/Write/Edit/Bash tool use)
+
+### Changed
+- Executor writes to both buffer AND `logs/{step}.log` simultaneously
+- Live display shows single line of meaningful activity instead of raw output
+- Simplified live output section (removed multi-line box, now single `→` indicator)
+
+### Technical Details
+- Uses `io.MultiWriter` for zero-risk dual output (buffer + file)
+- `extractMeaningfulContent()` parses stream-json to show "Reading files...", "Writing code...", etc.
+- Falls back to "Working..." if no meaningful content detected
+- Log reading happens in animation loop (100ms), completely decoupled from execution
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.7.0] - 2026-01-12
 
 ### Added

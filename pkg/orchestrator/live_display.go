@@ -1,7 +1,10 @@
 package orchestrator
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +37,7 @@ type LiveDisplay struct {
 	projectName string
 	task        string
 	outputDir   string
+	logDir      string // Directory where step logs are written
 	steps       []LiveStep
 	startTime   time.Time
 	width       int
@@ -41,7 +45,7 @@ type LiveDisplay struct {
 	// Live state
 	currentStep    int
 	spinnerFrame   int
-	liveOutput     []string // Recent lines of output
+	liveOutput     string // Single line of current activity
 	maxOutputLines int
 	totalCost      float64
 	totalTokens    int
@@ -95,10 +99,17 @@ func NewLiveDisplay(b *bundle.Bundle, jobID string, inputs map[string]string) *L
 		startTime:      time.Now(),
 		width:          72,
 		currentStep:    -1,
-		maxOutputLines: 4,
-		liveOutput:     make([]string, 0),
+		maxOutputLines: 1,
+		liveOutput:     "",
 		done:           make(chan struct{}),
 	}
+}
+
+// SetLogDir sets the directory where step logs are written
+func (d *LiveDisplay) SetLogDir(dir string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.logDir = dir
 }
 
 // Start begins the animated display
@@ -131,10 +142,99 @@ func (d *LiveDisplay) animationLoop() {
 		case <-ticker.C:
 			d.mu.Lock()
 			d.spinnerFrame = (d.spinnerFrame + 1) % len(spinnerFrames)
+			// Read latest line from current step's log
+			if d.currentStep >= 0 && d.currentStep < len(d.steps) && d.logDir != "" {
+				stepName := d.steps[d.currentStep].Name
+				d.liveOutput = d.readLastMeaningfulLine(stepName)
+			}
 			d.render()
 			d.mu.Unlock()
 		}
 	}
+}
+
+// readLastMeaningfulLine reads the last non-empty, meaningful line from a step's log
+func (d *LiveDisplay) readLastMeaningfulLine(stepName string) string {
+	logPath := filepath.Join(d.logDir, stepName+".log")
+	f, err := os.Open(logPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	var lastLine string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		// Skip empty lines and JSON-only lines
+		if line == "" || line == "{" || line == "}" {
+			continue
+		}
+		// Extract meaningful content from stream-json format
+		if meaningful := extractMeaningfulContent(line); meaningful != "" {
+			lastLine = meaningful
+		}
+	}
+	return lastLine
+}
+
+// extractMeaningfulContent pulls human-readable content from tool output
+func extractMeaningfulContent(line string) string {
+	// Remove ANSI codes first
+	line = stripAnsi(line)
+
+	// Skip pure JSON structure lines
+	if strings.HasPrefix(line, "{") || strings.HasPrefix(line, "}") ||
+		strings.HasPrefix(line, "[") || strings.HasPrefix(line, "]") {
+		return ""
+	}
+
+	// Look for content in stream-json format: {"type":"...", "content":"..."}
+	if strings.Contains(line, `"content"`) {
+		// Simple extraction - find content value
+		if idx := strings.Index(line, `"content"`); idx != -1 {
+			rest := line[idx+10:] // skip `"content":`
+			// Find the string value
+			if start := strings.Index(rest, `"`); start != -1 {
+				rest = rest[start+1:]
+				if end := strings.Index(rest, `"`); end != -1 {
+					content := rest[:end]
+					if len(content) > 0 && content != "\\n" {
+						return content
+					}
+				}
+			}
+		}
+	}
+
+	// Look for assistant_response or message content
+	if strings.Contains(line, `"assistant_response"`) || strings.Contains(line, `"message"`) {
+		return "[Processing...]"
+	}
+
+	// Look for tool use indicators
+	if strings.Contains(line, `"tool_use"`) || strings.Contains(line, `"tool_name"`) {
+		if strings.Contains(line, "Read") || strings.Contains(line, "read") {
+			return "Reading files..."
+		}
+		if strings.Contains(line, "Write") || strings.Contains(line, "write") {
+			return "Writing code..."
+		}
+		if strings.Contains(line, "Bash") || strings.Contains(line, "bash") {
+			return "Running command..."
+		}
+		if strings.Contains(line, "Edit") || strings.Contains(line, "edit") {
+			return "Editing files..."
+		}
+		return "Using tools..."
+	}
+
+	// If line is short enough and looks like status, use it
+	if len(line) > 5 && len(line) < 80 && !strings.HasPrefix(line, `"`) {
+		return line
+	}
+
+	return ""
 }
 
 // render draws the entire display
@@ -199,37 +299,22 @@ func (d *LiveDisplay) render() {
 	// Live output section (if we have a running step)
 	fmt.Printf("\n%s\n", clearLine)
 	if d.currentStep >= 0 && d.currentStep < len(d.steps) && d.steps[d.currentStep].State == StepRunning {
-		fmt.Printf("  %s┌─ Live Output %s┐%s\n",
-			colorDim, strings.Repeat("─", w-18), clearLine+colorReset)
-
-		// Show recent output lines
-		outputLines := d.liveOutput
-		if len(outputLines) > d.maxOutputLines {
-			outputLines = outputLines[len(outputLines)-d.maxOutputLines:]
+		// Show single line of current activity
+		activity := d.liveOutput
+		if activity == "" {
+			activity = "Working..."
 		}
-
-		for i := 0; i < d.maxOutputLines; i++ {
-			if i < len(outputLines) {
-				line := outputLines[i]
-				if len(line) > w-6 {
-					line = line[:w-9] + "..."
-				}
-				fmt.Printf("  %s│%s %s%s%s%s\n",
-					colorDim, colorReset,
-					colorWhite, line, colorReset, clearLine)
-			} else {
-				fmt.Printf("  %s│%s%s\n", colorDim, colorReset, clearLine)
-			}
+		if len(activity) > w-8 {
+			activity = activity[:w-11] + "..."
 		}
-
-		fmt.Printf("  %s└%s┘%s\n",
-			colorDim, strings.Repeat("─", w-4), clearLine+colorReset)
+		fmt.Printf("  %s→%s %s%s%s%s\n",
+			colorCyan, colorReset,
+			colorWhite, activity, colorReset, clearLine)
 	} else {
-		// Empty lines to maintain layout
-		for i := 0; i < d.maxOutputLines+2; i++ {
-			fmt.Printf("%s\n", clearLine)
-		}
+		// Empty line to maintain layout
+		fmt.Printf("%s\n", clearLine)
 	}
+
 }
 
 // renderStep renders a single step line
@@ -281,7 +366,7 @@ func (d *LiveDisplay) SetStepRunning(stepIndex int) {
 		d.steps[stepIndex].State = StepRunning
 		d.steps[stepIndex].StartTime = time.Now()
 		d.currentStep = stepIndex
-		d.liveOutput = make([]string, 0) // Clear live output for new step
+		d.liveOutput = "" // Clear live output for new step
 	}
 }
 
@@ -311,28 +396,6 @@ func (d *LiveDisplay) SetStepSkipped(stepIndex int) {
 
 	if stepIndex >= 0 && stepIndex < len(d.steps) {
 		d.steps[stepIndex].State = StepSkipped
-	}
-}
-
-// AddOutput adds a line of output from the current tool
-func (d *LiveDisplay) AddOutput(line string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// Clean the line
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return
-	}
-
-	// Remove ANSI codes from the line for cleaner display
-	line = stripAnsi(line)
-
-	d.liveOutput = append(d.liveOutput, line)
-
-	// Keep only recent lines
-	if len(d.liveOutput) > 50 {
-		d.liveOutput = d.liveOutput[len(d.liveOutput)-50:]
 	}
 }
 
