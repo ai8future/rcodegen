@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.0] - 2026-01-13
+
+### Changed
+- **Unified report directory** - All tools now use `_rcodegen/` instead of separate `_claude/`, `_codex/`, `_gemini/` directories
+- **Tool-prefixed report filenames** - Reports now named `{tool}-{codebase}-{taskname}-{date}.md` (e.g., `claude-myproject-audit-2026-01-13.md`)
+- **Generic code_dir default** - Removed hardcoded `~/Desktop/_code` fallback; user must configure `code_dir` in settings
+- **Better error messaging** - When `-c` flag is used without `code_dir` configured, shows helpful warning with setup instructions
+
+### Added
+- `ReportPrefix()` method to Tool interface for tool-specific filename prefixes
+- `IsCodeDirConfigured()` method to Settings for checking configuration status
+- `PrintCodeDirWarning()` function for clear user guidance when code_dir is missing
+
+### Updated
+- Interactive setup now suggests common directories: `~/code`, `~/projects`, `~/dev`, `~/src`, `~/workspace`
+- Documentation updated throughout (README.md, AGENTS.md, settings.json.example)
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.7.14] - 2026-01-12
 
 ### Added

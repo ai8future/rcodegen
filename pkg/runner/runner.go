@@ -75,7 +75,7 @@ func (r *Runner) Run() *RunResult {
 	r.SettingsOK = true
 
 	// Create initial TaskConfig with empty codebase for task name lookup
-	r.TaskConfig = r.Settings.ToTaskConfig("")
+	r.TaskConfig = r.Settings.ToTaskConfig("", r.Tool.ReportPrefix())
 
 	// Pass settings to tool if it implements SettingsAware
 	if sa, ok := r.Tool.(SettingsAware); ok {
@@ -94,11 +94,11 @@ func (r *Runner) Run() *RunResult {
 
 	// Regenerate TaskConfig with actual codebase name for pattern substitution
 	if cfg.Codebase != "" {
-		r.TaskConfig = r.Settings.ToTaskConfig(cfg.Codebase)
+		r.TaskConfig = r.Settings.ToTaskConfig(cfg.Codebase, r.Tool.ReportPrefix())
 	}
 
 	// Substitute {report_dir} in all task prompts
-	// Use custom output dir if specified, otherwise use tool's default (_claude/_codex)
+	// Use custom output dir if specified, otherwise use unified _rcodegen directory
 	reportDir := r.Tool.ReportDir()
 	if cfg.OutputDir != "" {
 		reportDir = cfg.OutputDir
@@ -283,11 +283,11 @@ func (r *Runner) getTask(cfg *Config, workDir, taskName string) string {
 
 // getReportDir returns the report directory path for a working directory
 func (r *Runner) getReportDir(cfg *Config, workDir string) string {
-	// Use custom output dir if specified (replaces tool-specific _claude/_codex)
+	// Use custom output dir if specified (replaces _rcodegen)
 	if cfg.OutputDir != "" {
 		return cfg.OutputDir
 	}
-	// Default behavior: use tool's report dir (_claude or _codex)
+	// Default behavior: use tool's report dir (_rcodegen)
 	reportDirName := r.Tool.ReportDir()
 	if workDir != "" {
 		return filepath.Join(workDir, reportDirName)
@@ -475,11 +475,13 @@ func (r *Runner) printDetailedSummary(cfg *Config, workDir string, startTime tim
 }
 
 // setWorkingDirectories configures the working directories based on -c or -d flags.
-func (r *Runner) setWorkingDirectories(cfg *Config, codePath, dirPath string) {
+// Returns an error if -c is used but code_dir is not configured.
+func (r *Runner) setWorkingDirectories(cfg *Config, codePath, dirPath string) error {
 	if codePath != "" {
-		if !r.SettingsOK {
-			settings.PrintSetupInstructions(r.Tool.Name())
-			fmt.Fprintf(os.Stderr, "  %sUsing fallback:%s %s~/Desktop/_code%s\n\n", Dim, Reset, Magenta, Reset)
+		// Check if code_dir is configured when using -c flag
+		if !r.Settings.IsCodeDirConfigured() {
+			settings.PrintCodeDirWarning()
+			return fmt.Errorf("code_dir not configured - cannot use -c flag")
 		}
 		// Split on comma for multiple codebases
 		for _, p := range strings.Split(codePath, ",") {
@@ -508,6 +510,7 @@ func (r *Runner) setWorkingDirectories(cfg *Config, codePath, dirPath string) {
 			cfg.Codebase = filepath.Base(cwd)
 		}
 	}
+	return nil
 }
 
 // expandTaskShortcut expands a task shortcut to its full prompt if it exists.
@@ -609,8 +612,8 @@ func (r *Runner) parseArgs() (*Config, error) {
 	flag.StringVar(&codePath, "code", "", "Project path relative to configured code directory")
 	flag.StringVar(&dirPath, "d", "", "Set working directory to absolute path")
 	flag.StringVar(&dirPath, "dir", "", "Set working directory to absolute path")
-	flag.StringVar(&cfg.OutputDir, "o", "", "Output directory for reports (replaces _claude/_codex)")
-	flag.StringVar(&cfg.OutputDir, "output", "", "Output directory for reports (replaces _claude/_codex)")
+	flag.StringVar(&cfg.OutputDir, "o", "", "Output directory for reports (replaces _rcodegen)")
+	flag.StringVar(&cfg.OutputDir, "output", "", "Output directory for reports (replaces _rcodegen)")
 	flag.BoolVar(&cfg.OutputJSON, "j", false, "Output as newline-delimited JSON")
 	flag.BoolVar(&cfg.OutputJSON, "json", false, "Output as newline-delimited JSON")
 	flag.BoolVar(&cfg.UseLock, "l", false, "Queue behind other running instances")
@@ -659,7 +662,9 @@ func (r *Runner) parseArgs() (*Config, error) {
 	}
 
 	// Set working directories (supports comma-separated list)
-	r.setWorkingDirectories(cfg, codePath, dirPath)
+	if err := r.setWorkingDirectories(cfg, codePath, dirPath); err != nil {
+		return nil, err
+	}
 
 	// Apply settings default for output directory if not specified via CLI
 	if cfg.OutputDir == "" && r.Settings.OutputDir != "" {
@@ -823,7 +828,7 @@ func (r *Runner) printUsage() {
 	fmt.Printf("                        %s(comma-separated for multiple: -c proj1,proj2)%s\n", Dim, Reset)
 	fmt.Printf("  %s-d%s, %s--dir%s %s<path>%s      Set working directory to absolute path\n", Green, Reset, Green, Reset, Yellow, Reset)
 	fmt.Printf("                        %s(comma-separated for multiple: -d /a,/b)%s\n", Dim, Reset)
-	fmt.Printf("  %s-o%s, %s--output%s %s<path>%s   Output directory for reports %s(replaces _claude/_codex)%s\n\n", Green, Reset, Green, Reset, Yellow, Reset, Dim, Reset)
+	fmt.Printf("  %s-o%s, %s--output%s %s<path>%s   Output directory for reports %s(replaces _rcodegen)%s\n\n", Green, Reset, Green, Reset, Yellow, Reset, Dim, Reset)
 
 	// Execution Options
 	fmt.Printf("%s%sExecution Options:%s\n", Bold, Cyan, Reset)
@@ -861,7 +866,7 @@ func (r *Runner) printUsage() {
 	// Configuration
 	fmt.Printf("%s%sConfiguration:%s\n", Bold, Cyan, Reset)
 	fmt.Printf("  Settings loaded from: %s%s%s\n", Magenta, configPath, Reset)
-	fmt.Printf("  Falls back to %s~/Desktop/_code%s if not configured.\n", Dim, Reset)
+	fmt.Printf("  Configure %scode_dir%s in ~/.rcodegen/settings.json to use -c flag.\n", Dim, Reset)
 	fmt.Printf("  See %ssettings.json.example%s for format.\n\n", Magenta, Reset)
 
 	// Task Shortcuts

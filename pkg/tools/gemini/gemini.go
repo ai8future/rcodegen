@@ -39,7 +39,12 @@ func (t *Tool) BinaryName() string {
 
 // ReportDir returns the directory name for reports
 func (t *Tool) ReportDir() string {
-	return "_gemini"
+	return "_rcodegen"
+}
+
+// ReportPrefix returns the tool-specific prefix for report filenames
+func (t *Tool) ReportPrefix() string {
+	return "gemini-"
 }
 
 // ValidModels returns the list of valid model names

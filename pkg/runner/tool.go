@@ -13,8 +13,11 @@ type Tool interface {
 	// BinaryName returns the CLI binary name to execute
 	BinaryName() string
 
-	// ReportDir returns the directory name for reports (e.g., "_codex", "_claude")
+	// ReportDir returns the directory name for reports (always "_rcodegen")
 	ReportDir() string
+
+	// ReportPrefix returns the tool-specific prefix for report filenames (e.g., "claude-", "codex-")
+	ReportPrefix() string
 
 	// ValidModels returns the list of valid model names for this tool
 	ValidModels() []string

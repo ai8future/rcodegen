@@ -48,7 +48,7 @@ type Defaults struct {
 // Settings holds all configuration for rcodegen tools
 type Settings struct {
 	CodeDir         string             `json:"code_dir"`                    // Default code directory (supports ~ expansion)
-	OutputDir       string             `json:"output_dir,omitempty"`        // Custom output directory (replaces _claude/_codex)
+	OutputDir       string             `json:"output_dir,omitempty"`        // Custom output directory (replaces _rcodegen)
 	DefaultBuildDir string             `json:"default_build_dir,omitempty"` // Default output directory for build bundles
 	Defaults        Defaults           `json:"defaults"`                    // Default settings for each tool
 	Tasks           map[string]TaskDef `json:"tasks"`                       // Task shortcuts
@@ -142,14 +142,11 @@ func Load() (*Settings, error) {
 }
 
 // GetDefaultSettings returns settings with sensible defaults
+// Note: CodeDir is left empty - user should configure this in settings.json
 func GetDefaultSettings() *Settings {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.Getenv("HOME")
-	}
 	return &Settings{
-		CodeDir:         filepath.Join(home, "Desktop/_code"),
-		DefaultBuildDir: filepath.Join(home, "Desktop/_code"),
+		CodeDir:         "", // User must configure this
+		DefaultBuildDir: "", // Optional, will use CodeDir if not set
 		Defaults: Defaults{
 			Codex: CodexDefaults{
 				Model:  "gpt-5.2-codex",
@@ -198,16 +195,18 @@ func LoadWithFallback() (*Settings, bool) {
 
 // ToTaskConfig converts Settings to the legacy TaskConfig format
 // Auto-generates report filename patterns based on task name
+// toolPrefix is the tool-specific prefix (e.g., "claude-", "codex-", "gemini-")
 // Also handles {report_file} and {codebase} placeholder substitution in prompts
-func (s *Settings) ToTaskConfig(codebaseName string) *TaskConfig {
+func (s *Settings) ToTaskConfig(codebaseName, toolPrefix string) *TaskConfig {
 	cfg := &TaskConfig{
 		Tasks:          make(map[string]string),
 		ReportPatterns: make(map[string]string),
 	}
 
 	for name, task := range s.Tasks {
-		// Auto-generate pattern: {codebase}-{taskname}-
-		pattern := codebaseName + "-" + name + "-"
+		// Auto-generate pattern: {tool}-{codebase}-{taskname}-
+		// Example: claude-myproject-audit-
+		pattern := toolPrefix + codebaseName + "-" + name + "-"
 
 		// Replace {report_file} and {codebase} placeholders in prompt
 		prompt := task.Prompt
@@ -227,6 +226,26 @@ func (s *Settings) ToTaskConfig(codebaseName string) *TaskConfig {
 // GetCodeDir returns the configured code directory with ~ expanded
 func (s *Settings) GetCodeDir() string {
 	return s.CodeDir
+}
+
+// IsCodeDirConfigured returns true if code_dir is set in settings
+func (s *Settings) IsCodeDirConfigured() bool {
+	return s.CodeDir != ""
+}
+
+// PrintCodeDirWarning prints a warning when code_dir is not configured
+func PrintCodeDirWarning() {
+	configPath := GetConfigPath()
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "\033[33mWarning:\033[0m No code directory configured.\n")
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  The \033[36m-c/--codebase\033[0m flag requires \033[35mcode_dir\033[0m to be set in settings.\n")
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  To configure, add to \033[35m%s\033[0m:\n", configPath)
+	fmt.Fprintf(os.Stderr, "    \033[32m\"code_dir\": \"~/path/to/your/code\"\033[0m\n")
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  Or use \033[36m-d/--dir\033[0m to specify an absolute path instead.\n")
+	fmt.Fprintf(os.Stderr, "\n")
 }
 
 // PrintSetupInstructions prints helpful setup instructions when settings.json doesn't exist
@@ -309,11 +328,11 @@ func RunInteractiveSetup() (*Settings, bool) {
 		home = os.Getenv("HOME")
 	}
 	suggestions := []string{
-		filepath.Join(home, "Desktop/_code"),
 		filepath.Join(home, "code"),
 		filepath.Join(home, "projects"),
 		filepath.Join(home, "dev"),
 		filepath.Join(home, "src"),
+		filepath.Join(home, "workspace"),
 	}
 
 	// Find existing directories to suggest
@@ -334,7 +353,7 @@ func RunInteractiveSetup() (*Settings, bool) {
 		fmt.Println()
 	}
 
-	defaultPath := "~/Desktop/_code"
+	defaultPath := "~/code"
 	if len(existingSuggestions) > 0 {
 		defaultPath = strings.Replace(existingSuggestions[0], home, "~", 1)
 	}

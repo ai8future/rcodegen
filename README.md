@@ -12,7 +12,7 @@ Both tools share common infrastructure and provide identical task automation cap
 ## Features
 
 - **Task Shortcuts** - Pre-configured prompts for audit, test, fix, refactor, and more
-- **Automated Reports** - Generates timestamped markdown reports in `_codex/` or `_claude/` directories
+- **Automated Reports** - Generates timestamped markdown reports in `_rcodegen/` directory (prefixed by tool name)
 - **Cost Tracking** - Monitors credit usage (Codex) or token costs (Claude)
 - **Lock Mode** - Queue multiple runs to prevent conflicts
 - **Require Review** - Skip tasks if previous reports haven't been reviewed
@@ -137,7 +137,7 @@ cp settings.json.example ~/.rcodegen/settings.json
 Example `settings.json`:
 ```json
 {
-  "code_dir": "~/Desktop/_code",
+  "code_dir": "~/code",
   "defaults": {
     "codex": {
       "model": "gpt-5.2-codex",
@@ -157,7 +157,7 @@ Example `settings.json`:
 }
 ```
 
-Then `-c myproject` will resolve to `~/Desktop/_code/myproject`.
+Then `-c myproject` will resolve to `~/code/myproject`.
 
 If no settings file exists, both tools run an interactive setup wizard that helps you configure your code directory and default settings for each tool.
 
@@ -238,7 +238,7 @@ To add support for a new AI tool (e.g., rgemini):
 | **Output Format** | `--json` | `--output-format json` |
 | **Session** | N/A | `--no-session-persistence` |
 | **Cost Tracking** | iTerm2 API scraping `/status` | JSON response parsing |
-| **Report Directory** | `_codex/` | `_claude/` |
+| **Report Directory** | `_rcodegen/` (codex- prefix) | `_rcodegen/` (claude- prefix) |
 | **Task Config** | `settings.json` (shared) | `settings.json` (shared) |
 | **Budget Control** | None | `--max-budget-usd` |
 | **Model Selection** | GPT-5.2-codex, etc. | sonnet, opus, haiku |
@@ -265,12 +265,12 @@ Example: `code_audit_report_2026-01-08-14.md`
 The `-D` flag keeps only the newest report for each task type:
 ```bash
 # Before
-_codex/code_audit_report_2026-01-08-10.md
-_codex/code_audit_report_2026-01-08-12.md
-_codex/code_audit_report_2026-01-08-14.md  # newest
+_rcodegen/claude-myproject-audit-2026-01-08-10.md
+_rcodegen/claude-myproject-audit-2026-01-08-12.md
+_rcodegen/claude-myproject-audit-2026-01-08-14.md  # newest
 
 # After: rclaude -D audit
-_codex/code_audit_report_2026-01-08-14.md  # only newest kept
+_rcodegen/claude-myproject-audit-2026-01-08-14.md  # only newest kept
 ```
 
 ## Locking & Concurrency
@@ -303,8 +303,8 @@ Add custom tasks to your `~/.rcodegen/settings.json`:
 ```
 
 Placeholders:
-- `{report_file}` expands to `pattern[date].md`
-- `{report_dir}` expands to `_codex` or `_claude` depending on which tool you use
+- `{report_file}` expands to `[tool]-[codebase]-[taskname]-[date].md` (e.g., `claude-myproject-audit-2026-01-08.md`)
+- `{report_dir}` expands to `_rcodegen` (unified directory for all tools)
 - `{variable}` custom variables can be passed with `-x variable=value`
 
 ## Security Notes

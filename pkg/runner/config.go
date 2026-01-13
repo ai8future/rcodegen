@@ -28,7 +28,7 @@ type Config struct {
 	TaskShortcut  string            // The shortcut name if a shortcut was used
 	WorkDirs      []string          // Working directories (supports multiple codebases)
 	Codebase      string            // Codebase name from -c flag (used in report filenames)
-	OutputDir     string            // Custom output directory (replaces _claude/_codex)
+	OutputDir     string            // Custom output directory (replaces _rcodegen)
 	Model         string            // Model to use
 	OutputJSON    bool              // Output as newline-delimited JSON
 	StatsJSON     bool              // Output run statistics as JSON at completion
