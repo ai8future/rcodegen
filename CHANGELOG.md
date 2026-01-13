@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.1] - 2026-01-13
+
+### Fixed
+- **README accuracy** - Complete overhaul to match current codebase:
+  - Added rgemini and rcodegen orchestrator documentation
+  - Fixed version number (was showing 1.3.0)
+  - Updated project structure with all packages
+  - Fixed task shortcuts (removed obsolete all/complete, added quick/generate)
+  - Removed obsolete "pattern" field from task examples
+  - Added all Python scripts to project structure
+  - Updated comparison table to include all three tools
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.8.0] - 2026-01-13
 
 ### Changed

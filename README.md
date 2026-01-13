@@ -2,12 +2,14 @@
 
 Unified automation tools for AI-powered code analysis and reporting.
 
-This monorepo contains two complementary tools that automate code audits, testing, and refactoring using different AI backends:
+This monorepo contains automation wrappers for multiple AI coding assistants:
 
-- **rcodex** - Automation for OpenAI Codex CLI
 - **rclaude** - Automation for Claude Code CLI
+- **rcodex** - Automation for OpenAI Codex CLI
+- **rgemini** - Automation for Gemini CLI
+- **rcodegen** - Multi-tool orchestrator for running bundles (workflows) across tools
 
-Both tools share common infrastructure and provide identical task automation capabilities for their respective AI platforms.
+All tools share common infrastructure and provide task automation capabilities for their respective AI platforms.
 
 ## Features
 
@@ -92,7 +94,7 @@ rclaude -c myproject -l all
 
 ## Task Shortcuts
 
-Both tools support the following task shortcuts (configured in `tasks.txt` / `tasks_claude.txt`):
+All tools support the following task shortcuts (configured in `~/.rcodegen/settings.json`):
 
 | Shortcut | Description | Reports Generated |
 |----------|-------------|-------------------|
@@ -100,10 +102,9 @@ Both tools support the following task shortcuts (configured in `tasks.txt` / `ta
 | `test` | Propose comprehensive unit tests | 1 report with test suggestions |
 | `fix` | Find and fix bugs, issues, code smells | 1 report with fixes |
 | `refactor` | Identify refactoring opportunities | 1 report (no diffs) |
-| `all_small` | Complete analysis in a single session | 4 reports (audit, test, fix, refactor) |
+| `quick` | All 4 analyses in a single combined report | 1 report (4 sections) |
 | `grade` | Grade code quality and practices | 1 report with scores |
-| `all` | Run 4 tasks sequentially | 4 reports (slower, more thorough) |
-| `complete` | Run all_small + all | 5 reports (maximum coverage) |
+| `generate` | Template task with variables | Custom (use with -x flags) |
 
 ## Options
 
@@ -146,11 +147,13 @@ Example `settings.json`:
     "claude": {
       "model": "sonnet",
       "budget": "10.00"
+    },
+    "gemini": {
+      "model": "gemini-3"
     }
   },
   "tasks": {
     "audit": {
-      "pattern": "code_audit_report_",
       "prompt": "Run a complete audit of this code..."
     }
   }
@@ -186,62 +189,88 @@ If no settings file exists, both tools run an interactive setup wizard that help
 ```
 rcodegen/
 ├── cmd/
-│   ├── rcodex/main.go             # Codex binary (12 lines)
-│   └── rclaude/main.go            # Claude binary (12 lines)
+│   ├── rclaude/main.go            # Claude automation binary
+│   ├── rcodex/main.go             # Codex automation binary
+│   ├── rgemini/main.go            # Gemini automation binary
+│   └── rcodegen/main.go           # Multi-tool orchestrator
 ├── pkg/
 │   ├── runner/                    # Shared runner framework
 │   │   ├── tool.go                # Tool interface definition
 │   │   ├── config.go              # Config struct & colors
 │   │   ├── flags.go               # Flag parsing utilities
 │   │   ├── output.go              # Banner, summary, stats
+│   │   ├── stream.go              # Stream-JSON parser
 │   │   └── runner.go              # Main orchestrator
 │   ├── tools/
 │   │   ├── claude/claude.go       # Claude tool implementation
-│   │   └── codex/codex.go         # Codex tool implementation
+│   │   ├── codex/codex.go         # Codex tool implementation
+│   │   └── gemini/gemini.go       # Gemini tool implementation
+│   ├── bundle/                    # Bundle (workflow) loading
+│   ├── orchestrator/              # Multi-step workflow orchestration
+│   ├── executor/                  # Step execution engine
+│   ├── envelope/                  # Dispatch envelope format
+│   ├── workspace/                 # Job workspace management
 │   ├── settings/                  # Unified JSON config loading
 │   ├── reports/                   # Report management
 │   ├── lock/                      # File locking
 │   └── tracking/                  # Cost tracking (Codex & Claude)
-├── settings.json.example          # Example settings file (copy to ~/.rcodegen/)
-├── get_codex_status.py            # Codex credit tracking script
+├── settings.json.example          # Example settings file
+├── get_codex_status.py            # Codex credit tracking (iTerm2)
+├── get_claude_status.py           # Claude credit tracking (iTerm2)
+├── claude_question_handler.py     # Claude question detection/answering
+├── codex_pty_wrapper.py           # Codex PTY wrapper for session resume
 ├── Makefile                       # Build configuration
 └── README.md                      # This file
 ```
 
 ## Adding a New Tool
 
-To add support for a new AI tool (e.g., rgemini):
+To add support for a new AI tool:
 
-1. Create `pkg/tools/gemini/gemini.go` implementing `runner.Tool` interface (~200 lines)
-2. Create `cmd/rgemini/main.go`:
+1. Create `pkg/tools/newtool/newtool.go` implementing `runner.Tool` interface
+2. Create `cmd/rnewtool/main.go`:
    ```go
    package main
 
    import (
        "rcodegen/pkg/runner"
-       "rcodegen/pkg/tools/gemini"
+       "rcodegen/pkg/tools/newtool"
    )
 
    func main() {
-       runner.NewRunner(gemini.New()).Run()
+       runner.NewRunner(newtool.New()).Run()
    }
    ```
-3. Add to Makefile and build
+3. Add build target to Makefile
 
-## Key Differences: rcodex vs rclaude
+## rcodegen Orchestrator
 
-| Feature | rcodex (Codex) | rclaude (Claude) |
-|---------|----------------|------------------|
-| **CLI Command** | `codex exec` | `claude -p` |
-| **Permissions** | `--dangerously-bypass-approvals-and-sandbox` | `--dangerously-skip-permissions` |
-| **Working Directory** | `-C workdir` flag | `cmd.Dir` (no flag) |
-| **Output Format** | `--json` | `--output-format json` |
-| **Session** | N/A | `--no-session-persistence` |
-| **Cost Tracking** | iTerm2 API scraping `/status` | JSON response parsing |
-| **Report Directory** | `_rcodegen/` (codex- prefix) | `_rcodegen/` (claude- prefix) |
-| **Task Config** | `settings.json` (shared) | `settings.json` (shared) |
-| **Budget Control** | None | `--max-budget-usd` |
-| **Model Selection** | GPT-5.2-codex, etc. | sonnet, opus, haiku |
+The `rcodegen` binary runs multi-step workflows (bundles) that can span multiple AI tools:
+
+```bash
+# Run a bundle
+rcodegen build-review-audit -c myproject "Add user auth"
+
+# Force Claude steps to use Opus
+rcodegen build-review-audit -c myproject "task" --opus-only
+
+# List available bundles
+rcodegen list
+```
+
+Bundles are JSON workflow definitions stored in `~/.rcodegen/bundles/` or built-in.
+
+## Key Differences Between Tools
+
+| Feature | rclaude | rcodex | rgemini |
+|---------|---------|--------|---------|
+| **CLI Command** | `claude -p` | `codex exec` | `gemini -p` |
+| **Permissions** | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--yolo` |
+| **Output Format** | `stream-json` | `--json` | `stream-json` |
+| **Cost Tracking** | iTerm2 API | iTerm2 API | Not yet |
+| **Report Prefix** | `claude-` | `codex-` | `gemini-` |
+| **Budget Control** | `--max-budget-usd` | None | None |
+| **Default Model** | sonnet | gpt-5.2-codex | gemini-3 |
 
 ## Report Management
 
@@ -249,10 +278,10 @@ To add support for a new AI tool (e.g., rgemini):
 
 Reports are saved as markdown files with this naming pattern:
 ```
-[pattern]_YYYY-MM-DD-HH.md
+[tool]-[codebase]-[taskname]-YYYY-MM-DD_HHMM.md
 ```
 
-Example: `code_audit_report_2026-01-08-14.md`
+Example: `claude-myproject-audit-2026-01-08_1430.md`
 
 ### Report Review Workflow
 
@@ -295,7 +324,6 @@ Add custom tasks to your `~/.rcodegen/settings.json`:
 {
   "tasks": {
     "mytask": {
-      "pattern": "my_report_",
       "prompt": "Analyze this code for X. Save report as {report_file} in {report_dir}."
     }
   }
@@ -303,9 +331,10 @@ Add custom tasks to your `~/.rcodegen/settings.json`:
 ```
 
 Placeholders:
-- `{report_file}` expands to `[tool]-[codebase]-[taskname]-[date].md` (e.g., `claude-myproject-audit-2026-01-08.md`)
-- `{report_dir}` expands to `_rcodegen` (unified directory for all tools)
-- `{variable}` custom variables can be passed with `-x variable=value`
+- `{report_file}` - Auto-generated filename: `[tool]-[codebase]-[taskname]-[date].md`
+- `{report_dir}` - Expands to `_rcodegen` (unified directory for all tools)
+- `{codebase}` - The codebase name from `-c` flag
+- `{variable}` - Custom variables passed with `-x variable=value`
 
 ## Security Notes
 
@@ -317,7 +346,7 @@ Placeholders:
 
 ## Version
 
-Current version: **1.3.0**
+Current version: **1.8.1**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
 
