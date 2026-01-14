@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.2] - 2026-01-14
+
+### Added
+- **Codebase mapping** - New `.planning/codebase/` directory with structured analysis documents:
+  - STACK.md - Technologies and dependencies
+  - ARCHITECTURE.md - System design and patterns
+  - STRUCTURE.md - Directory layout and organization
+  - CONVENTIONS.md - Code style and patterns
+  - TESTING.md - Test structure and practices
+  - INTEGRATIONS.md - External services and APIs
+  - CONCERNS.md - Technical debt and issues
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.8.1] - 2026-01-13
 
 ### Fixed
