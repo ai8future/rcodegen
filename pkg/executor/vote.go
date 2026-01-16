@@ -17,7 +17,7 @@ func (e *VoteExecutor) Execute(step *bundle.Step, ctx *orchestrator.Context, ws 
 		// Extract step name from ${steps.name.output_ref}
 		// For now, just count successful steps
 		stepName := extractStepName(inputRef)
-		if env, ok := ctx.StepResults[stepName]; ok {
+		if env, ok := ctx.GetResult(stepName); ok && env != nil {
 			if env.Status == envelope.StatusSuccess {
 				votes["success"]++
 			} else {

@@ -109,6 +109,14 @@ func (c *Context) SetResult(name string, env *envelope.Envelope) {
 	c.StepResults[name] = env
 }
 
+// GetResult safely retrieves a step result with proper locking.
+func (c *Context) GetResult(name string) (*envelope.Envelope, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	env, ok := c.StepResults[name]
+	return env, ok
+}
+
 // extractStreamingResult parses streaming JSON output (from Claude/Codex)
 // and extracts the final result text from the "type":"result" object.
 func extractStreamingResult(content string) string {

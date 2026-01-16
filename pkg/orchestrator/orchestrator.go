@@ -61,6 +61,7 @@ type Orchestrator struct {
 	tools      map[string]runner.Tool
 	liveMode   bool
 	opusOnly   bool
+	flashOnly  bool
 }
 
 // SetLiveMode enables or disables the animated live display
@@ -71,6 +72,11 @@ func (o *Orchestrator) SetLiveMode(enabled bool) {
 // SetOpusOnly forces all Claude steps to use Opus model
 func (o *Orchestrator) SetOpusOnly(enabled bool) {
 	o.opusOnly = enabled
+}
+
+// SetFlashOnly forces all Gemini steps to use flash preview model
+func (o *Orchestrator) SetFlashOnly(enabled bool) {
+	o.flashOnly = enabled
 }
 
 func New(s *settings.Settings) *Orchestrator {
@@ -98,6 +104,10 @@ func (o *Orchestrator) getStepModel(toolName, stepModel string) string {
 	// If opus-only is set and tool is claude, always use opus
 	if o.opusOnly && toolName == "claude" {
 		return "opus"
+	}
+	// If flash-only is set and tool is gemini, always use flash preview
+	if o.flashOnly && toolName == "gemini" {
+		return "gemini-3-flash-preview"
 	}
 	// Use step's model if specified
 	if stepModel != "" {
@@ -227,6 +237,12 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 			stepCopy.Model = "opus"
 			execStep = &stepCopy
 		}
+		if o.flashOnly && step.Tool == "gemini" {
+			// Create a copy with flash preview model
+			stepCopy := step
+			stepCopy.Model = "gemini-3-flash-preview"
+			execStep = &stepCopy
+		}
 
 		// Execute step
 		env, err := o.dispatcher.Execute(execStep, ctx, ws)
@@ -337,7 +353,9 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 			if b.SourcePath != "" {
 				bundleDest := filepath.Join(projectDir, "bundle-used.json")
 				if bundleData, err := os.ReadFile(b.SourcePath); err == nil {
-					os.WriteFile(bundleDest, bundleData, 0644)
+					if err := os.WriteFile(bundleDest, bundleData, 0644); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to copy bundle to %s: %v\n", bundleDest, err)
+					}
 				}
 			}
 
@@ -460,7 +478,7 @@ func generateRunReport(path, jobID, bundleName string, duration time.Duration, t
 				}
 				codexEditCost := getSubstepCost(ctx, "edit-codex")
 				geminiEditCost := getSubstepCost(ctx, "edit-gemini")
-				expanded = append(expanded, ExpandedStep{stepNum, "Edit", "Gemini", "✓", codexEditCost, codexOut})
+				expanded = append(expanded, ExpandedStep{stepNum, "Edit", "Codex", "✓", codexEditCost, codexOut})
 				expanded = append(expanded, ExpandedStep{stepNum, "Edit", "Gemini", "✓", geminiEditCost, geminiOut})
 			} else {
 				// Generic parallel
@@ -606,7 +624,9 @@ func generateRunReport(path, jobID, bundleName string, duration time.Duration, t
 		sb.WriteString(fmt.Sprintf("**File:** `%s`\n", filepath.Base(articles[0])))
 	}
 
-	os.WriteFile(path, []byte(sb.String()), 0644)
+	if err := os.WriteFile(path, []byte(sb.String()), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to write run report to %s: %v\n", path, err)
+	}
 }
 
 func getSubstepCost(ctx *Context, stepName string) float64 {
