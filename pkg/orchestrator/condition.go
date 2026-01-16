@@ -17,12 +17,13 @@ func EvaluateCondition(condition string, ctx *Context) bool {
 func evaluate(expr string) bool {
 	expr = strings.TrimSpace(expr)
 
-	// Handle AND/OR
-	if idx := strings.Index(expr, " AND "); idx != -1 {
-		return evaluate(expr[:idx]) && evaluate(expr[idx+5:])
-	}
+	// Handle OR first (lower precedence - evaluated at top level)
 	if idx := strings.Index(expr, " OR "); idx != -1 {
 		return evaluate(expr[:idx]) || evaluate(expr[idx+4:])
+	}
+	// Handle AND (higher precedence - evaluated deeper in recursion)
+	if idx := strings.Index(expr, " AND "); idx != -1 {
+		return evaluate(expr[:idx]) && evaluate(expr[idx+5:])
 	}
 
 	// Handle comparisons

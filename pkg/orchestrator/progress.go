@@ -6,21 +6,31 @@ import (
 	"time"
 
 	"rcodegen/pkg/bundle"
+	"rcodegen/pkg/colors"
 )
 
-// ANSI color codes
+// Re-export color constants from colors package with orchestrator naming convention.
+// New code should import rcodegen/pkg/colors directly.
 const (
-	colorReset   = "\033[0m"
-	colorBold    = "\033[1m"
-	colorDim     = "\033[2m"
-	colorCyan    = "\033[36m"
-	colorGreen   = "\033[32m"
-	colorRed     = "\033[31m"
-	colorYellow  = "\033[33m"
-	colorBlue    = "\033[34m"
-	colorMagenta = "\033[35m"
-	colorWhite   = "\033[37m"
+	colorReset   = colors.Reset
+	colorBold    = colors.Bold
+	colorDim     = colors.Dim
+	colorCyan    = colors.Cyan
+	colorGreen   = colors.Green
+	colorRed     = colors.Red
+	colorYellow  = colors.Yellow
+	colorBlue    = colors.Blue
+	colorMagenta = colors.Magenta
+	colorWhite   = colors.White
 )
+
+// capitalizeWord returns s with first letter uppercased (replaces deprecated strings.Title)
+func capitalizeWord(s string) string {
+	if s == "" {
+		return ""
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
 
 // Box drawing characters (rounded)
 const (
@@ -260,7 +270,7 @@ func (p *ProgressDisplay) PrintStepStart(stepIndex int) {
 	// Print step box
 	w := p.width
 	stepNum := fmt.Sprintf("Step %d/%d", stepIndex+1, len(p.steps))
-	toolName := strings.Title(step.Tool)
+	toolName := capitalizeWord(step.Tool)
 	stepHeader := fmt.Sprintf("  %s · %s", stepNum, step.Name)
 
 	// Calculate padding for right-aligned tool name
@@ -322,7 +332,7 @@ func (p *ProgressDisplay) PrintStepComplete(stepIndex int, cost float64, duratio
 	fmt.Printf("\n  %s%s%s  %-12s %s%-8s%s  %s%8s%s  %s%s%s\n",
 		iconClr, icon, colorReset,
 		step.Name,
-		toolClr, strings.Title(step.Tool), colorReset,
+		toolClr, capitalizeWord(step.Tool), colorReset,
 		colorGreen, costStr, colorReset,
 		colorDim, durStr, colorReset)
 }
@@ -426,7 +436,7 @@ func (p *ProgressDisplay) PrintPendingSteps(fromIndex int) {
 			fmt.Printf("  %s%s%s  %-12s %s%s%s\n",
 				iconClr, icon, colorReset,
 				step.Name,
-				toolClr, strings.Title(step.Tool), colorReset)
+				toolClr, capitalizeWord(step.Tool), colorReset)
 		}
 	}
 }

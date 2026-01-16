@@ -382,12 +382,12 @@ func (d *LiveDisplay) renderStep(index int, step *LiveStep) {
 	}
 
 	toolClr := toolColor(step.Tool)
-	toolName := strings.Title(step.Tool)
+	toolName := capitalizeWord(step.Tool)
 
 	// Show tool/model (e.g., "Claude/Sonnet" or just "Claude")
 	toolDisplay := toolName
 	if step.Model != "" {
-		modelName := strings.Title(step.Model)
+		modelName := capitalizeWord(step.Model)
 		// Shorten common model names
 		switch step.Model {
 		case "sonnet":
@@ -396,8 +396,10 @@ func (d *LiveDisplay) renderStep(index int, step *LiveStep) {
 			modelName = "Opus"
 		case "haiku":
 			modelName = "Haiku"
-		case "gemini-3":
-			modelName = "3"
+		case "gemini-3-pro-preview":
+			modelName = "3-pro"
+		case "gemini-3-flash-preview":
+			modelName = "3-flash"
 		case "gemini-2":
 			modelName = "2"
 		case "gpt-5.2-codex":
