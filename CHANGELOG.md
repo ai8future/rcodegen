@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.5] - 2026-01-20
+
+### Added
+- **Dashboard expandable graphs** - Click any task grade cell (Audit, Test, Fix, Refactor) in the repos table to expand that row and view all 4 grade history graphs in a larger, more readable format. Click anywhere in the expanded area to collapse.
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.8.4] - 2026-01-20
 
 ### Fixed
