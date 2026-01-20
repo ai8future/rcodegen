@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.7] - 2026-01-20
+
+### Fixed
+- **Gemini directory permissions** - All task prompts now explicitly state "You ARE allowed to write reports to the {report_dir} directory" to prevent Gemini CLI from rejecting writes to _rcodegen due to workspace restrictions.
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.8.6] - 2026-01-20
 
 ### Fixed
