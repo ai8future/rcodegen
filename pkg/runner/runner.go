@@ -131,10 +131,28 @@ func (r *Runner) Run() *RunResult {
 	}
 
 	// Validate all working directories upfront
-	for _, workDir := range cfg.WorkDirs {
+	reportDirName := r.Tool.ReportDir()
+	for i, workDir := range cfg.WorkDirs {
 		if workDir != "" {
 			if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
 				return runError(1, fmt.Errorf("directory does not exist: %s", workDir))
+			}
+			// Auto-correct if running inside an _rcodegen directory (move up to parent)
+			if filepath.Base(workDir) == reportDirName {
+				parentDir := filepath.Dir(workDir)
+				fmt.Printf("%sNote:%s Adjusting from %s to parent directory %s\n", Yellow, Reset, reportDirName, parentDir)
+				cfg.WorkDirs[i] = parentDir
+			}
+		}
+	}
+
+	// Also check current directory when no workDirs specified
+	if len(cfg.WorkDirs) == 0 {
+		if cwd, err := os.Getwd(); err == nil {
+			if filepath.Base(cwd) == reportDirName {
+				parentDir := filepath.Dir(cwd)
+				fmt.Printf("%sNote:%s Adjusting from %s to parent directory %s\n", Yellow, Reset, reportDirName, parentDir)
+				cfg.WorkDirs = []string{parentDir}
 			}
 		}
 	}
@@ -230,7 +248,7 @@ func (r *Runner) runForWorkDir(cfg *Config, workDir string) int {
 
 	// Execute the task
 	var exitCode int
-	if cfg.Task == "suite" {
+	if cfg.Task == TaskSuite {
 		exitCode = r.runMultipleReports(cfg, workDir)
 	} else {
 		// Check if we should skip due to unreviewed previous report
@@ -240,6 +258,10 @@ func (r *Runner) runForWorkDir(cfg *Config, workDir string) int {
 			exitCode = 0 // Skipped, not an error
 		} else {
 			exitCode = r.runSingleTask(cfg, workDir)
+			// Persist grade after successful task completion
+			if exitCode == 0 && cfg.TaskShortcut != "" {
+				r.persistGrade(cfg, workDir, cfg.TaskShortcut)
+			}
 		}
 	}
 
@@ -250,8 +272,8 @@ func (r *Runner) runForWorkDir(cfg *Config, workDir string) int {
 	if cfg.DeleteOld && exitCode == 0 {
 		var shortcuts []string
 		switch cfg.TaskShortcut {
-		case "suite":
-			shortcuts = []string{"audit", "test", "fix", "refactor"}
+		case TaskSuite:
+			shortcuts = ReportTypes
 		case "":
 			// Custom task, no deletion
 		default:
@@ -296,6 +318,55 @@ func (r *Runner) getReportDir(cfg *Config, workDir string) string {
 		return filepath.Join(cwd, reportDirName)
 	}
 	return reportDirName
+}
+
+// persistGrade extracts the grade from the newest report and saves it to .grades.json
+func (r *Runner) persistGrade(cfg *Config, workDir, taskShortcut string) {
+	reportDir := r.getReportDir(cfg, workDir)
+	toolName := strings.ToLower(r.Tool.Name())
+
+	// Retry loop to find the newest report file (it might take a moment to appear)
+	var reportPath string
+	var err error
+	for i := 0; i < 10; i++ {
+		reportPath, err = FindNewestReport(reportDir, toolName, taskShortcut)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if err != nil {
+		// Report not found - this can happen if the tool didn't create one
+		// Debug: fmt.Fprintf(os.Stderr, "%sDebug:%s No report found for %s/%s: %v\n", Dim, Reset, toolName, taskShortcut, err)
+		return
+	}
+
+	// Verify file exists and is readable
+	if _, err := os.Stat(reportPath); err != nil {
+		return
+	}
+
+	// Extract grade from the report
+	grade, err := ExtractGradeFromReport(reportPath)
+	if err != nil {
+		// No grade found in report - common for some task types
+		// Debug: fmt.Fprintf(os.Stderr, "%sDebug:%s No grade in %s: %v\n", Dim, Reset, filepath.Base(reportPath), err)
+		return
+	}
+
+	// Parse the filename to get the date
+	filename := filepath.Base(reportPath)
+	_, _, _, date, err := ParseReportFilename(filename)
+	if err != nil {
+		// Use current time if filename parsing fails
+		date = time.Now()
+	}
+
+	// Append to .grades.json
+	if err := AppendGrade(reportDir, filename, toolName, taskShortcut, grade, date); err != nil {
+		fmt.Fprintf(os.Stderr, "%sWarning:%s Could not save grade: %v\n", Yellow, Reset, err)
+	}
 }
 
 // runSingleTask runs a single task
@@ -377,15 +448,14 @@ func (r *Runner) executeWithStreamParser(cfg *Config, cmd *exec.Cmd) int {
 	return 0
 }
 
-// runMultipleReports runs the "suite" meta-task (4 sequential reports)
+// runMultipleReports runs the "suite" meta-task (5 sequential reports)
 func (r *Runner) runMultipleReports(cfg *Config, workDir string) int {
 	overallExit := 0
-	reportTypes := []string{"audit", "test", "fix", "refactor"}
 
-	fmt.Printf("%s%sRunning all 4 report types sequentially...%s\n\n", Bold, Cyan, Reset)
+	fmt.Printf("%s%sRunning all %d report types sequentially...%s\n\n", Bold, Cyan, len(ReportTypes), Reset)
 
 	// Run each report type
-	for _, reportType := range reportTypes {
+	for _, reportType := range ReportTypes {
 		PrintReportHeader(reportType)
 
 		// Check if we should skip this report type
@@ -414,6 +484,9 @@ func (r *Runner) runMultipleReports(cfg *Config, workDir string) int {
 		PrintReportProgress(reportType, reportDuration, exitCode)
 		if exitCode != 0 {
 			overallExit = exitCode
+		} else {
+			// Persist grade after successful report completion
+			r.persistGrade(cfg, workDir, reportType)
 		}
 	}
 
@@ -515,8 +588,8 @@ func (r *Runner) setWorkingDirectories(cfg *Config, codePath, dirPath string) er
 
 // expandTaskShortcut expands a task shortcut to its full prompt if it exists.
 func (r *Runner) expandTaskShortcut(cfg *Config) {
-	if cfg.Task == "" || cfg.Task == "suite" {
-		if cfg.Task == "suite" {
+	if cfg.Task == "" || cfg.Task == TaskSuite {
+		if cfg.Task == TaskSuite {
 			cfg.TaskShortcut = cfg.Task
 		}
 		return
@@ -542,7 +615,7 @@ func applyVariableSubstitution(cfg *Config) {
 
 // validatePlaceholders checks for unsubstituted placeholders and returns an error if found.
 func validatePlaceholders(task string) error {
-	if task == "" || task == "suite" {
+	if task == "" || task == TaskSuite {
 		return nil
 	}
 	re := regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
@@ -602,11 +675,14 @@ func (r *Runner) parseArgs() (*Config, error) {
 	// Extract -x flags before standard flag parsing
 	cleanedArgs, vars := ParseVarFlags(os.Args[1:])
 	cfg.Vars = vars
+
+	// Reorder args so flags can appear anywhere (before or after task)
+	cleanedArgs = reorderArgsForFlagParsing(cleanedArgs, flagGroups)
 	os.Args = append([]string{os.Args[0]}, cleanedArgs...)
 
 	// Define common flags
 	var codePath, dirPath string
-	var showTasks, showHelp bool
+	var showTasks, showHelp, migrateGrades, migrateGradesAll bool
 
 	flag.StringVar(&codePath, "c", "", "Project path relative to configured code directory")
 	flag.StringVar(&codePath, "code", "", "Project path relative to configured code directory")
@@ -633,6 +709,8 @@ func (r *Runner) parseArgs() (*Config, error) {
 	flag.BoolVar(&showTasks, "tasks", false, "List available task shortcuts")
 	flag.BoolVar(&showHelp, "h", false, "Show help message")
 	flag.BoolVar(&showHelp, "help", false, "Show help message")
+	flag.BoolVar(&migrateGrades, "migrate-grades", false, "Migrate existing reports to .grades.json")
+	flag.BoolVar(&migrateGradesAll, "migrate-grades-all", false, "Migrate grades for all repos in code directory")
 
 	// Define tool-specific flags
 	r.defineToolSpecificFlags(cfg)
@@ -643,6 +721,7 @@ func (r *Runner) parseArgs() (*Config, error) {
 	// Handle --no-status flag (must be after Parse)
 	if noTrackStatus {
 		cfg.TrackStatus = false
+		cfg.NoTrackStatus = true
 	}
 
 	// Handle special flags - return nil config to signal exit 0
@@ -653,6 +732,36 @@ func (r *Runner) parseArgs() (*Config, error) {
 
 	if showTasks {
 		r.listTasks()
+		return nil, nil
+	}
+
+	if migrateGradesAll {
+		// Migrate grades for all repos in the code directory
+		codeDir := r.Settings.CodeDir
+		if codeDir == "" {
+			return nil, fmt.Errorf("code_dir not configured in settings")
+		}
+		fmt.Printf("%s%sMigrating grades for all repos in %s%s\n", Bold, Cyan, codeDir, Reset)
+		if err := MigrateGradesAll(codeDir); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	if migrateGrades {
+		// Migrate grades for current directory or specified path
+		targetDir := dirPath
+		if targetDir == "" {
+			if codePath != "" && r.Settings.CodeDir != "" {
+				targetDir = filepath.Join(r.Settings.CodeDir, codePath)
+			} else {
+				targetDir, _ = os.Getwd()
+			}
+		}
+		fmt.Printf("%s%sMigrating grades in %s%s\n", Bold, Cyan, targetDir, Reset)
+		if err := MigrateGrades(targetDir); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	}
 
@@ -724,6 +833,13 @@ func (r *Runner) defineToolSpecificFlags(cfg *Config) {
 			if fd.Long != "" {
 				flag.BoolVar(&noTrackStatus, strings.TrimPrefix(fd.Long, "--"), false, fd.Description)
 			}
+		case "Flash":
+			if fd.Short != "" {
+				flag.BoolVar(&cfg.Flash, strings.TrimPrefix(fd.Short, "-"), false, fd.Description)
+			}
+			if fd.Long != "" {
+				flag.BoolVar(&cfg.Flash, strings.TrimPrefix(fd.Long, "--"), false, fd.Description)
+			}
 		}
 	}
 }
@@ -743,7 +859,7 @@ func (r *Runner) listTasks() {
 		}
 	}
 	fmt.Printf("\n  suite:\n")
-	fmt.Printf("    Run audit, test, fix, refactor sequentially as 4 separate sessions\n")
+	fmt.Printf("    Run audit, test, fix, refactor, quick sequentially as 5 separate sessions\n")
 }
 
 // writeRunLog writes a .runlog file with run metadata
@@ -871,7 +987,7 @@ func (r *Runner) printUsage() {
 
 	// Task Shortcuts
 	fmt.Printf("%s%sTask Shortcuts:%s\n", Bold, Cyan, Reset)
-	fmt.Printf("  Loaded from %ssettings.json%s + built-in: %ssuite%s (runs all 4 sequentially)\n", Magenta, Reset, Yellow, Reset)
+	fmt.Printf("  Loaded from %ssettings.json%s + built-in: %ssuite%s (runs all 5 sequentially)\n", Magenta, Reset, Yellow, Reset)
 	fmt.Printf("  Use %s-t%s to see full list.\n\n", Green, Reset)
 
 	// Security Note

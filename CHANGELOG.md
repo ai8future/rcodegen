@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.4] - 2026-01-20
+
+### Fixed
+- **Nested _rcodegen prevention** - Auto-corrects when running from inside an `_rcodegen` directory by moving up to the parent directory, preventing nested `_rcodegen/_rcodegen` creation
+
+### Agent
+- Claude:Opus 4.5
+
+## [1.8.3] - 2026-01-19
+
+### Added
+- **`study` task** - New task type for deep code analysis that examines how code works, what it does, how it interacts with other services and external codebases, and explores motivations behind design decisions
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.8.2] - 2026-01-14
 
 ### Added
