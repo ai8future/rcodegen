@@ -34,9 +34,9 @@ var gradePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:score|rating|points?)[:=]?\s*(\d+(?:\.\d+)?)\s*/\s*100`),
 }
 
-// Report filename pattern: {tool}-{codebase}-{task}-{YYYY-MM-DD_HHMM}.md
+// Report filename pattern: {codebase}-{tool}-{task}-{YYYY-MM-DD_HHMM}.md
 // Case-insensitive for tool and task
-var reportFilenamePattern = regexp.MustCompile(`(?i)^([a-z]+)-(.+)-([a-z]+)-(\d{4}-\d{2}-\d{2}_\d{4})\.md$`)
+var reportFilenamePattern = regexp.MustCompile(`(?i)^(.+)-([a-z]+)-([a-z]+)-(\d{4}-\d{2}-\d{2}_\d{4})\.md$`)
 
 // File lock for grades.json operations
 var gradesFileMutex sync.Mutex
@@ -72,8 +72,9 @@ func ParseReportFilename(filename string) (tool, codebase, task string, date tim
 	}
 
 	// Normalize to lowercase for consistency
-	tool = strings.ToLower(matches[1])
-	codebase = matches[2]
+	// Pattern: {codebase}-{tool}-{task}-{timestamp}.md
+	codebase = matches[1]
+	tool = strings.ToLower(matches[2])
 	task = strings.ToLower(matches[3])
 	dateStr := matches[4]
 
@@ -188,7 +189,8 @@ func FindNewestReport(reportDir, tool, task string) (string, error) {
 	safeTool := escapeGlobPattern(strings.ToLower(tool))
 	safeTask := escapeGlobPattern(strings.ToLower(task))
 
-	pattern := filepath.Join(reportDir, fmt.Sprintf("%s-*-%s-*.md", safeTool, safeTask))
+	// Pattern: {codebase}-{tool}-{task}-{timestamp}.md
+	pattern := filepath.Join(reportDir, fmt.Sprintf("*-%s-%s-*.md", safeTool, safeTask))
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return "", fmt.Errorf("failed to glob reports: %w", err)

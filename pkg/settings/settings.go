@@ -213,9 +213,9 @@ func (s *Settings) ToTaskConfig(codebaseName, toolPrefix string) *TaskConfig {
 	}
 
 	for name, task := range s.Tasks {
-		// Auto-generate pattern: {tool}-{codebase}-{taskname}-
-		// Example: claude-myproject-audit-
-		pattern := toolPrefix + codebaseName + "-" + name + "-"
+		// Auto-generate pattern: {codebase}-{tool}{taskname}-
+		// Example: myproject-claude-audit-
+		pattern := codebaseName + "-" + toolPrefix + name + "-"
 
 		// Replace {report_file} and {codebase} placeholders in prompt
 		prompt := task.Prompt

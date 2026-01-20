@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.9] - 2026-01-20
+
+### Changed
+- **Report filename format** - Changed naming convention from `{tool}-{codebase}-{task}` to `{codebase}-{tool}-{task}` (e.g., `dispatch-gemini-quick-` instead of `gemini-dispatch-quick-`). This puts the codebase first for better file organization.
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.8.8] - 2026-01-20
 
 ### Fixed
