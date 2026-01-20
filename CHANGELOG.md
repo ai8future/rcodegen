@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.10] - 2026-01-20
+
+### Fixed
+- **Dashboard not loading new report files** - Updated dashboard API filename parser to match the new `{codebase}-{tool}-{task}-{date}.md` naming convention introduced in 1.8.9. The dashboard was still expecting the old `{tool}-{codebase}-{task}-{date}.md` pattern.
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.8.9] - 2026-01-20
 
 ### Changed

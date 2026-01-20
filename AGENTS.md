@@ -5,3 +5,5 @@
 - Auto-commit and push code after every code change, but ONLY after you increment VERSION and annotate CHANGELOG. In the notes, mention what coding agent you are and what model you are using. If you are Claude Code, you would say Claude:Opus 4.5 (if you are using the Opus 4.5 model). If you are Codex, you would say: Codex:gpt-5.1-codex-max-high (if high is the reasoning level).
 
 - Stay out of the _studies, _proposals, _rcodegen directories. Do not go into them or read from them unless specifically told to do so.
+
+- Always remember to compile all binaries after code changes.

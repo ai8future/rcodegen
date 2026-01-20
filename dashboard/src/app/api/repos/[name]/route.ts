@@ -25,11 +25,12 @@ interface ReportDetail {
 }
 
 function parseReportFilename(filename: string): { tool: string; codebase: string; task: string; date: string } | null {
-  const match = filename.match(/^(.+?)-(.+?)-(.+?)-(\d{4}-\d{2}-\d{2}_\d{4})\.md$/)
+  // Pattern: {codebase}-{tool}-{task}-{date}.md
+  const match = filename.match(/^(.+)-([a-z]+)-([a-z]+)-(\d{4}-\d{2}-\d{2}_\d{4})\.md$/)
   if (!match) return null
   return {
-    tool: match[1],
-    codebase: match[2],
+    codebase: match[1],
+    tool: match[2],
     task: match[3],
     date: match[4]
   }

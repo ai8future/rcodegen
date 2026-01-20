@@ -189,15 +189,15 @@ function migrateRepoGrades(rcodgenDir: string): number {
 
 // Stricter filename pattern: tool and task must be lowercase letters only
 function parseReportFilename(filename: string): { tool: string; codebase: string; task: string; date: string } | null {
-  // Pattern: {tool}-{codebase}-{task}-{date}.md
+  // Pattern: {codebase}-{tool}-{task}-{date}.md
+  // Codebase: any characters (greedy, since it comes first)
   // Tool and task: lowercase letters only (a-z)
-  // Codebase: any characters (but non-greedy)
   // Date: YYYY-MM-DD_HHMM format
-  const match = filename.match(/^([a-z]+)-(.+?)-([a-z]+)-(\d{4}-\d{2}-\d{2}_\d{4})\.md$/)
+  const match = filename.match(/^(.+)-([a-z]+)-([a-z]+)-(\d{4}-\d{2}-\d{2}_\d{4})\.md$/)
   if (!match) return null
   return {
-    tool: match[1],
-    codebase: match[2],
+    codebase: match[1],
+    tool: match[2],
     task: match[3],
     date: match[4]
   }
