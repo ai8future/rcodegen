@@ -34,10 +34,12 @@ var gradePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:score|rating|points?)[:=]?\s*(\d+(?:\.\d+)?)\s*/\s*100`),
 }
 
-// Report filename pattern - flexible to support both old and new formats:
-// Old: {tool}-{codebase}-{task}-{YYYY-MM-DD_HHMM}.md
-// New: {codebase}-{tool}-{task}-{YYYY-MM-DD_HHMM}.md
-var reportFilenamePattern = regexp.MustCompile(`(?i)^(.+)-([a-z]+)-([a-z]+)-(\d{4}-\d{2}-\d{2}_\d{4})\.md$`)
+// Report filename pattern - flexible to support various date formats:
+// Standard: {codebase}-{tool}-{task}-{YYYY-MM-DD_HHMM}.md
+// With seconds: {codebase}-{tool}-{task}-{YYYY-MM-DD_HHMMSS}.md
+// Date only: {codebase}-{tool}-{task}-{YYYY-MM-DD}.md
+// Compact: {codebase}-{tool}-{task}-{YYYYMMDD-HHMMSS}.md
+var reportFilenamePattern = regexp.MustCompile(`(?i)^(.+)-([a-z]+)-([a-z]+)-(\d{4}-?\d{2}-?\d{2}(?:[_-]\d{4,6})?)\.md$`)
 
 // Known tool names for format detection
 var knownTools = map[string]bool{
@@ -106,13 +108,34 @@ func ParseReportFilename(filename string) (tool, codebase, task string, date tim
 		task = segment3
 	}
 
-	// Parse date: 2026-01-16_2336 -> 2026-01-16T23:36:00Z
-	date, err = time.Parse("2006-01-02_1504", dateStr)
+	// Parse date with flexible formats
+	date, err = parseFlexibleDate(dateStr)
 	if err != nil {
 		return "", "", "", time.Time{}, fmt.Errorf("failed to parse date from filename: %w", err)
 	}
 
 	return tool, codebase, task, date, nil
+}
+
+// parseFlexibleDate handles various date formats found in report filenames
+func parseFlexibleDate(dateStr string) (time.Time, error) {
+	// Try formats in order of specificity
+	formats := []string{
+		"2006-01-02_150405", // YYYY-MM-DD_HHMMSS (with seconds)
+		"2006-01-02_1504",   // YYYY-MM-DD_HHMM (standard)
+		"20060102-150405",   // YYYYMMDD-HHMMSS (compact with dash)
+		"20060102-1504",     // YYYYMMDD-HHMM (compact)
+		"2006-01-02",        // YYYY-MM-DD (date only)
+		"20060102",          // YYYYMMDD (compact date only)
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, dateStr); err == nil {
+			return t, nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("unrecognized date format: %s", dateStr)
 }
 
 // LoadGrades reads the .grades.json file from a report directory

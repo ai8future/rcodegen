@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.13] - 2026-01-21
+
+### Fixed
+- **Flexible date parsing for report filenames** - Both Go and dashboard parsers now handle various timestamp formats that LLMs produce: `YYYY-MM-DD_HHMM` (standard), `YYYY-MM-DD_HHMMSS` (with seconds), `YYYY-MM-DD` (date only), and `YYYYMMDD-HHMMSS` (compact). This fixes dashboard not showing Gemini and Codex reports with non-standard timestamps.
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.8.12] - 2026-01-21
 
 ### Fixed

@@ -190,12 +190,14 @@ function migrateRepoGrades(rcodgenDir: string): number {
 // Known tool names for format detection
 const KNOWN_TOOLS = ['claude', 'gemini', 'codex']
 
-// Supports both old and new filename formats:
-// Old: {tool}-{codebase}-{task}-{date}.md (e.g., claude-dispatch-audit-2026-01-16_2331.md)
-// New: {codebase}-{tool}-{task}-{date}.md (e.g., dispatch-claude-audit-2026-01-20_2204.md)
+// Supports various filename formats with flexible date patterns:
+// Standard: {codebase}-{tool}-{task}-{YYYY-MM-DD_HHMM}.md
+// With seconds: {codebase}-{tool}-{task}-{YYYY-MM-DD_HHMMSS}.md
+// Date only: {codebase}-{tool}-{task}-{YYYY-MM-DD}.md
+// Compact: {codebase}-{tool}-{task}-{YYYYMMDD-HHMMSS}.md
 function parseReportFilename(filename: string): { tool: string; codebase: string; task: string; date: string } | null {
-  // Flexible pattern that matches both formats
-  const match = filename.match(/^(.+)-([a-z]+)-([a-z]+)-(\d{4}-\d{2}-\d{2}_\d{4})\.md$/)
+  // Flexible pattern that handles various date formats
+  const match = filename.match(/^(.+)-([a-z]+)-([a-z]+)-(\d{4}-?\d{2}-?\d{2}(?:[_-]\d{4,6})?)\.md$/)
   if (!match) return null
 
   const segment1 = match[1]
@@ -217,14 +219,35 @@ function parseReportFilename(filename: string): { tool: string; codebase: string
   return { codebase: segment1, tool: segment2, task: segment3, date }
 }
 
-// Parse date with explicit UTC timezone
+// Parse date with flexible format support
 function parseDate(dateStr: string): Date {
-  // Format: YYYY-MM-DD_HHMM
-  const [datePart, timePart] = dateStr.split('_')
-  const hours = timePart.slice(0, 2)
-  const minutes = timePart.slice(2, 4)
-  // Use explicit UTC timezone
-  return new Date(`${datePart}T${hours}:${minutes}:00Z`)
+  // Try to parse various formats
+
+  // Check for underscore separator (YYYY-MM-DD_HHMM or YYYY-MM-DD_HHMMSS)
+  if (dateStr.includes('_')) {
+    const [datePart, timePart] = dateStr.split('_')
+    const hours = timePart.slice(0, 2)
+    const minutes = timePart.slice(2, 4)
+    const seconds = timePart.length >= 6 ? timePart.slice(4, 6) : '00'
+    return new Date(`${datePart}T${hours}:${minutes}:${seconds}Z`)
+  }
+
+  // Check for compact format with dash (YYYYMMDD-HHMMSS)
+  const compactMatch = dateStr.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})?$/)
+  if (compactMatch) {
+    const [, year, month, day, hours, minutes, seconds = '00'] = compactMatch
+    return new Date(`${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`)
+  }
+
+  // Date only formats
+  const dateOnlyMatch = dateStr.match(/^(\d{4})-?(\d{2})-?(\d{2})$/)
+  if (dateOnlyMatch) {
+    const [, year, month, day] = dateOnlyMatch
+    return new Date(`${year}-${month}-${day}T00:00:00Z`)
+  }
+
+  // Fallback: try native parsing
+  return new Date(dateStr + 'T00:00:00Z')
 }
 
 // Extract Date Updated from file content
