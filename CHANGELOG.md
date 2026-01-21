@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.12] - 2026-01-21
+
+### Fixed
+- **Missing timestamp variable error** - Added `timestamp` to the systemPlaceholders whitelist in validatePlaceholders(). The default task prompts used `{timestamp}` but validation was rejecting it as an unknown variable because it wasn't in the allowed list.
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.8.11] - 2026-01-20
 
 ### Fixed

@@ -623,6 +623,7 @@ func validatePlaceholders(task string) error {
 		"report_dir":  true,
 		"report_file": true,
 		"codebase":    true,
+		"timestamp":   true,
 	}
 	matches := re.FindAllStringSubmatch(task, -1)
 	if len(matches) == 0 {
