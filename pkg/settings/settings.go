@@ -544,7 +544,7 @@ func RunInteractiveSetup() (*Settings, bool) {
 		}
 	}
 
-	// Create the settings
+	// Create the settings - don't include tasks, they come from hardcoded defaults
 	settings := &Settings{
 		CodeDir: codeDir, // Store with tilde for portability
 		Defaults: Defaults{
@@ -557,7 +557,7 @@ func RunInteractiveSetup() (*Settings, bool) {
 				Budget: claudeBudget,
 			},
 		},
-		Tasks: GetDefaultTasks(),
+		// Tasks intentionally omitted - built-in tasks are loaded from GetDefaultTasks()
 	}
 
 	// Create config directory
@@ -591,12 +591,13 @@ func RunInteractiveSetup() (*Settings, bool) {
 	fmt.Printf("  %s%srcodex defaults:%s\n", bold, cyan, reset)
 	fmt.Printf("    %sModel:%s   %s%s%s\n", dim, reset, magenta, codexModel, reset)
 	fmt.Printf("    %sEffort:%s  %s%s%s\n", dim, reset, magenta, codexEffort, reset)
-	fmt.Printf("  %sTasks configured:%s   %s%d default tasks%s\n", dim, reset, yellow, len(settings.Tasks), reset)
-	fmt.Printf("\n%sYou can edit %s to customize tasks.%s\n", dim, configPath, reset)
+	fmt.Printf("\n%sBuilt-in tasks: audit, test, fix, refactor, quick, grade, study%s\n", dim, reset)
+	fmt.Printf("%sYou can add custom tasks to %s (use unique names).%s\n", dim, configPath, reset)
 	fmt.Printf("%s%s────────────────────────────────────────────────────────────────%s\n\n", dim, cyan, reset)
 
-	// Return settings with expanded path for immediate use
+	// Return settings with expanded path and default tasks for immediate use
 	settings.CodeDir = expandedPath
+	settings.Tasks = GetDefaultTasks()
 	return settings, true
 }
 

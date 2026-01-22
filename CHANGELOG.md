@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.2] - 2026-01-22
+
+### Fixed
+- **Setup wizard no longer writes tasks to settings.json** - The first-time setup wizard was writing all default tasks into the new settings.json file, which would then trigger the reserved name validation error on subsequent runs. Now settings.json only contains configuration (code_dir, defaults), and tasks always come from the binary.
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.9.1] - 2026-01-22
 
 ### Added
