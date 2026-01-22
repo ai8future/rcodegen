@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.0] - 2026-01-22
+
+### Fixed
+- **Missing grades in reports** - Removed outdated task definitions from `settings.json.example` that were overriding hardcoded defaults. Task prompts with `TOTAL_SCORE` grading are now exclusively in the binary (`pkg/settings/settings.go`), ensuring all reports include grades. User settings.json files with old task definitions will now use the correct defaults.
+
+### Changed
+- Task definitions are now hardcoded only - removed from example config to prevent user overrides that lose grading functionality
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.8.14] - 2026-01-21
 
 ### Fixed

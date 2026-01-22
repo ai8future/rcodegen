@@ -9,29 +9,9 @@
     "claude": {
       "model": "sonnet",
       "budget": "10.00"
-    }
-  },
-  "tasks": {
-    "audit": {
-      "prompt": "Run a complete audit of this code (including security!). Write a detailed report you store in {report_dir}. INCLUDE PATCH-READY DIFFS. Save your file as {report_file} but make [date] in this format: YYYY-MM-DD_HHMM. At the very top of the report, below title, add \"Date Created:\" with the full timestamp of when the report was written. DO NOT EDIT CODE."
     },
-    "test": {
-      "prompt": "Analyze the codebase and propose comprehensive unit tests for untested code. Write a detailed report you store in {report_dir}. INCLUDE PATCH-READY DIFFS. Save your file as {report_file} but make [date] in this format: YYYY-MM-DD_HHMM. At the very top of the report, below title, add \"Date Created:\" with the full timestamp of when the report was written. DO NOT EDIT CODE."
-    },
-    "fix": {
-      "prompt": "Analyze the codebase for bugs, issues, and code smells. Fix any problems found and explain what was changed. INCLUDE PATCH-READY DIFFS. Write a detailed report you store in {report_dir}. Save your file as {report_file} but make [date] in this format: YYYY-MM-DD_HHMM. At the very top of the report, below title, add \"Date Created:\" with the full timestamp of when the report was written. DO NOT EDIT CODE."
-    },
-    "refactor": {
-      "prompt": "Review the codebase for opportunities to improve code quality, reduce duplication, and improve maintainability. No need to include patch-ready diffs. Write a detailed report you store in {report_dir}. Save your file as {report_file} but make [date] in this format: YYYY-MM-DD_HHMM. At the very top of the report, below title, add \"Date Created:\" with the full timestamp of when the report was written. DO NOT EDIT CODE."
-    },
-    "quick": {
-      "prompt": "Run a quick but complete analysis of this codebase. Generate a SINGLE combined report in {report_dir} named {report_file} with [date] in format YYYY-MM-DD_HHMM. The report should have 4 sections: (1) AUDIT - Security and code quality issues with PATCH-READY DIFFS, (2) TESTS - Proposed unit tests for untested code with PATCH-READY DIFFS, (3) FIXES - Bugs, issues, and code smells with fixes and PATCH-READY DIFFS, (4) REFACTOR - Opportunities to improve code quality (no diffs needed). At the top add \"Date Created:\" with full timestamp. DO NOT EDIT CODE."
-    },
-    "grade": {
-      "prompt": "Grade the developer who wrote this code and assign a grade (100 being perfect). Then assign grades for all of the following categories and weights: Architecture & Design (25%), Security Practices (20%), Error Handling (15%), Testing (15%), Idioms & Style (15%), and Documentation (10%). Created a final combined score and call it: TOTAL_SCORE. Write a detailed report you store in {report_dir}. Save your file as {report_file} but make [date] in this format: YYYY-MM-DD_HHMM. At the very top of the report, below title, add \"Date Created:\" with the full timestamp of when the report was written. DO NOT EDIT CODE."
-    },
-    "generate": {
-      "prompt": "Generate {number} blog post ideas about {topic}. For each idea, provide a title and brief description."
+    "gemini": {
+      "model": "gemini-3-pro-preview"
     }
   }
 }
