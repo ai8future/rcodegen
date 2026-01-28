@@ -246,6 +246,22 @@ func (r *Runner) Run() *RunResult {
 func (r *Runner) runForWorkDir(cfg *Config, workDir string) int {
 	startTime := time.Now()
 
+	// For multi-codebase runs, regenerate task with correct codebase name
+	// This ensures each codebase gets its own report filename
+	if len(cfg.WorkDirs) > 1 && cfg.TaskShortcut != "" && workDir != "" {
+		codebaseName := filepath.Base(workDir)
+		localTaskConfig := r.Settings.ToTaskConfig(codebaseName, r.Tool.ReportPrefix())
+		r.TaskConfig = localTaskConfig
+
+		// Re-expand the task shortcut with the correct codebase
+		if expanded, ok := localTaskConfig.Tasks[cfg.TaskShortcut]; ok {
+			cfg.Task = expanded
+			// Re-substitute {timestamp}
+			timestamp := time.Now().Format("2006-01-02_1504")
+			cfg.Task = strings.ReplaceAll(cfg.Task, "{timestamp}", timestamp)
+		}
+	}
+
 	// Execute the task
 	var exitCode int
 	if cfg.Task == TaskSuite {

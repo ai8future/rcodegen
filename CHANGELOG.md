@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.4] - 2026-01-28
+
+### Fixed
+- **Multi-codebase report filenames** - Each codebase now gets its own correctly-named report file. Previously, all codebases would use the first codebase's name in the report filename (e.g., `repo1-claude-audit.md` for all repos). Now each repo gets its own filename (e.g., `repo1-claude-audit.md`, `repo2-claude-audit.md`). This fix applies to both the new `-r/--recursive` flag and the existing comma-separated multi-codebase feature.
+
+### Agent
+- Claude:Opus 4.5
+
 ## [1.9.3] - 2026-01-28
 
 ### Added
