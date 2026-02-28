@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -64,8 +66,12 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	cfg.MaxBudget = req.MaxBudget
 	cfg.WorkDirs = req.WorkDirs
 	cfg.Vars = req.Variables
-	cfg.Output = io.Discard // Suppress CLI output; events go via stream
+	cfg.Output = io.Discard // CLI-formatted output suppressed; events go via callback
 	cfg.Logger = logz.New("warn")
+
+	// Capture stderr so we can report errors to the client
+	var stderrBuf bytes.Buffer
+	cfg.Stderr = &stderrBuf
 
 	// Look up task shortcut if task matches a known shortcut name
 	if s.settings != nil && s.settings.Tasks != nil {
@@ -80,15 +86,20 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 		tool.ApplyToolDefaults(cfg)
 	}
 
-	// Set up stream callback so events flow to the gRPC client
-	origOutput := cfg.Output
-	_ = origOutput
+	// Wire up stream callback: convert each StreamEvent to a proto RunEvent
+	cfg.OnStreamEvent = func(event *runner.StreamEvent) {
+		protoEvent := streamEventToProto(runID, event)
+		if protoEvent != nil {
+			stream.Send(protoEvent)
+		}
+	}
+
 	r := &runner.Runner{
 		Tool:     tool,
 		Settings: s.settings,
 	}
 
-	// Use RunWithContext for cancellation support
+	// Run with context for cancellation support
 	result := r.RunWithContext(runCtx, cfg)
 
 	// Send result event
@@ -96,11 +107,14 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 		ExitCode:     int32(result.ExitCode),
 		TotalCostUsd: result.TotalCostUSD,
 	}
+	if stderrBuf.Len() > 0 {
+		resultEvent.Output = stderrBuf.String()
+	}
 	if result.TokenUsage != nil {
 		resultEvent.Usage = &pb.TokenUsage{
-			InputTokens:        int32(result.TokenUsage.InputTokens),
-			OutputTokens:       int32(result.TokenUsage.OutputTokens),
-			CacheReadTokens:    int32(result.TokenUsage.CacheReadInputTokens),
+			InputTokens:         int32(result.TokenUsage.InputTokens),
+			OutputTokens:        int32(result.TokenUsage.OutputTokens),
+			CacheReadTokens:     int32(result.TokenUsage.CacheReadInputTokens),
 			CacheCreationTokens: int32(result.TokenUsage.CacheCreationInputTokens),
 		}
 	}
@@ -114,6 +128,65 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	}
 
 	return nil
+}
+
+// streamEventToProto converts a runner.StreamEvent into a proto RunEvent.
+func streamEventToProto(runID string, event *runner.StreamEvent) *pb.RunEvent {
+	base := &pb.RunEvent{
+		RunId:       runID,
+		TimestampMs: time.Now().UnixMilli(),
+	}
+
+	switch event.Type {
+	case "system":
+		if event.Subtype == "init" {
+			base.Event = &pb.RunEvent_Init{Init: &pb.InitEvent{}}
+			return base
+		}
+		return nil
+
+	case "assistant":
+		if event.Message == nil {
+			return nil
+		}
+		for _, block := range event.Message.Content {
+			switch block.Type {
+			case "text":
+				if block.Text != "" {
+					base.Event = &pb.RunEvent_Text{Text: &pb.TextEvent{Content: block.Text}}
+					return base
+				}
+			case "tool_use":
+				summary := ""
+				if len(block.Input) > 0 {
+					var inputMap map[string]interface{}
+					if json.Unmarshal(block.Input, &inputMap) == nil {
+						// Extract the most useful field for summary
+						for _, key := range []string{"file_path", "command", "pattern", "description", "query"} {
+							if v, ok := inputMap[key].(string); ok {
+								summary = v
+								break
+							}
+						}
+					}
+				}
+				base.Event = &pb.RunEvent_ToolUse{ToolUse: &pb.ToolUseEvent{
+					ToolName: block.Name,
+					Summary:  summary,
+				}}
+				return base
+			}
+		}
+		return nil
+
+	case "result":
+		// Result events are handled separately in RunTask after the run completes,
+		// so we skip them here to avoid duplicates.
+		return nil
+
+	default:
+		return nil
+	}
 }
 
 // RunBundle executes a multi-step bundle and streams progress events.

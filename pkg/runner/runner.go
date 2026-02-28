@@ -569,13 +569,18 @@ func (r *Runner) executeCommandWithContext(ctx context.Context, cfg *Config, wor
 		output = os.Stdout
 	}
 
+	stderr := cfg.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+
 	if r.Tool.UsesStreamOutput() && !cfg.OutputJSON {
-		return r.executeWithStreamParserCtx(ctx, cfg, cmd, output)
+		return r.executeWithStreamParserCtx(ctx, cfg, cmd, output, stderr)
 	}
 
 	// Direct passthrough
 	cmd.Stdout = output
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = stderr
 
 	err := cmd.Run()
 	if err != nil {
@@ -591,22 +596,29 @@ func (r *Runner) executeCommandWithContext(ctx context.Context, cfg *Config, wor
 }
 
 // executeWithStreamParserCtx runs a command with stream parsing and context support
-func (r *Runner) executeWithStreamParserCtx(ctx context.Context, cfg *Config, cmd *exec.Cmd, output io.Writer) int {
+func (r *Runner) executeWithStreamParserCtx(ctx context.Context, cfg *Config, cmd *exec.Cmd, output io.Writer, stderr io.Writer) int {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: could not create stdout pipe: %v\n", err)
+		fmt.Fprintf(stderr, "Error: could not create stdout pipe: %v\n", err)
 		return 1
 	}
 	defer stdout.Close()
 
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: could not start command: %v\n", err)
+		fmt.Fprintf(stderr, "Error: could not start command: %v\n", err)
 		return 1
 	}
 
-	parser := NewStreamParser(output, cfg.Logger)
+	// Use callback-aware parser if a stream callback is configured
+	var parser *StreamParser
+	if cfg.OnStreamEvent != nil {
+		parser = NewStreamParserWithCallback(output, cfg.Logger, cfg.OnStreamEvent)
+	} else {
+		parser = NewStreamParser(output, cfg.Logger)
+	}
+
 	if err := parser.ProcessReader(stdout); err != nil {
 		cfg.Logger.Debug("stream parsing error", "error", err)
 	}

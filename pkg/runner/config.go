@@ -71,6 +71,12 @@ type Config struct {
 	// Output destination (nil defaults to os.Stdout)
 	Output io.Writer
 
+	// Stream event callback (used by gRPC server to forward events)
+	OnStreamEvent StreamCallback
+
+	// Stderr capture (if non-nil, stderr is written here instead of os.Stderr)
+	Stderr io.Writer
+
 	// Token usage (captured from stream output)
 	TokenUsage   *TokenUsage // Token counts from run
 	TotalCostUSD float64     // Total cost in USD

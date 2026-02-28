@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.2] - 2026-02-27
+
+### Fixed
+- **rserve: stream events and stderr back to client** — RunTask now wires up a `StreamCallback` that converts each stream-json event (text, tool_use) into proto messages sent to the gRPC client in real time. Stderr is captured and returned in the result event's output field so errors are visible.
+- **Runner: configurable stderr** — Added `Stderr io.Writer` and `OnStreamEvent StreamCallback` fields to Config so the gRPC server can capture errors and receive events without coupling to os.Stderr.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.2.1] - 2026-02-27
 
 ### Fixed
