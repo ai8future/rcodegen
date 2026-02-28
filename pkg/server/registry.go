@@ -86,14 +86,16 @@ func (rr *RunRegistry) Cancel(runID string) bool {
 	return true
 }
 
-// List returns a snapshot of all active runs.
+// List returns a snapshot of all active runs (copies, safe to read without locks).
 func (rr *RunRegistry) List() []*ActiveRun {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
 
 	result := make([]*ActiveRun, 0, len(rr.runs))
 	for _, r := range rr.runs {
-		result = append(result, r)
+		cp := *r
+		cp.Cancel = nil // Don't expose cancel func
+		result = append(result, &cp)
 	}
 	return result
 }

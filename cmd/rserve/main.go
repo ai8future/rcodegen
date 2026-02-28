@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/server"
@@ -43,17 +44,18 @@ func main() {
 		log.Fatalf("settings error: %v", err)
 	}
 
-	// Build tool registry
-	tools := map[string]runner.Tool{
-		"claude": claude.New(),
-		"codex":  codex.New(),
-		"gemini": gemini.New(),
+	// Tool factories create fresh instances per request to avoid shared mutable state
+	toolFactories := map[string]server.ToolFactory{
+		"claude": func() runner.Tool { return claude.New() },
+		"codex":  func() runner.Tool { return codex.New() },
+		"gemini": func() runner.Tool { return gemini.New() },
 	}
 
 	registry := server.NewRunRegistry(*maxConcurrent)
-	srv := server.NewServer(s, tools, registry)
+	srv := server.NewServer(s, toolFactories, registry)
 
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
+	// Bind localhost only — use a reverse proxy for remote access
+	lis, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *port))
 	if err != nil {
 		log.Fatalf("failed to listen on port %d: %v", *port, err)
 	}
@@ -62,17 +64,30 @@ func main() {
 	pb.RegisterRServeServer(grpcServer, srv)
 	reflection.Register(grpcServer)
 
-	// Graceful shutdown on SIGTERM/SIGINT
-	sigCh := make(chan os.Signal, 1)
+	// Graceful shutdown on SIGTERM/SIGINT with forced stop on second signal
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
 		<-sigCh
-		log.Println("shutting down gRPC server...")
-		grpcServer.GracefulStop()
+		log.Println("shutting down gRPC server (30s deadline)...")
+		done := make(chan struct{})
+		go func() {
+			grpcServer.GracefulStop()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-sigCh:
+			log.Println("second signal received, forcing stop")
+			grpcServer.Stop()
+		case <-time.After(30 * time.Second):
+			log.Println("graceful stop timed out, forcing stop")
+			grpcServer.Stop()
+		}
 	}()
 
-	log.Printf("rserve %s listening on :%d (max-concurrent=%d)", runner.GetVersion(), *port, *maxConcurrent)
+	log.Printf("rserve %s listening on 127.0.0.1:%d (max-concurrent=%d)", runner.GetVersion(), *port, *maxConcurrent)
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("serve error: %v", err)
 	}

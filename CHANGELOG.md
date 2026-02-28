@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.4] - 2026-02-27
+
+### Fixed
+- **rserve: fix race condition on shared tool instances** — Tool structs (especially Claude's `currentModel`) were shared across concurrent requests. Replaced shared tool map with per-request factory functions that create fresh instances.
+- **rserve: cancel run on client disconnect** — `stream.Send` errors now trigger context cancellation so the subprocess is killed instead of wasting API credits.
+- **rserve: capture cancel func from registry** — Was previously discarded, causing goroutine leaks and preventing cancellation.
+- **rserve: handle multi-block assistant messages** — `streamEventToProto` now returns a slice, sending all text and tool_use blocks instead of only the first.
+- **rserve: fix bundle token count type assertion** — Envelope result values are `float64` from JSON; added `toInt32` helper that handles both `int` and `float64`.
+- **rserve: bind localhost only** — Server now listens on `127.0.0.1` instead of all interfaces.
+- **rserve: graceful shutdown with 30s deadline** — Second SIGINT/SIGTERM forces immediate stop.
+- **rserve: protect stream.Send with mutex** — Defensive guard against future concurrent sends.
+- **registry: List() returns copies** — Prevents external mutation of internal run state.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.2.3] - 2026-02-27
 
 ### Fixed

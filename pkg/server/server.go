@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"rcodegen/pkg/bundle"
@@ -18,36 +19,44 @@ import (
 	"github.com/ai8future/chassis-go/v5/logz"
 )
 
+// ToolFactory creates a fresh tool instance to avoid shared mutable state.
+type ToolFactory func() runner.Tool
+
 // Server implements the RServe gRPC service.
 type Server struct {
 	pb.UnimplementedRServeServer
-	settings *settings.Settings
-	tools    map[string]runner.Tool
-	registry *RunRegistry
+	settings     *settings.Settings
+	toolFactories map[string]ToolFactory
+	registry     *RunRegistry
 }
 
 // NewServer creates a new gRPC server instance.
-func NewServer(s *settings.Settings, tools map[string]runner.Tool, registry *RunRegistry) *Server {
+// toolFactories maps tool names to factory functions that create fresh instances.
+func NewServer(s *settings.Settings, toolFactories map[string]ToolFactory, registry *RunRegistry) *Server {
 	return &Server{
-		settings: s,
-		tools:    tools,
-		registry: registry,
+		settings:      s,
+		toolFactories: toolFactories,
+		registry:      registry,
 	}
 }
 
 // RunTask executes a single tool task and streams events back.
 func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer) error {
 	// Validate tool
-	tool, ok := s.tools[req.Tool]
+	factory, ok := s.toolFactories[req.Tool]
 	if !ok {
 		return fmt.Errorf("unknown tool: %s", req.Tool)
 	}
 
+	// Create a fresh tool instance (avoids shared mutable state between requests)
+	tool := factory()
+
 	// Acquire a concurrency slot
-	runID, runCtx, _, err := s.registry.Acquire(stream.Context(), req.Tool, req.Task)
+	runID, runCtx, cancel, err := s.registry.Acquire(stream.Context(), req.Tool, req.Task)
 	if err != nil {
 		return fmt.Errorf("failed to acquire run slot: %w", err)
 	}
+	defer cancel()
 	defer s.registry.Release(runID)
 
 	// Send init event
@@ -100,11 +109,23 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 		cfg.Model = tool.DefaultModel()
 	}
 
-	// Wire up stream callback: convert each StreamEvent to a proto RunEvent
+	// Mutex-protected send to guard against future concurrency
+	var sendMu sync.Mutex
+	safeSend := func(event *pb.RunEvent) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return stream.Send(event)
+	}
+
+	// Wire up stream callback: convert each StreamEvent to proto RunEvent(s).
+	// Cancel the run context if sending fails (client disconnected).
 	cfg.OnStreamEvent = func(event *runner.StreamEvent) {
-		protoEvent := streamEventToProto(runID, event)
-		if protoEvent != nil {
-			stream.Send(protoEvent)
+		events := streamEventToProto(runID, event)
+		for _, ev := range events {
+			if err := safeSend(ev); err != nil {
+				cancel() // Stop the subprocess — client is gone
+				return
+			}
 		}
 	}
 
@@ -133,7 +154,7 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 		}
 	}
 
-	if err := stream.Send(&pb.RunEvent{
+	if err := safeSend(&pb.RunEvent{
 		RunId:       runID,
 		TimestampMs: time.Now().UnixMilli(),
 		Event:       &pb.RunEvent_Result{Result: resultEvent},
@@ -144,18 +165,17 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	return nil
 }
 
-// streamEventToProto converts a runner.StreamEvent into a proto RunEvent.
-func streamEventToProto(runID string, event *runner.StreamEvent) *pb.RunEvent {
-	base := &pb.RunEvent{
-		RunId:       runID,
-		TimestampMs: time.Now().UnixMilli(),
-	}
-
+// streamEventToProto converts a runner.StreamEvent into zero or more proto RunEvents.
+// Returns a slice to handle messages with multiple content blocks.
+func streamEventToProto(runID string, event *runner.StreamEvent) []*pb.RunEvent {
 	switch event.Type {
 	case "system":
 		if event.Subtype == "init" {
-			base.Event = &pb.RunEvent_Init{Init: &pb.InitEvent{}}
-			return base
+			return []*pb.RunEvent{{
+				RunId:       runID,
+				TimestampMs: time.Now().UnixMilli(),
+				Event:       &pb.RunEvent_Init{Init: &pb.InitEvent{}},
+			}}
 		}
 		return nil
 
@@ -163,19 +183,22 @@ func streamEventToProto(runID string, event *runner.StreamEvent) *pb.RunEvent {
 		if event.Message == nil {
 			return nil
 		}
+		var events []*pb.RunEvent
 		for _, block := range event.Message.Content {
 			switch block.Type {
 			case "text":
 				if block.Text != "" {
-					base.Event = &pb.RunEvent_Text{Text: &pb.TextEvent{Content: block.Text}}
-					return base
+					events = append(events, &pb.RunEvent{
+						RunId:       runID,
+						TimestampMs: time.Now().UnixMilli(),
+						Event:       &pb.RunEvent_Text{Text: &pb.TextEvent{Content: block.Text}},
+					})
 				}
 			case "tool_use":
 				summary := ""
 				if len(block.Input) > 0 {
 					var inputMap map[string]interface{}
 					if json.Unmarshal(block.Input, &inputMap) == nil {
-						// Extract the most useful field for summary
 						for _, key := range []string{"file_path", "command", "pattern", "description", "query"} {
 							if v, ok := inputMap[key].(string); ok {
 								summary = v
@@ -184,18 +207,20 @@ func streamEventToProto(runID string, event *runner.StreamEvent) *pb.RunEvent {
 						}
 					}
 				}
-				base.Event = &pb.RunEvent_ToolUse{ToolUse: &pb.ToolUseEvent{
-					ToolName: block.Name,
-					Summary:  summary,
-				}}
-				return base
+				events = append(events, &pb.RunEvent{
+					RunId:       runID,
+					TimestampMs: time.Now().UnixMilli(),
+					Event: &pb.RunEvent_ToolUse{ToolUse: &pb.ToolUseEvent{
+						ToolName: block.Name,
+						Summary:  summary,
+					}},
+				})
 			}
 		}
-		return nil
+		return events
 
 	case "result":
-		// Result events are handled separately in RunTask after the run completes,
-		// so we skip them here to avoid duplicates.
+		// Result events are handled separately after the run completes.
 		return nil
 
 	default:
@@ -206,10 +231,11 @@ func streamEventToProto(runID string, event *runner.StreamEvent) *pb.RunEvent {
 // RunBundle executes a multi-step bundle and streams progress events.
 func (s *Server) RunBundle(req *pb.RunBundleRequest, stream pb.RServe_RunBundleServer) error {
 	// Acquire concurrency slot
-	runID, runCtx, _, err := s.registry.Acquire(stream.Context(), "bundle", req.Bundle)
+	runID, _, cancel, err := s.registry.Acquire(stream.Context(), "bundle", req.Bundle)
 	if err != nil {
 		return fmt.Errorf("failed to acquire run slot: %w", err)
 	}
+	defer cancel()
 	defer s.registry.Release(runID)
 
 	// Send init event
@@ -227,13 +253,15 @@ func (s *Server) RunBundle(req *pb.RunBundleRequest, stream pb.RServe_RunBundleS
 		return fmt.Errorf("bundle load failed: %w", err)
 	}
 
-	// Build inputs map
+	// Build inputs map (defensive copy — proto maps should not be mutated)
 	inputs := make(map[string]string)
 	for k, v := range req.Inputs {
 		inputs[k] = v
 	}
 
 	// Create orchestrator
+	// NOTE: orchestrator.Run creates its own signal context internally.
+	// Proper context propagation requires orchestrator API changes (future work).
 	orch := orchestrator.New(s.settings)
 	orch.SetLiveMode(false) // No animated display for gRPC
 	if req.OpusOnly {
@@ -243,9 +271,7 @@ func (s *Server) RunBundle(req *pb.RunBundleRequest, stream pb.RServe_RunBundleS
 		orch.SetFlashOnly(true)
 	}
 
-	// Run the bundle (orchestrator handles context internally via signal)
 	env, runErr := orch.Run(b, inputs)
-	_ = runCtx // context propagation is handled internally by orchestrator
 
 	// Send result
 	resultEvent := &pb.ResultEvent{
@@ -260,15 +286,11 @@ func (s *Server) RunBundle(req *pb.RunBundleRequest, stream pb.RServe_RunBundleS
 			resultEvent.TotalCostUsd = cost
 		}
 		if env.Result["input_tokens"] != nil && env.Result["output_tokens"] != nil {
-			inTok, _ := env.Result["input_tokens"].(int)
-			outTok, _ := env.Result["output_tokens"].(int)
-			cacheRead, _ := env.Result["cache_read_tokens"].(int)
-			cacheWrite, _ := env.Result["cache_write_tokens"].(int)
 			resultEvent.Usage = &pb.TokenUsage{
-				InputTokens:        int32(inTok),
-				OutputTokens:       int32(outTok),
-				CacheReadTokens:    int32(cacheRead),
-				CacheCreationTokens: int32(cacheWrite),
+				InputTokens:         toInt32(env.Result["input_tokens"]),
+				OutputTokens:        toInt32(env.Result["output_tokens"]),
+				CacheReadTokens:     toInt32(env.Result["cache_read_tokens"]),
+				CacheCreationTokens: toInt32(env.Result["cache_write_tokens"]),
 			}
 		}
 	}
@@ -345,7 +367,24 @@ func (s *Server) CancelRun(ctx context.Context, req *pb.CancelRunRequest) (*pb.C
 	return &pb.CancelRunResponse{Cancelled: false, Message: "run not found"}, nil
 }
 
+// toInt32 safely converts interface{} to int32, handling both int and float64.
+func toInt32(v interface{}) int32 {
+	switch n := v.(type) {
+	case int:
+		return int32(n)
+	case float64:
+		return int32(n)
+	case int64:
+		return int32(n)
+	default:
+		return 0
+	}
+}
+
 func truncateStr(s string, max int) string {
+	if max < 4 {
+		max = 4
+	}
 	if len(s) <= max {
 		return s
 	}
