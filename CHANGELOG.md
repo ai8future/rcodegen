@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.3] - 2026-02-27
+
+### Fixed
+- **rserve: inject settings into tools and default model** — Tools were not receiving settings via `SetSettings()`, causing `ApplyToolDefaults` to skip model/budget configuration. Also added fallback to `tool.DefaultModel()` if model is still empty after defaults, and ensured request-level overrides take priority over settings defaults.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.2.2] - 2026-02-27
 
 ### Fixed

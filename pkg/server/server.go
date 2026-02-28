@@ -59,11 +59,14 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 		return err
 	}
 
+	// Inject settings into the tool (mirrors CLI's SettingsAware path)
+	if sa, ok := tool.(runner.SettingsAware); ok && s.settings != nil {
+		sa.SetSettings(s.settings)
+	}
+
 	// Build config
 	cfg := runner.NewConfig()
 	cfg.Task = req.Task
-	cfg.Model = req.Model
-	cfg.MaxBudget = req.MaxBudget
 	cfg.WorkDirs = req.WorkDirs
 	cfg.Vars = req.Variables
 	cfg.Output = io.Discard // CLI-formatted output suppressed; events go via callback
@@ -81,9 +84,20 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 		}
 	}
 
-	// Apply tool defaults
-	if s.settings != nil {
-		tool.ApplyToolDefaults(cfg)
+	// Apply tool defaults first (sets model, budget, etc. from settings)
+	tool.ApplyToolDefaults(cfg)
+
+	// Then override with request-level values (user takes priority)
+	if req.Model != "" {
+		cfg.Model = req.Model
+	}
+	if req.MaxBudget != "" {
+		cfg.MaxBudget = req.MaxBudget
+	}
+
+	// If model is still empty, use the tool's built-in default
+	if cfg.Model == "" {
+		cfg.Model = tool.DefaultModel()
 	}
 
 	// Wire up stream callback: convert each StreamEvent to a proto RunEvent
