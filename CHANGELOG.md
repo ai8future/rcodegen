@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.1] - 2026-02-27
+
+### Fixed
+- **rserve: enable gRPC reflection** — `grpcurl` and other generic gRPC clients could not discover the service. Added `reflection.Register()` so the server supports the reflection API.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.2.0] - 2026-02-27
 
 ### Added

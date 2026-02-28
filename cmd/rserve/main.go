@@ -21,6 +21,7 @@ import (
 
 	chassis "github.com/ai8future/chassis-go/v5"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 func main() {
@@ -59,6 +60,7 @@ func main() {
 
 	grpcServer := grpc.NewServer()
 	pb.RegisterRServeServer(grpcServer, srv)
+	reflection.Register(grpcServer)
 
 	// Graceful shutdown on SIGTERM/SIGINT
 	sigCh := make(chan os.Signal, 1)
