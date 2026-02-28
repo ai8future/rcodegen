@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.0] - 2026-02-27
+
+### Added
+- **`rserve` gRPC server** — New binary exposing rclaude, rcodex, rgemini, and bundle orchestration as streaming gRPC RPCs. Enables the web dashboard and other clients to trigger tasks programmatically, stream real-time progress, and cancel running tasks.
+  - `RunTask` — Run a single tool task with streaming events
+  - `RunBundle` — Run an orchestrated multi-step bundle with streaming progress
+  - `ListTasks` — List available task shortcuts and bundles
+  - `GetStatus` — Server health, version, and active run info
+  - `CancelRun` — Cancel a running task by run ID
+  - Concurrency control via configurable `--max-concurrent` (default 3)
+  - Default port: 26147 (djb2 hash of "rserve")
+- **`RunWithContext` on Runner** — Programmatic entry point for running tasks with context cancellation, skipping CLI arg parsing and signal handling.
+- **`StreamCallback` on StreamParser** — Optional callback fired for each parsed stream event, used by the gRPC server to forward events.
+- **`Output io.Writer` on Config** — Configurable output destination (defaults to os.Stdout for backward compatibility).
+- **Proto definition** — `proto/rserve.proto` with full service and message definitions.
+- **`make proto` target** — Regenerate Go code from proto definitions.
+- **`make rserve` target** — Build the gRPC server binary.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.1.3] - 2026-02-19
 
 ### Fixed

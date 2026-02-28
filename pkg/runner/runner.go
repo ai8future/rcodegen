@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -518,6 +519,110 @@ func (r *Runner) executeWithStreamParser(cfg *Config, cmd *exec.Cmd) int {
 
 	err = cmd.Wait()
 	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode()
+		}
+		return 1
+	}
+	return 0
+}
+
+// RunWithContext runs a task with cancellation support and a pre-built Config.
+// This is the programmatic entry point used by the gRPC server — it skips
+// CLI arg parsing, banner printing, and signal handling (the caller owns those).
+func (r *Runner) RunWithContext(ctx context.Context, cfg *Config) *RunResult {
+	if cfg.Output == nil {
+		cfg.Output = os.Stdout
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = logz.New("warn")
+	}
+
+	workDir := ""
+	if len(cfg.WorkDirs) > 0 {
+		workDir = cfg.WorkDirs[0]
+	} else {
+		workDir, _ = os.Getwd()
+	}
+
+	exitCode := r.executeCommandWithContext(ctx, cfg, workDir, cfg.Task)
+
+	return &RunResult{
+		ExitCode:     exitCode,
+		TokenUsage:   cfg.TokenUsage,
+		TotalCostUSD: cfg.TotalCostUSD,
+	}
+}
+
+// executeCommandWithContext builds and runs the tool command with context for cancellation
+func (r *Runner) executeCommandWithContext(ctx context.Context, cfg *Config, workDir, task string) int {
+	origCmd := r.Tool.BuildCommand(cfg, workDir, task)
+	cfg.Logger.Debug("executing command with context", "binary", origCmd.Path, "dir", origCmd.Dir)
+
+	// Rebuild with context for cancellation support
+	cmd := exec.CommandContext(ctx, origCmd.Path, origCmd.Args[1:]...)
+	cmd.Dir = origCmd.Dir
+	cmd.Env = origCmd.Env
+
+	output := cfg.Output
+	if output == nil {
+		output = os.Stdout
+	}
+
+	if r.Tool.UsesStreamOutput() && !cfg.OutputJSON {
+		return r.executeWithStreamParserCtx(ctx, cfg, cmd, output)
+	}
+
+	// Direct passthrough
+	cmd.Stdout = output
+	cmd.Stderr = os.Stderr
+
+	err := cmd.Run()
+	if err != nil {
+		if ctx.Err() != nil {
+			return 130 // Interrupted
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode()
+		}
+		return 1
+	}
+	return 0
+}
+
+// executeWithStreamParserCtx runs a command with stream parsing and context support
+func (r *Runner) executeWithStreamParserCtx(ctx context.Context, cfg *Config, cmd *exec.Cmd, output io.Writer) int {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: could not create stdout pipe: %v\n", err)
+		return 1
+	}
+	defer stdout.Close()
+
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: could not start command: %v\n", err)
+		return 1
+	}
+
+	parser := NewStreamParser(output, cfg.Logger)
+	if err := parser.ProcessReader(stdout); err != nil {
+		cfg.Logger.Debug("stream parsing error", "error", err)
+	}
+
+	if parser.Usage != nil {
+		cfg.TokenUsage = parser.Usage
+	}
+	if parser.TotalCostUSD > 0 {
+		cfg.TotalCostUSD = parser.TotalCostUSD
+	}
+
+	err = cmd.Wait()
+	if err != nil {
+		if ctx.Err() != nil {
+			return 130
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return exitErr.ExitCode()
 		}

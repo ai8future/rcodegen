@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"io"
 	"log/slog"
 
 	"rcodegen/pkg/colors"
@@ -66,6 +67,9 @@ type Config struct {
 
 	// Execution control
 	DryRun bool // If true, show what would be executed without running
+
+	// Output destination (nil defaults to os.Stdout)
+	Output io.Writer
 
 	// Token usage (captured from stream output)
 	TokenUsage   *TokenUsage // Token counts from run

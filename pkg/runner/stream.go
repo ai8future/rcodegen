@@ -55,6 +55,10 @@ type ContentBlock struct {
 	Input json.RawMessage `json:"input,omitempty"`
 }
 
+// StreamCallback is called for each parsed event from the stream.
+// Used by the gRPC server to forward events to clients.
+type StreamCallback func(event *StreamEvent)
+
 // StreamParser processes stream-json output and formats it nicely
 type StreamParser struct {
 	writer       io.Writer
@@ -64,6 +68,7 @@ type StreamParser struct {
 	Usage        *TokenUsage // Captured from result event
 	TotalCostUSD float64     // Captured from result event
 	logger       *slog.Logger // Structured logger for diagnostics
+	callback     StreamCallback // Optional callback for each event
 }
 
 // NewStreamParser creates a new stream parser
@@ -75,6 +80,19 @@ func NewStreamParser(w io.Writer, logger ...*slog.Logger) *StreamParser {
 		p.logger = logger[0]
 	}
 	return p
+}
+
+// NewStreamParserWithCallback creates a parser that emits events via callback
+// in addition to writing formatted output to w. If w is nil, output is suppressed.
+func NewStreamParserWithCallback(w io.Writer, logger *slog.Logger, cb StreamCallback) *StreamParser {
+	if w == nil {
+		w = io.Discard
+	}
+	return &StreamParser{
+		writer:   w,
+		logger:   logger,
+		callback: cb,
+	}
 }
 
 // ProcessLine processes a single JSON line from stream output
@@ -89,6 +107,11 @@ func (p *StreamParser) ProcessLine(line string) {
 		// Not valid JSON, just print as-is
 		fmt.Fprintln(p.writer, line)
 		return
+	}
+
+	// Fire callback if registered
+	if p.callback != nil {
+		p.callback(&event)
 	}
 
 	switch event.Type {
