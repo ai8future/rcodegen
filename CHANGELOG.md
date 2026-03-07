@@ -1,9 +1,27 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+## [2.4.0] - 2026-03-07
+
+### Added
+- **New `rbatch` batch job runner** — Execute many AI jobs from a queue with session-aware concurrency, budget checking, and checkpoint/resume support.
+  - `rbatch run <manifest.json>` — run a batch manifest with configurable concurrency and budget controls
+  - `rbatch spool <directory>` — process pending jobs from a spool directory (pending/running/done/failed lifecycle)
+  - `rbatch watch <directory>` — continuous monitoring (stub, planned for future)
+  - `rbatch resume [state.json]` — resume from checkpoint after budget stop or crash
+  - `rbatch status` — show batch history and status
+  - Session chains: jobs sharing a session run sequentially with shared AI context, independent chains run in parallel
+  - Budget awareness: checks remaining credits via status-only between session groups, configurable stop/wait/ask behavior
+  - Dual execution modes: local (in-process via pkg/runner) or remote (gRPC delegation to rserve via --server flag)
+  - Live terminal progress display with per-job results and batch summary reporting
+- **New `pkg/batch/` package** — manifest parsing, job queue state machine, session group scheduler, local/remote executors, checkpoint save/resume, budget checker, spool directory, reporter
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.3.2] - 2026-03-07
 - Sync uncommitted changes
-
-All notable changes to this project will be documented in this file.
 
 ## [2.3.1] - 2026-03-07
 
