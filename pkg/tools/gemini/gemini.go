@@ -7,6 +7,7 @@ import (
 
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/settings"
+	"rcodegen/pkg/tracking"
 )
 
 // Compile-time interface satisfaction check
@@ -14,7 +15,8 @@ var _ runner.Tool = (*Tool)(nil)
 
 // Tool implements the runner.Tool interface for Gemini CLI
 type Tool struct {
-	settings *settings.Settings
+	settings     *settings.Settings
+	currentModel string // Track current model for status display
 }
 
 // New creates a new Gemini tool
@@ -49,12 +51,12 @@ func (t *Tool) ReportPrefix() string {
 
 // ValidModels returns the list of valid model names
 func (t *Tool) ValidModels() []string {
-	return []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-pro", "gemini-2.0-flash", "gemini-3-pro-preview", "gemini-3-flash-preview"}
+	return []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-pro-preview"}
 }
 
 // DefaultModel returns the default model name
 func (t *Tool) DefaultModel() string {
-	return "gemini-3-pro-preview"
+	return "gemini-3.1-pro-preview"
 }
 
 // DefaultModelSetting returns the default model from settings
@@ -65,6 +67,9 @@ func (t *Tool) DefaultModelSetting() string {
 
 // BuildCommand constructs the exec.Cmd for running a task
 func (t *Tool) BuildCommand(cfg *runner.Config, workDir, task string) *exec.Cmd {
+	// Store model for status tracking
+	t.currentModel = cfg.Model
+
 	var args []string
 
 	// Resume existing session if available
@@ -98,29 +103,85 @@ func (t *Tool) BuildCommand(cfg *runner.Config, workDir, task string) *exec.Cmd 
 	return cmd
 }
 
-// ShowStatus displays Gemini usage status (not implemented)
+// ShowStatus displays Gemini usage status
 func (t *Tool) ShowStatus() {
-	fmt.Printf("  %sStatus tracking not available for Gemini%s\n", runner.Dim, runner.Reset)
+	tracking.ShowGeminiStatusOnly()
 }
 
-// SupportsStatusTracking returns false - Gemini doesn't support status tracking yet
+// SupportsStatusTracking returns true - Gemini supports before/after tracking via iTerm2
 func (t *Tool) SupportsStatusTracking() bool {
-	return false
+	return true
 }
 
-// CaptureStatusBefore captures status before running tasks (not supported)
+// CaptureStatusBefore captures Gemini usage status before tasks
 func (t *Tool) CaptureStatusBefore() interface{} {
-	return nil
+	status := tracking.GetGeminiStatus()
+	if status.Error != "" {
+		if status.IsITerm2Error() {
+			fmt.Printf("  %sNote:%s Usage tracking requires iTerm2 with Python API\n", runner.Dim, runner.Reset)
+		} else {
+			fmt.Printf("  %sNote:%s Could not capture status before task\n", runner.Dim, runner.Reset)
+		}
+		return nil
+	}
+	tracking.PrintGeminiStatusBefore(status, t.currentModel)
+	return status
 }
 
-// CaptureStatusAfter captures status after running tasks (not supported)
+// CaptureStatusAfter captures Gemini usage status after tasks
 func (t *Tool) CaptureStatusAfter() interface{} {
-	return nil
+	return tracking.GetGeminiStatus()
 }
 
-// PrintStatusSummary prints status comparison (not supported)
+// PrintStatusSummary prints the Gemini usage comparison
 func (t *Tool) PrintStatusSummary(before, after interface{}) {
-	// No-op: Gemini doesn't support status tracking
+	statusBefore, ok1 := before.(*tracking.GeminiStatus)
+	statusAfter, ok2 := after.(*tracking.GeminiStatus)
+
+	if !ok1 || !ok2 || statusBefore == nil || statusAfter == nil {
+		return
+	}
+
+	if len(statusBefore.Models) == 0 || len(statusAfter.Models) == 0 {
+		fmt.Printf("  %sUsage:%s        %sdata not available%s\n", runner.Dim, runner.Reset, runner.Yellow, runner.Reset)
+		return
+	}
+
+	// Show status for the current model
+	mBefore := statusBefore.GetModelStatus(t.currentModel)
+	mAfter := statusAfter.GetModelStatus(t.currentModel)
+
+	if mBefore == nil && len(statusBefore.Models) > 0 {
+		mBefore = &statusBefore.Models[0]
+	}
+	if mAfter == nil && len(statusAfter.Models) > 0 {
+		mAfter = &statusAfter.Models[0]
+	}
+
+	if mBefore != nil && mAfter != nil && mBefore.PctLeft != nil && mAfter.PctLeft != nil {
+		used := *mBefore.PctLeft - *mAfter.PctLeft
+		if used < 0 {
+			used = 0
+		}
+
+		resets := ""
+		if mAfter.ResetsISO != nil {
+			countdown := tracking.FormatResetsIn(mAfter.ResetsISO)
+			if countdown != "" {
+				resets = fmt.Sprintf(" %sresets %s%s", runner.Dim, countdown, runner.Reset)
+			}
+		} else if mAfter.ResetsIn != nil {
+			resets = fmt.Sprintf(" %sresets in %s%s", runner.Dim, *mAfter.ResetsIn, runner.Reset)
+		}
+
+		fmt.Printf("  %sUsage:%s        %.1f%% → %s%.1f%%%s%s\n", runner.Dim, runner.Reset,
+			*mBefore.PctLeft, runner.Green, *mAfter.PctLeft, runner.Reset, resets)
+		fmt.Printf("  %s───────────────────────────────────────%s\n", runner.Dim, runner.Reset)
+		fmt.Printf("  %sRun cost:%s     %s%.1f%%%s\n",
+			runner.Dim, runner.Reset, runner.Yellow, used, runner.Reset)
+	} else {
+		fmt.Printf("  %sUsage:%s        %sdata not available%s\n", runner.Dim, runner.Reset, runner.Yellow, runner.Reset)
+	}
 }
 
 // ToolSpecificFlags returns Gemini-specific flag definitions
@@ -131,6 +192,20 @@ func (t *Tool) ToolSpecificFlags() []runner.FlagDef {
 			Description: "Use gemini-3-flash-preview model",
 			TakesArg:    false,
 			Target:      "Flash",
+		},
+		{
+			Short:       "-s",
+			Long:        "--status",
+			Description: "Track usage before/after task",
+			TakesArg:    false,
+			Target:      "TrackStatus",
+		},
+		{
+			Short:       "-S",
+			Long:        "--no-status",
+			Description: "Disable usage tracking",
+			TakesArg:    false,
+			Target:      "NoTrackStatus",
 		},
 	}
 }
@@ -192,7 +267,16 @@ func (t *Tool) ToolSpecificHelpSections() []runner.HelpSection {
 		{
 			Title: "Gemini Options",
 			Lines: []string{
-				"  " + runner.Green + "--flash" + runner.Reset + "            Use gemini-3-flash-preview instead of gemini-3-pro-preview",
+				"  " + runner.Green + "--flash" + runner.Reset + "            Use gemini-3-flash-preview instead of gemini-3.1-pro-preview",
+			},
+		},
+		{
+			Title: "Status Options",
+			Lines: []string{
+				fmt.Sprintf("  %s-s%s, %s--status%s          Track usage before/after task",
+					runner.Green, runner.Reset, runner.Green, runner.Reset),
+				fmt.Sprintf("  %s-S%s, %s--no-status%s       Disable usage tracking",
+					runner.Green, runner.Reset, runner.Green, runner.Reset),
 			},
 		},
 	}

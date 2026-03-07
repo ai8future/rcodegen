@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.13] - 2026-03-07
+
+### Added
+- **rgemini --status-only** — New usage tracking for Gemini CLI via iTerm2 API. Creates a temporary tab, runs `/usage`, parses the model table (model names, percentages, reset times), and displays formatted output. Supports before/after tracking with `-s`/`-S` flags, matching rclaude and rcodex patterns.
+- **get_gemini_status.py** — Python script to capture Gemini `/usage` output via iTerm2 screen scraping. Parses flexible table format with model names, percentages, and "resets in Xh" durations. Converts durations to ISO timestamps for countdown display.
+- **gemini_wrapper.sh** — PATH wrapper for launching gemini CLI in iTerm2 tabs with minimal shell environment.
+- **pkg/tracking/gemini.go** — Go tracking package for Gemini: GeminiStatus struct, GetGeminiStatus(), ShowGeminiStatusOnly(), PrintGeminiStatusBefore(), with per-model status lookup.
+
+### Changed
+- **Updated Gemini valid models** — Refreshed model list to match current Gemini CLI: gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite, gemini-3-flash-preview, gemini-3.1-pro-preview. Default model updated to gemini-3.1-pro-preview.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.2.12] - 2026-03-07
 
 ### Fixed
