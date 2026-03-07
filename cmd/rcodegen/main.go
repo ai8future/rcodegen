@@ -7,17 +7,23 @@ import (
 	"os"
 	"strings"
 
+	"log"
+
 	"rcodegen/pkg/bundle"
 	_ "rcodegen/pkg/executor" // Register dispatcher factory via init()
 	"rcodegen/pkg/orchestrator"
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/settings"
 
-	chassis "github.com/ai8future/chassis-go/v6"
+	chassis "github.com/ai8future/chassis-go/v8"
+	"github.com/ai8future/chassis-go/v8/registry"
 )
 
 func main() {
-	chassis.RequireMajor(6)
+	chassis.RequireMajor(8)
+	if err := registry.InitCLI(chassis.Version); err != nil {
+		log.Fatalf("registry: %v", err)
+	}
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
@@ -127,8 +133,10 @@ func runBundle() {
 	}
 
 	if err != nil || env.Status != "success" {
+		registry.ShutdownCLI(1)
 		os.Exit(1)
 	}
+	registry.ShutdownCLI(0)
 }
 
 func listBundles() {

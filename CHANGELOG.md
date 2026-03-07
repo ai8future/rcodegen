@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.2] - 2026-03-07
+
+### Changed
+- **Upgraded chassis-go from v7.0.0 to v8.0.3** — Updated Go module path from `chassis-go/v7` to `chassis-go/v8` across 10 source files. Bumped `chassis.RequireMajor(7)` to `RequireMajor(8)` in all 7 entry points (rclaude, rcodex, rgemini, rcodegen, rserve, rbatch, settings_test). Updated README example. Updated `go.mod` require and replace directives. v8 adds xyops client, deploy improvements, tick jitter, and bug fixes.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.4.1] - 2026-03-07
 
 ### Fixed

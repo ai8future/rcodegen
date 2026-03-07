@@ -21,12 +21,12 @@ import (
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/settings"
 
-	chassis "github.com/ai8future/chassis-go/v7"
-	"github.com/ai8future/chassis-go/v7/registry"
+	chassis "github.com/ai8future/chassis-go/v8"
+	"github.com/ai8future/chassis-go/v8/registry"
 )
 
 func main() {
-	chassis.RequireMajor(7)
+	chassis.RequireMajor(8)
 	if err := registry.InitCLI(chassis.Version); err != nil {
 		log.Fatalf("registry: %v", err)
 	}
