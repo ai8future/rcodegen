@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.8] - 2026-03-07
+
+### Fixed
+- **get_claude_status.py: null byte handling** — iTerm2 screen buffer pads empty cells with null bytes, which broke regex parsing of credit percentages. Now replaces null bytes with spaces so text parses correctly.
+- **get_claude_status.py: weekly reset time regex** — Claude now outputs "Resets Mar 13 at 8am" (with "at") but the regex only matched "Resets Mar 13, 9am". Added optional "at" keyword to the pattern.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.2.7] - 2026-03-07
 
 ### Added

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 
 	"rcodegen/pkg/runner"
@@ -132,6 +133,18 @@ func (t *Tool) BuildCommand(cfg *runner.Config, workDir, task string) *exec.Cmd 
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
+
+	// Strip CLAUDECODE from the subprocess environment so that claude does not
+	// refuse to launch with "nested session" error when rserve (or any other
+	// wrapper) itself runs inside a Claude Code session.
+	env := os.Environ()
+	filtered := env[:0]
+	for _, e := range env {
+		if !strings.HasPrefix(e, "CLAUDECODE=") {
+			filtered = append(filtered, e)
+		}
+	}
+	cmd.Env = filtered
 
 	return cmd
 }

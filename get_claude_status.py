@@ -97,8 +97,8 @@ def parse_status_output(text: str) -> dict:
         result["session_resets"] = session_section.group(1)
 
     # Weekly reset - look for "Resets" after "Current week (all models)"
-    # Format: "Resets Jan 15, 9am"
-    weekly_section = re.search(r'Current week\s*\(all models\).*?Resets\s+([A-Za-z]+\s+\d+,?\s+\d{1,2}(?:am|pm))', text, re.IGNORECASE | re.DOTALL)
+    # Format: 'Resets Mar 13 at 8am' or 'Resets Jan 15, 9am'
+    weekly_section = re.search(r'Current week\s*\(all models\).*?Resets\s+([A-Za-z]+\s+\d+,?\s+(?:at\s+)?\d{1,2}(?:am|pm))', text, re.IGNORECASE | re.DOTALL)
     if weekly_section:
         result["weekly_resets"] = weekly_section.group(1)
 
@@ -106,9 +106,11 @@ def parse_status_output(text: str) -> dict:
 
 
 def strip_ansi(text: str) -> str:
-    """Remove ANSI escape codes from text."""
+    """Remove ANSI escape codes and null bytes from text."""
     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-    return ansi_escape.sub('', text)
+    text = ansi_escape.sub('', text)
+    text = text.replace('\x00', ' ')
+    return text
 
 
 async def get_screen_text(session) -> str:

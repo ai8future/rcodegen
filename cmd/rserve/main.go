@@ -28,7 +28,7 @@ import (
 func main() {
 	chassis.RequireMajor(5)
 
-	port := flag.Int("port", 26147, "gRPC listen port")
+	port := flag.Int("port", server.DefaultPort, "gRPC listen port")
 	maxConcurrent := flag.Int("max-concurrent", 3, "max simultaneous runs")
 	showVersion := flag.Bool("v", false, "show version and exit")
 	flag.Parse()
