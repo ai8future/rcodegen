@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.10] - 2026-03-07
+
+### Fixed
+- **get_codex_status.py: robust parser and iTerm2 guards** — Rewrote with same robustness improvements as claude script: iTerm2 environment check before importing iterm2, null byte handling in strip_ansi, section-based parser using keyword classification instead of brittle per-field regexes, tab-switch-back to avoid stealing focus.
+- **codex_wrapper.sh: check all PATH locations** — Was using elif chains so only the first matching path was added. Now checks all common locations (matching claude_wrapper.sh pattern) so codex is found when launched as an iTerm2 tab with minimal shell environment.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.2.9] - 2026-03-07
 
 ### Changed
