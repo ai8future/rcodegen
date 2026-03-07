@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.3] - 2026-03-07
+
+### Added
+- **chassis-go feature adoption (MEDIUM+ priority)** — Comprehensive integration of chassis-go v8 capabilities:
+  - **grpckit interceptors** (rserve) — Panic recovery and structured request logging for both unary and streaming gRPC calls via `UnaryRecovery`, `UnaryLogging`, `StreamRecovery`, `StreamLogging`
+  - **gRPC health checks** (rserve) — Standard `grpc.health.v1` health service via `grpckit.RegisterHealth` with pluggable check functions
+  - **errors.ServiceError** (server) — Unified error types with dual HTTP/gRPC status codes; `NotFoundError` for unknown tools/bundles, `RateLimitError` for concurrency limits
+  - **registry CLI mode** (rbatch) — `registry.Status()` for operational visibility, `registry.Progress()` for job completion tracking, `registry.StopRequested()` for cooperative shutdown in batch runner
+  - **logz structured logging** (all CLIs) — Replaced `log.Fatalf` with `logz.New("info")` structured JSON logging across rclaude, rcodex, rgemini, rcodegen, rserve, rbatch
+  - **xyops monitoring** (rserve) — Optional metric push bridge via `xyops.WithMonitoring(30)` as lifecycle component, enabled when `XYOPS_BASE_URL` is set
+  - **xyops event reporting** (rbatch) — Optional xyops client for batch event reporting, enabled when `XYOPS_BASE_URL` is set
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.4.2] - 2026-03-07
 
 ### Changed

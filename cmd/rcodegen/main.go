@@ -7,8 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"log"
-
 	"rcodegen/pkg/bundle"
 	_ "rcodegen/pkg/executor" // Register dispatcher factory via init()
 	"rcodegen/pkg/orchestrator"
@@ -16,13 +14,16 @@ import (
 	"rcodegen/pkg/settings"
 
 	chassis "github.com/ai8future/chassis-go/v8"
+	"github.com/ai8future/chassis-go/v8/logz"
 	"github.com/ai8future/chassis-go/v8/registry"
 )
 
 func main() {
 	chassis.RequireMajor(8)
+	logger := logz.New("info")
 	if err := registry.InitCLI(chassis.Version); err != nil {
-		log.Fatalf("registry: %v", err)
+		logger.Error("registry init failed", "error", err)
+		os.Exit(1)
 	}
 	if len(os.Args) < 2 {
 		printUsage()

@@ -1,19 +1,22 @@
 package main
 
 import (
-	"log"
+	"os"
 
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/tools/gemini"
 
 	chassis "github.com/ai8future/chassis-go/v8"
+	"github.com/ai8future/chassis-go/v8/logz"
 	"github.com/ai8future/chassis-go/v8/registry"
 )
 
 func main() {
 	chassis.RequireMajor(8)
+	logger := logz.New("info")
 	if err := registry.InitCLI(chassis.Version); err != nil {
-		log.Fatalf("registry: %v", err)
+		logger.Error("registry init failed", "error", err)
+		os.Exit(1)
 	}
 	tool := gemini.New()
 	r := runner.NewRunner(tool)

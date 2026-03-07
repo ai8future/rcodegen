@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -22,14 +21,30 @@ import (
 	"rcodegen/pkg/settings"
 
 	chassis "github.com/ai8future/chassis-go/v8"
+	"github.com/ai8future/chassis-go/v8/logz"
 	"github.com/ai8future/chassis-go/v8/registry"
+	"github.com/ai8future/chassis-go/v8/xyops"
 )
 
 func main() {
 	chassis.RequireMajor(8)
+	logger := logz.New("info")
 	if err := registry.InitCLI(chassis.Version); err != nil {
-		log.Fatalf("registry: %v", err)
+		logger.Error("registry init failed", "error", err)
+		os.Exit(1)
 	}
+
+	// Optional xyops event reporting — enabled when XYOPS_BASE_URL is set.
+	var opsClient *xyops.Client
+	if baseURL := os.Getenv("XYOPS_BASE_URL"); baseURL != "" {
+		opsClient = xyops.New(xyops.Config{
+			BaseURL:     baseURL,
+			APIKey:      os.Getenv("XYOPS_API_KEY"),
+			ServiceName: "rbatch",
+		})
+		logger.Info("xyops reporting enabled", "base_url", baseURL)
+	}
+	_ = opsClient // used by subcommands when non-nil
 
 	if len(os.Args) < 2 {
 		printUsage()
@@ -137,8 +152,12 @@ func cmdRun(args []string) int {
 	start := time.Now()
 	br.OnEvent = makeEventHandler(m, *verbose, start)
 
+	registry.Status(fmt.Sprintf("batch %s: %d jobs, concurrency %d", m.Name, len(m.Jobs), m.Concurrency))
+
 	// Run the batch.
 	result := br.Run(ctx)
+
+	registry.Status(fmt.Sprintf("batch %s: %s (%d/%d succeeded)", m.Name, result.Status, result.JobsSucceeded, result.JobsTotal))
 
 	// Persist results.
 	writeBatchResults(m.Name, result)
@@ -214,6 +233,8 @@ func cmdSpool(args []string) int {
 	// Sort to match Scan ordering.
 	sort.Strings(jsonFiles)
 
+	registry.Status(fmt.Sprintf("spool: processing %d manifests", len(manifests)))
+
 	totalFailed := 0
 	for i, m := range manifests {
 		// Check for cancellation between manifests.
@@ -260,6 +281,8 @@ func cmdSpool(args []string) int {
 			totalFailed += result.JobsFailed
 		}
 	}
+
+	registry.Status(fmt.Sprintf("spool: complete, %d total failures", totalFailed))
 
 	if totalFailed > 0 {
 		return 1
@@ -594,6 +617,7 @@ func makeEventHandler(m *batch.Manifest, verbose bool, start time.Time) func(bat
 			if e.Result != nil {
 				cost += e.Result.Cost
 			}
+			registry.Progress(completed+failed, total, failed)
 			if verbose {
 				dur := ""
 				if e.Result != nil {
@@ -609,6 +633,7 @@ func makeEventHandler(m *batch.Manifest, verbose bool, start time.Time) func(bat
 			if e.Result != nil {
 				cost += e.Result.Cost
 			}
+			registry.Progress(completed+failed, total, failed)
 			errMsg := ""
 			if e.Result != nil && e.Result.Error != "" {
 				errMsg = ": " + e.Result.Error

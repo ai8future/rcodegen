@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"rcodegen/pkg/server/pb"
 	"rcodegen/pkg/settings"
 
+	cerrors "github.com/ai8future/chassis-go/v8/errors"
 	"github.com/ai8future/chassis-go/v8/logz"
 )
 
@@ -45,7 +45,7 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	// Validate tool
 	factory, ok := s.toolFactories[req.Tool]
 	if !ok {
-		return fmt.Errorf("unknown tool: %s", req.Tool)
+		return cerrors.NotFoundError("unknown tool: " + req.Tool).GRPCStatus().Err()
 	}
 
 	// Create a fresh tool instance (avoids shared mutable state between requests)
@@ -54,7 +54,7 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	// Acquire a concurrency slot
 	runID, runCtx, cancel, err := s.registry.Acquire(stream.Context(), req.Tool, req.Task)
 	if err != nil {
-		return fmt.Errorf("failed to acquire run slot: %w", err)
+		return cerrors.Errorf(cerrors.RateLimitError, "failed to acquire run slot: %v", err).GRPCStatus().Err()
 	}
 	defer cancel()
 	defer s.registry.Release(runID)
@@ -233,7 +233,7 @@ func (s *Server) RunBundle(req *pb.RunBundleRequest, stream pb.RServe_RunBundleS
 	// Acquire concurrency slot
 	runID, _, cancel, err := s.registry.Acquire(stream.Context(), "bundle", req.Bundle)
 	if err != nil {
-		return fmt.Errorf("failed to acquire run slot: %w", err)
+		return cerrors.Errorf(cerrors.RateLimitError, "failed to acquire run slot: %v", err).GRPCStatus().Err()
 	}
 	defer cancel()
 	defer s.registry.Release(runID)
@@ -250,7 +250,7 @@ func (s *Server) RunBundle(req *pb.RunBundleRequest, stream pb.RServe_RunBundleS
 	// Load the bundle
 	b, err := bundle.Load(req.Bundle)
 	if err != nil {
-		return fmt.Errorf("bundle load failed: %w", err)
+		return cerrors.NotFoundError("bundle load failed: " + err.Error()).GRPCStatus().Err()
 	}
 
 	// Build inputs map (defensive copy — proto maps should not be mutated)
