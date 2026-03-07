@@ -112,8 +112,8 @@ def parse_usage_output(text: str) -> dict:
 
 
 def _resolve_duration(duration_str: str) -> str | None:
-    """Convert a duration like '24h', '18h 30m', '2d 5h' to an ISO datetime."""
-    now = datetime.now()
+    """Convert a duration like '24h', '18h 30m', '2d 5h' to an ISO datetime with timezone."""
+    now = datetime.now().astimezone()  # timezone-aware local time
     total = timedelta()
 
     days_m = re.search(r'(\d+)\s*d', duration_str)
@@ -131,7 +131,7 @@ def _resolve_duration(duration_str: str) -> str | None:
         return None
 
     dt = now + total
-    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+    return dt.isoformat()
 
 
 def strip_ansi(text: str) -> str:
@@ -257,9 +257,9 @@ async def main(connection):
         print(json.dumps(status))
 
     finally:
-        # Close the tab - send /quit first then close
+        # Close the tab - send Ctrl+D (EOF) to exit cleanly, then close
         try:
-            await new_session.async_send_text("/quit\r")
+            await new_session.async_send_text("\x04")  # Ctrl+D
             await asyncio.sleep(0.5)
             await new_tab.async_close()
         except Exception as e:

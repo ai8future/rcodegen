@@ -161,17 +161,17 @@ def _classify_codex_line(current: str, nearby: str) -> str | None:
 
 
 def _resolve_hourly_reset(time_str: str) -> str:
-    """Resolve 'HH:MM' to a full datetime string. If past today, use tomorrow."""
-    now = datetime.now()
+    """Resolve 'HH:MM' to a full datetime string with timezone."""
+    now = datetime.now().astimezone()  # timezone-aware local time
     hour, minute = map(int, time_str.split(':'))
     dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if dt <= now:
         dt += timedelta(days=1)
-    return dt.strftime("%Y-%m-%d %H:%M")
+    return dt.isoformat()
 
 
 def _resolve_weekly_reset(time_str: str, day: int, month_str: str) -> str | None:
-    """Resolve 'HH:MM on DD Mon' to a full datetime string."""
+    """Resolve 'HH:MM on DD Mon' to a full datetime string with timezone."""
     months = {
         'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
         'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
@@ -183,13 +183,14 @@ def _resolve_weekly_reset(time_str: str, day: int, month_str: str) -> str | None
     if not month:
         return None
     hour, minute = map(int, time_str.split(':'))
-    now = datetime.now()
+    now = datetime.now().astimezone()  # timezone-aware local time
+    tz = now.tzinfo
     year = now.year
     if month < now.month or (month == now.month and day < now.day):
         year += 1
     try:
-        dt = datetime(year, month, day, hour, minute)
-        return dt.strftime("%Y-%m-%d %H:%M")
+        dt = datetime(year, month, day, hour, minute, tzinfo=tz)
+        return dt.isoformat()
     except ValueError:
         return None
 

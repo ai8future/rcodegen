@@ -224,6 +224,9 @@ func (t *Tool) PrepareForExecution(cfg *runner.Config) {
 	if cfg.Flash {
 		cfg.Model = "gemini-3-flash-preview"
 	}
+
+	// Store model early so CaptureStatusBefore can use it
+	t.currentModel = cfg.Model
 }
 
 // ValidateConfig validates Gemini-specific configuration
