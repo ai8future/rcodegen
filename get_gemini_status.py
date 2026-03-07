@@ -257,9 +257,9 @@ async def main(connection):
         print(json.dumps(status))
 
     finally:
-        # Close the tab - send Ctrl+D (EOF) to exit cleanly, then close
+        # Close the tab - send /quit first then close
         try:
-            await new_session.async_send_text("\x04")  # Ctrl+D
+            await new_session.async_send_text("/quit\r")
             await asyncio.sleep(0.5)
             await new_tab.async_close()
         except Exception as e:

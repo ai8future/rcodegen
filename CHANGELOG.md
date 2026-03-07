@@ -6,7 +6,6 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Timezone bug in reset countdown** — Python status scripts (codex, gemini) output naive local timestamps that Go parsed as UTC, causing countdown times to be off by the local timezone offset. Fixed by outputting timezone-aware ISO 8601 timestamps (RFC3339) from Python.
-- **Gemini exit command** — Changed from `/quit` (which Gemini CLI doesn't recognize) to Ctrl+D for clean tab exit.
 - **Gemini currentModel not set for CaptureStatusBefore** — Model name was only set in BuildCommand (per-task), but CaptureStatusBefore runs before tasks. Now set in PrepareForExecution so before/after tracking uses the correct model.
 
 ### Agent
