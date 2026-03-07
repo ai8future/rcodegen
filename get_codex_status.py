@@ -83,11 +83,12 @@ def parse_status_output(text: str) -> dict:
         is_left = 'left' in m.group(0).lower()
         value = pct if is_left else (100 - pct)
 
-        # Classify by keywords in this line and nearby lines
-        # Check current line + up to 3 lines above for context
-        context = line.lower()
+        # Classify by keywords - prioritize current line, fall back to nearby
+        current = line.lower()
+        nearby = ''
         for j in range(max(0, i - 3), i):
-            context += ' ' + lines[j].lower()
+            nearby += ' ' + lines[j].lower()
+        context = current + nearby
 
         # Extract reset time from parentheses on same line: (resets HH:MM) or (resets HH:MM on DD Mon)
         reset_str = None
@@ -110,22 +111,54 @@ def parse_status_output(text: str) -> dict:
                 if reset_m:
                     reset_str = _resolve_hourly_reset(reset_m.group(1))
 
-        # Classify section
-        if '5h' in context or '5 hour' in context or 'five hour' in context or 'session' in context:
+        # Classify section - check current line first to avoid misclassification
+        # when nearby lines contain keywords for a different section
+        category = _classify_codex_line(current, nearby)
+        if category == '5h':
             if result["5h_left"] is None:
                 result["5h_left"] = value
                 if reset_str:
                     result["5h_resets"] = reset_str
-        elif 'week' in context:
+        elif category == 'weekly':
             if result["weekly_left"] is None:
                 result["weekly_left"] = value
                 if reset_str:
                     result["weekly_resets"] = reset_str
-        elif 'context' in context:
+        elif category == 'context':
             if result["context_left"] is None:
                 result["context_left"] = value
 
     return result
+
+
+
+def _classify_codex_line(current: str, nearby: str) -> str | None:
+    """Classify a codex status line by keywords.
+
+    Checks the current line first for a definitive match,
+    then falls back to nearby lines for context. This prevents
+    misclassification when adjacent lines contain keywords for
+    different sections (e.g. '5h' line appearing above 'weekly').
+    """
+    # Check current line first for definitive classification
+    if '5h' in current or '5 hour' in current or 'five hour' in current:
+        return '5h'
+    if 'week' in current:
+        return 'weekly'
+    if 'context' in current:
+        return 'context'
+    if 'session' in current:
+        return '5h'
+
+    # Fall back to nearby lines
+    if '5h' in nearby or '5 hour' in nearby or 'five hour' in nearby or 'session' in nearby:
+        return '5h'
+    if 'week' in nearby:
+        return 'weekly'
+    if 'context' in nearby:
+        return 'context'
+
+    return None
 
 
 def _resolve_hourly_reset(time_str: str) -> str:

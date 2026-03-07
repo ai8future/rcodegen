@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.11] - 2026-03-07
+
+### Fixed
+- **get_codex_status.py: weekly limit not parsed** — When the 5h and weekly limit lines are adjacent, the weekly line's context included "5h" from the line above, causing it to be misclassified as a 5h entry and silently dropped. Classification now checks the current line first for definitive keywords before falling back to nearby context.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.2.10] - 2026-03-07
 
 ### Fixed
