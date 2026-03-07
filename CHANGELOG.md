@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.12] - 2026-03-07
+
+### Fixed
+- **FormatResetsIn: support codex timestamp format** — The Go countdown formatter only parsed RFC3339 and ISO 8601 timestamps but the codex script outputs "YYYY-MM-DD HH:MM" format. Added this as a fallback format so rcodex can show countdown times.
+- **get_codex_status.py: remove dead variable** — The `context` variable was built but never used after the classification refactor. Removed.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.2.11] - 2026-03-07
 
 ### Fixed

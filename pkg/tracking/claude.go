@@ -35,13 +35,22 @@ func FormatResetsIn(iso *string) string {
 	if iso == nil || *iso == "" {
 		return ""
 	}
-	t, err := time.Parse(time.RFC3339, *iso)
-	if err != nil {
-		// Try without timezone offset (some Python isoformat variants)
-		t, err = time.Parse("2006-01-02T15:04:05", *iso)
-		if err != nil {
-			return ""
+	// Try multiple formats: RFC3339, ISO without tz, and simple datetime
+	formats := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04",
+	}
+	var t time.Time
+	var err error
+	for _, layout := range formats {
+		t, err = time.Parse(layout, *iso)
+		if err == nil {
+			break
 		}
+	}
+	if err != nil {
+		return ""
 	}
 	d := time.Until(t)
 	if d <= 0 {

@@ -88,7 +88,6 @@ def parse_status_output(text: str) -> dict:
         nearby = ''
         for j in range(max(0, i - 3), i):
             nearby += ' ' + lines[j].lower()
-        context = current + nearby
 
         # Extract reset time from parentheses on same line: (resets HH:MM) or (resets HH:MM on DD Mon)
         reset_str = None
