@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.15] - 2026-03-07
+
+### Changed
+- **Upgraded chassis-go from v5.0.0 (major 5) to v6.0.9 (major 6)** — Updated Go module path from `chassis-go/v5` to `chassis-go/v6` across 10 files. Bumped `chassis.RequireMajor(5)` to `RequireMajor(6)` in all 6 entry points (rclaude, rcodex, rgemini, rcodegen, rserve, settings_test). Updated README example. v6 adds the `registry` module (file-based service registration) and `chassis.Port()` for deterministic port assignment.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.2.14] - 2026-03-07
 
 ### Fixed

@@ -16,7 +16,7 @@ import (
 	"rcodegen/pkg/server/pb"
 	"rcodegen/pkg/settings"
 
-	"github.com/ai8future/chassis-go/v5/logz"
+	"github.com/ai8future/chassis-go/v6/logz"
 )
 
 // ToolFactory creates a fresh tool instance to avoid shared mutable state.

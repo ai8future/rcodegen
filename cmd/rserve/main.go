@@ -20,13 +20,13 @@ import (
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
 
-	chassis "github.com/ai8future/chassis-go/v5"
+	chassis "github.com/ai8future/chassis-go/v6"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
 
 func main() {
-	chassis.RequireMajor(5)
+	chassis.RequireMajor(6)
 
 	port := flag.Int("port", server.DefaultPort, "gRPC listen port")
 	maxConcurrent := flag.Int("max-concurrent", 3, "max simultaneous runs")
