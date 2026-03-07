@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ import (
 
 func TestNewContext(t *testing.T) {
 	inputs := map[string]string{"foo": "bar", "baz": "qux"}
-	ctx := NewContext(inputs)
+	ctx := NewContext(context.Background(), inputs)
 
 	if ctx.Inputs["foo"] != "bar" {
 		t.Errorf("expected input 'foo' = 'bar', got %q", ctx.Inputs["foo"])
@@ -29,7 +30,7 @@ func TestNewContext(t *testing.T) {
 }
 
 func TestNewContext_NilInputs(t *testing.T) {
-	ctx := NewContext(nil)
+	ctx := NewContext(context.Background(), nil)
 	if ctx.Inputs != nil {
 		t.Error("expected nil inputs to stay nil")
 	}
@@ -39,7 +40,7 @@ func TestNewContext_NilInputs(t *testing.T) {
 }
 
 func TestContext_Resolve_Inputs(t *testing.T) {
-	ctx := NewContext(map[string]string{
+	ctx := NewContext(context.Background(), map[string]string{
 		"name":    "test-project",
 		"version": "1.0.0",
 	})
@@ -67,7 +68,7 @@ func TestContext_Resolve_Inputs(t *testing.T) {
 }
 
 func TestContext_Resolve_StepResults(t *testing.T) {
-	ctx := NewContext(nil)
+	ctx := NewContext(context.Background(), nil)
 
 	ctx.SetResult("analyze", &envelope.Envelope{
 		Status:    envelope.StatusSuccess,
@@ -114,7 +115,7 @@ func TestContext_Resolve_StdoutStderr(t *testing.T) {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
-	ctx := NewContext(nil)
+	ctx := NewContext(context.Background(), nil)
 	ctx.SetResult("build", &envelope.Envelope{
 		Status:    envelope.StatusSuccess,
 		OutputRef: outputFile,
@@ -134,7 +135,7 @@ func TestContext_Resolve_StdoutStderr(t *testing.T) {
 }
 
 func TestContext_Resolve_FullResultJSON(t *testing.T) {
-	ctx := NewContext(nil)
+	ctx := NewContext(context.Background(), nil)
 	ctx.SetResult("step1", &envelope.Envelope{
 		Status: envelope.StatusSuccess,
 		Result: map[string]interface{}{
@@ -156,7 +157,7 @@ func TestContext_Resolve_FullResultJSON(t *testing.T) {
 }
 
 func TestContext_ToolSession(t *testing.T) {
-	ctx := NewContext(nil)
+	ctx := NewContext(context.Background(), nil)
 
 	// Initially empty
 	if s := ctx.GetToolSession("claude"); s != "" {
@@ -176,7 +177,7 @@ func TestContext_ToolSession(t *testing.T) {
 }
 
 func TestContext_SetResult_GetResult(t *testing.T) {
-	ctx := NewContext(nil)
+	ctx := NewContext(context.Background(), nil)
 
 	env := &envelope.Envelope{Status: envelope.StatusSuccess}
 	ctx.SetResult("step1", env)
@@ -198,7 +199,7 @@ func TestContext_SetResult_GetResult(t *testing.T) {
 }
 
 func TestContext_ThreadSafety_ToolSession(t *testing.T) {
-	ctx := NewContext(nil)
+	ctx := NewContext(context.Background(), nil)
 	var wg sync.WaitGroup
 
 	// Concurrent writes
@@ -224,7 +225,7 @@ func TestContext_ThreadSafety_ToolSession(t *testing.T) {
 }
 
 func TestContext_ThreadSafety_SetResult(t *testing.T) {
-	ctx := NewContext(nil)
+	ctx := NewContext(context.Background(), nil)
 	var wg sync.WaitGroup
 
 	for i := 0; i < 50; i++ {

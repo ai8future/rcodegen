@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.1] - 2026-03-07
+
+### Fixed
+- **Fix stale orchestrator/executor tests** — Updated `NewContext` call sites in `context_test.go`, `condition_test.go`, and `vote_test.go` to pass `context.Background()` as the first argument, matching the signature change that added `context.Context` support. Fixed stale `extractStepName` test expectation. All tests pass.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.3.0] - 2026-03-07
 
 ### Changed

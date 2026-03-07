@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"testing"
 
 	"rcodegen/pkg/bundle"
@@ -21,9 +22,8 @@ func TestExtractStepName(t *testing.T) {
 		{"with dash", "${steps.test-runner.result}", "test-runner"},
 		{"plain string passthrough", "not-a-ref", "not-a-ref"},
 		{"empty string", "", ""},
-		// Edge case: ${steps.name} without a second dot returns empty
-		// This is current behavior - real usage always has .output_ref, .status, etc.
-		{"just steps prefix no dot", "${steps.name}", ""},
+		// Edge case: ${steps.name} without a second dot still extracts the name
+		{"just steps prefix no dot", "${steps.name}", "name"},
 	}
 
 	for _, tc := range tests {
@@ -37,7 +37,7 @@ func TestExtractStepName(t *testing.T) {
 }
 
 func TestVoteExecutor_Majority_Approved(t *testing.T) {
-	ctx := orchestrator.NewContext(nil)
+	ctx := orchestrator.NewContext(context.Background(), nil)
 	ctx.SetResult("step1", &envelope.Envelope{Status: envelope.StatusSuccess})
 	ctx.SetResult("step2", &envelope.Envelope{Status: envelope.StatusSuccess})
 	ctx.SetResult("step3", &envelope.Envelope{Status: envelope.StatusFailure})
@@ -74,7 +74,7 @@ func TestVoteExecutor_Majority_Approved(t *testing.T) {
 }
 
 func TestVoteExecutor_Majority_Rejected(t *testing.T) {
-	ctx := orchestrator.NewContext(nil)
+	ctx := orchestrator.NewContext(context.Background(), nil)
 	ctx.SetResult("step1", &envelope.Envelope{Status: envelope.StatusSuccess})
 	ctx.SetResult("step2", &envelope.Envelope{Status: envelope.StatusFailure})
 	ctx.SetResult("step3", &envelope.Envelope{Status: envelope.StatusFailure})
@@ -100,7 +100,7 @@ func TestVoteExecutor_Majority_Rejected(t *testing.T) {
 }
 
 func TestVoteExecutor_Majority_Tie(t *testing.T) {
-	ctx := orchestrator.NewContext(nil)
+	ctx := orchestrator.NewContext(context.Background(), nil)
 	ctx.SetResult("step1", &envelope.Envelope{Status: envelope.StatusSuccess})
 	ctx.SetResult("step2", &envelope.Envelope{Status: envelope.StatusFailure})
 
@@ -126,7 +126,7 @@ func TestVoteExecutor_Majority_Tie(t *testing.T) {
 }
 
 func TestVoteExecutor_Unanimous_Approved(t *testing.T) {
-	ctx := orchestrator.NewContext(nil)
+	ctx := orchestrator.NewContext(context.Background(), nil)
 	ctx.SetResult("step1", &envelope.Envelope{Status: envelope.StatusSuccess})
 	ctx.SetResult("step2", &envelope.Envelope{Status: envelope.StatusSuccess})
 
@@ -151,7 +151,7 @@ func TestVoteExecutor_Unanimous_Approved(t *testing.T) {
 }
 
 func TestVoteExecutor_Unanimous_Rejected(t *testing.T) {
-	ctx := orchestrator.NewContext(nil)
+	ctx := orchestrator.NewContext(context.Background(), nil)
 	ctx.SetResult("step1", &envelope.Envelope{Status: envelope.StatusSuccess})
 	ctx.SetResult("step2", &envelope.Envelope{Status: envelope.StatusFailure})
 
@@ -176,7 +176,7 @@ func TestVoteExecutor_Unanimous_Rejected(t *testing.T) {
 }
 
 func TestVoteExecutor_UnknownStrategy(t *testing.T) {
-	ctx := orchestrator.NewContext(nil)
+	ctx := orchestrator.NewContext(context.Background(), nil)
 	ctx.SetResult("step1", &envelope.Envelope{Status: envelope.StatusSuccess})
 
 	ws, err := workspace.New(t.TempDir())
@@ -200,7 +200,7 @@ func TestVoteExecutor_UnknownStrategy(t *testing.T) {
 }
 
 func TestVoteExecutor_MissingStep(t *testing.T) {
-	ctx := orchestrator.NewContext(nil)
+	ctx := orchestrator.NewContext(context.Background(), nil)
 	ctx.SetResult("step1", &envelope.Envelope{Status: envelope.StatusSuccess})
 	// step2 is NOT set
 

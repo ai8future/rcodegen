@@ -1,20 +1,21 @@
 package orchestrator
 
 import (
+	"context"
 	"testing"
 
 	"rcodegen/pkg/envelope"
 )
 
 func TestEvaluateCondition_Empty(t *testing.T) {
-	ctx := NewContext(nil)
+	ctx := NewContext(context.Background(), nil)
 	if !EvaluateCondition("", ctx) {
 		t.Error("empty condition should return true")
 	}
 }
 
 func TestEvaluateCondition_WithInputs(t *testing.T) {
-	ctx := NewContext(map[string]string{
+	ctx := NewContext(context.Background(), map[string]string{
 		"status": "ready",
 		"count":  "10",
 	})
@@ -41,7 +42,7 @@ func TestEvaluateCondition_WithInputs(t *testing.T) {
 }
 
 func TestEvaluateCondition_WithStepResults(t *testing.T) {
-	ctx := NewContext(nil)
+	ctx := NewContext(context.Background(), nil)
 	ctx.SetResult("analyze", &envelope.Envelope{
 		Status: envelope.StatusSuccess,
 	})
