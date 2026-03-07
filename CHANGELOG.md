@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.2] - 2026-03-07
+
+### Fixed
+- **Removed dead xyops code from rbatch** — `opsClient` was created but never wired into any subcommand; removed unused import and initialization
+- **Replaced stdlib `log` with `fmt.Fprintf` in spool.go** — Consistent with codebase convention of not using stdlib `log` in library packages
+
+### Agent
+- Claude:Opus 4.6
+
 ## [3.0.1] - 2026-03-07
 
 ### Changed

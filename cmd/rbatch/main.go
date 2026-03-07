@@ -23,7 +23,6 @@ import (
 	chassis "github.com/ai8future/chassis-go/v8"
 	"github.com/ai8future/chassis-go/v8/logz"
 	"github.com/ai8future/chassis-go/v8/registry"
-	"github.com/ai8future/chassis-go/v8/xyops"
 )
 
 func main() {
@@ -33,18 +32,6 @@ func main() {
 		logger.Error("registry init failed", "error", err)
 		os.Exit(1)
 	}
-
-	// Optional xyops event reporting — enabled when XYOPS_BASE_URL is set.
-	var opsClient *xyops.Client
-	if baseURL := os.Getenv("XYOPS_BASE_URL"); baseURL != "" {
-		opsClient = xyops.New(xyops.Config{
-			BaseURL:     baseURL,
-			APIKey:      os.Getenv("XYOPS_API_KEY"),
-			ServiceName: "rbatch",
-		})
-		logger.Info("xyops reporting enabled", "base_url", baseURL)
-	}
-	_ = opsClient // used by subcommands when non-nil
 
 	if len(os.Args) < 2 {
 		printUsage()

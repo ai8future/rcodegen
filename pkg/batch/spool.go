@@ -2,7 +2,6 @@ package batch
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -59,7 +58,7 @@ func (s *Spool) Scan() ([]*Manifest, error) {
 		path := filepath.Join(pendingDir, name)
 		m, err := LoadManifest(path)
 		if err != nil {
-			log.Printf("spool: skipping %s: %v", name, err)
+			fmt.Fprintf(os.Stderr, "spool: skipping %s: %v\n", name, err)
 			continue
 		}
 		manifests = append(manifests, m)
