@@ -2,9 +2,9 @@ VERSION := $(shell cat VERSION | tr -d '[:space:]')
 LDFLAGS := -X rcodegen/pkg/runner.Version=$(VERSION)
 BINDIR  := bin
 
-.PHONY: all rclaude rcodex rgemini rcodegen rserve linux rclaude_linux rcodex_linux rgemini_linux rcodegen_linux rserve_linux clean test proto
+.PHONY: all rclaude rcodex rgemini rcodegen rserve rbatch linux rclaude_linux rcodex_linux rgemini_linux rcodegen_linux rserve_linux rbatch_linux clean test proto
 
-all: rclaude rcodex rgemini rcodegen rserve
+all: rclaude rcodex rgemini rcodegen rserve rbatch
 
 rclaude:
 	go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rclaude ./cmd/rclaude
@@ -21,8 +21,11 @@ rcodegen:
 rserve:
 	go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rserve ./cmd/rserve
 
+rbatch:
+	go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rbatch ./cmd/rbatch
+
 # Linux amd64 cross-compiled binaries
-linux: rclaude_linux rcodex_linux rgemini_linux rcodegen_linux rserve_linux
+linux: rclaude_linux rcodex_linux rgemini_linux rcodegen_linux rserve_linux rbatch_linux
 
 rclaude_linux:
 	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rclaude_linux ./cmd/rclaude
@@ -39,6 +42,9 @@ rcodegen_linux:
 rserve_linux:
 	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rserve_linux ./cmd/rserve
 
+rbatch_linux:
+	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rbatch_linux ./cmd/rbatch
+
 proto:
 	PATH="$$PATH:$$(go env GOPATH)/bin" protoc --go_out=. --go-grpc_out=. proto/rserve.proto
 	@# Move generated files to pkg/server/pb/ if protoc placed them under module path
@@ -47,8 +53,8 @@ proto:
 	fi
 
 clean:
-	rm -f $(BINDIR)/rclaude $(BINDIR)/rcodex $(BINDIR)/rgemini $(BINDIR)/rcodegen $(BINDIR)/rserve
-	rm -f $(BINDIR)/rclaude_linux $(BINDIR)/rcodex_linux $(BINDIR)/rgemini_linux $(BINDIR)/rcodegen_linux $(BINDIR)/rserve_linux
+	rm -f $(BINDIR)/rclaude $(BINDIR)/rcodex $(BINDIR)/rgemini $(BINDIR)/rcodegen $(BINDIR)/rserve $(BINDIR)/rbatch
+	rm -f $(BINDIR)/rclaude_linux $(BINDIR)/rcodex_linux $(BINDIR)/rgemini_linux $(BINDIR)/rcodegen_linux $(BINDIR)/rserve_linux $(BINDIR)/rbatch_linux
 
 test:
 	go test ./pkg/...

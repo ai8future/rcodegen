@@ -15,8 +15,9 @@
 Use `make` from the project root to build all binaries with the version baked in:
 
 ```bash
-make          # builds all 4 binaries (rclaude, rcodex, rgemini, rcodegen) into bin/
+make          # builds all 6 binaries (rclaude, rcodex, rgemini, rcodegen, rserve, rbatch) into bin/
 make rclaude  # build just one
+make rbatch   # build just rbatch
 make clean    # remove all binaries
 make test     # run tests
 ```
