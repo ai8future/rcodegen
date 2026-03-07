@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.7] - 2026-03-07
+
+### Added
+- **Makefile: Linux cross-compilation targets** — Added `make linux` to build all binaries as `_linux` suffixed ELF amd64 executables. Individual targets like `make rclaude_linux` also available. Clean target updated to remove Linux binaries.
+
+### Fixed
+- **Rebuilt native Mac binaries** — Previous binaries were Linux ELF x86-64, causing "cannot execute binary file" on macOS arm64. Now correctly built as Mach-O arm64.
+
+### Agent
+- Claude:Opus 4.6
+
+## [2.2.6] - 2026-03-02
+
+### Fixed
+- **rclaude: strip CLAUDECODE env var from subprocess** — When rserve (or any other wrapper) runs inside an active Claude Code session, the `CLAUDECODE` environment variable causes the child `claude` process to refuse launch with "nested session" error. `BuildCommand` now filters `CLAUDECODE` out of the subprocess environment before exec.
+
+### Agent
+- Claude:Sonnet 4.6
+
+## [2.2.5] - 2026-03-02
+
+### Changed
+- **rserve: define DefaultPort constant** — Port 26147 is now `server.DefaultPort` in `pkg/server/registry.go` rather than an inline magic number in `cmd/rserve/main.go`.
+- **README: document rserve** — Added rserve to the Binaries table, added a dedicated rserve section with usage, flags, and gRPC RPC reference, and updated the project structure tree.
+
+### Agent
+- Claude:Sonnet 4.6
+
 ## [2.2.4] - 2026-02-27
 
 ### Fixed
