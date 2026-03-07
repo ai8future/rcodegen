@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.1] - 2026-03-07
+
+### Fixed
+- **Data race in batch runner event callbacks** — Added `sync.Mutex` to protect shared state in `OnEvent` callbacks in `runner_test.go` (2 tests) and `cmd/rbatch/main.go` (`makeEventHandler`). The `emit()` method is called from concurrent goroutines, so all callbacks must synchronize access to captured variables.
+- **Spool command not moving files through lifecycle** — `rbatch spool` now moves manifest files from `pending/` to `running/` before execution and to `done/` or `failed/` after completion. Previously, re-running spool would re-process already-completed manifests.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.4.0] - 2026-03-07
 
 ### Added

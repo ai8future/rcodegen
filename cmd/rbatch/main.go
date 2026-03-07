@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"rcodegen/pkg/batch"
@@ -200,6 +202,18 @@ func cmdSpool(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
+	// Collect filenames corresponding to each manifest (same order from Scan).
+	pendingDir := filepath.Join(spoolDir, "pending")
+	pendingEntries, _ := os.ReadDir(pendingDir)
+	var jsonFiles []string
+	for _, e := range pendingEntries {
+		if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
+			jsonFiles = append(jsonFiles, e.Name())
+		}
+	}
+	// Sort to match Scan ordering.
+	sort.Strings(jsonFiles)
+
 	totalFailed := 0
 	for i, m := range manifests {
 		// Check for cancellation between manifests.
@@ -210,7 +224,18 @@ func cmdSpool(args []string) int {
 		default:
 		}
 
+		// Determine the spool filename for this manifest.
+		var filename string
+		if i < len(jsonFiles) {
+			filename = jsonFiles[i]
+		}
+
 		fmt.Printf("\n--- manifest %d/%d: %s ---\n", i+1, len(manifests), m.Name)
+
+		// Mark as running in the spool.
+		if filename != "" {
+			_ = sp.MarkRunning(filename)
+		}
 
 		br := batch.NewBatchRunner(m, exec)
 		start := time.Now()
@@ -221,6 +246,15 @@ func cmdSpool(args []string) int {
 		writeBatchResults(m.Name, result)
 		fmt.Fprintln(os.Stderr) // clear progress line
 		batch.PrintBatchSummary(result)
+
+		// Move to done or failed in the spool.
+		if filename != "" {
+			if result.JobsFailed > 0 || result.Status == "stopped" || result.Status == "cancelled" {
+				_ = sp.MarkFailed(filename)
+			} else {
+				_ = sp.MarkDone(filename)
+			}
+		}
 
 		if result.JobsFailed > 0 {
 			totalFailed += result.JobsFailed
@@ -532,12 +566,16 @@ func printDryRun(m *batch.Manifest) {
 // makeEventHandler returns an OnEvent callback for progress reporting.
 func makeEventHandler(m *batch.Manifest, verbose bool, start time.Time) func(batch.BatchEvent) {
 	total := len(m.Jobs)
+	var mu sync.Mutex
 	completed := 0
 	failed := 0
 	active := 0
 	var cost float64
 
 	return func(e batch.BatchEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+
 		switch e.Type {
 		case "group_start":
 			if verbose {

@@ -3,6 +3,7 @@ package batch
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,9 +52,12 @@ func TestBatchRunnerBasic(t *testing.T) {
 
 	runner := NewBatchRunner(m, exec)
 
+	var mu sync.Mutex
 	var events []BatchEvent
 	runner.OnEvent = func(e BatchEvent) {
+		mu.Lock()
 		events = append(events, e)
+		mu.Unlock()
 	}
 
 	result := runner.Run(context.Background())
@@ -75,7 +79,10 @@ func TestBatchRunnerBasic(t *testing.T) {
 	}
 
 	// Verify events were emitted.
-	if len(events) == 0 {
+	mu.Lock()
+	eventCount := len(events)
+	mu.Unlock()
+	if eventCount == 0 {
 		t.Error("expected at least one event, got none")
 	}
 
@@ -101,10 +108,13 @@ func TestBatchRunnerSessionChain(t *testing.T) {
 
 	runner := NewBatchRunner(m, exec)
 
+	var mu sync.Mutex
 	var completedJobs []string
 	runner.OnEvent = func(e BatchEvent) {
 		if e.Type == "job_complete" {
+			mu.Lock()
 			completedJobs = append(completedJobs, e.JobName)
+			mu.Unlock()
 		}
 	}
 
@@ -118,14 +128,19 @@ func TestBatchRunnerSessionChain(t *testing.T) {
 	}
 
 	// Both jobs in the session chain should complete.
-	if len(completedJobs) != 2 {
-		t.Errorf("expected 2 completed jobs, got %d: %v", len(completedJobs), completedJobs)
+	mu.Lock()
+	completedCopy := make([]string, len(completedJobs))
+	copy(completedCopy, completedJobs)
+	mu.Unlock()
+
+	if len(completedCopy) != 2 {
+		t.Errorf("expected 2 completed jobs, got %d: %v", len(completedCopy), completedCopy)
 	}
 
 	// They should be in order (chain-1 before chain-2) since they share a session.
-	if len(completedJobs) == 2 {
-		if completedJobs[0] != "chain-1" || completedJobs[1] != "chain-2" {
-			t.Errorf("expected jobs in order [chain-1, chain-2], got %v", completedJobs)
+	if len(completedCopy) == 2 {
+		if completedCopy[0] != "chain-1" || completedCopy[1] != "chain-2" {
+			t.Errorf("expected jobs in order [chain-1, chain-2], got %v", completedCopy)
 		}
 	}
 
