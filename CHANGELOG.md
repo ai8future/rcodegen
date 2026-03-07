@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.0] - 2026-03-07
+
+### Changed
+- **rserve: adopt chassis-go v6 lifecycle, registry, and deterministic ports** — Replaced 30-line manual signal/shutdown handler with `lifecycle.Run()` for coordinated shutdown with automatic registry integration. Added `registry.Port()` to register the gRPC port for operational visibility at `/tmp/chassis/rserve/`. Replaced hardcoded `DefaultPort=26147` with `chassis.Port("rserve", chassis.PortGRPC)` → port 14260 (djb2-derived). Removed `server.DefaultPort` constant.
+- **BREAKING: rserve default port changed from 26147 to 14260** — Now uses chassis djb2 deterministic port assignment. Override with `-port 26147` if needed.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.2.15] - 2026-03-07
 
 ### Changed

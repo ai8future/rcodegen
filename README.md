@@ -18,7 +18,7 @@ rcodegen provides two layers of automation:
 | `rcodex` | OpenAI Codex CLI automation wrapper |
 | `rgemini` | Google Gemini CLI automation wrapper |
 | `rcodegen` | Multi-tool orchestrator for bundles |
-| `rserve` | gRPC server exposing all tools and bundles as streaming RPCs (default port 26147) |
+| `rserve` | gRPC server exposing all tools and bundles as streaming RPCs (default port 14260) |
 
 ## Prerequisites
 
@@ -346,7 +346,7 @@ rcodegen/
 │   ├── rcodex/main.go               # Codex CLI entry point (~15 lines)
 │   ├── rgemini/main.go              # Gemini CLI entry point (~15 lines)
 │   ├── rcodegen/main.go             # Orchestrator entry point
-│   └── rserve/main.go               # gRPC server entry point (default port 26147)
+│   └── rserve/main.go               # gRPC server entry point (default port 14260)
 ├── pkg/
 │   ├── runner/                      # Core execution framework
 │   │   ├── tool.go                  # Tool interface (27 methods)
@@ -380,7 +380,7 @@ rcodegen/
 │   │   └── builtin/                 # 9 embedded JSON bundles
 │   ├── server/                      # gRPC server implementation
 │   │   ├── server.go                # RServe service handler
-│   │   ├── registry.go              # Run concurrency registry (DefaultPort=26147)
+│   │   ├── registry.go              # Run concurrency registry
 │   │   └── pb/                      # Generated protobuf/gRPC stubs
 │   ├── envelope/                    # Standardized result envelope
 │   ├── workspace/                   # Job workspace management
@@ -403,7 +403,7 @@ rcodegen/
 
 `rserve` exposes all tools and bundle orchestration as a streaming gRPC API, intended for use by dashboards or remote agents.
 
-**Default port:** `26147` (localhost only; use a reverse proxy for remote access)
+**Default port:** `14260` (djb2 of "rserve" + gRPC offset; localhost only; use a reverse proxy for remote access)
 
 ```bash
 # Start with defaults
@@ -429,9 +429,9 @@ rserve -v
 gRPC reflection is enabled — use `grpcurl` or any gRPC client to discover the schema:
 
 ```bash
-grpcurl -plaintext 127.0.0.1:26147 list
+grpcurl -plaintext 127.0.0.1:14260 list
 grpcurl -plaintext -d '{"tool":"claude","task":"hello","work_dirs":["/tmp"]}' \
-  127.0.0.1:26147 rserve.RServe/RunTask
+  127.0.0.1:14260 rserve.RServe/RunTask
 ```
 
 ## Adding a New Tool
@@ -467,6 +467,6 @@ Only use on trusted codebases in controlled environments. Lock files are stored 
 
 ## Version
 
-Current version: **2.1.0**
+Current version: **2.3.0**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.

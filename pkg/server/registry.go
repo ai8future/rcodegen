@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// DefaultPort is the default gRPC listen port for rserve.
-const DefaultPort = 26147
-
 // RunRegistry manages active runs with concurrency control.
 type RunRegistry struct {
 	mu            sync.Mutex
