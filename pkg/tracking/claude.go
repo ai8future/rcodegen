@@ -4,9 +4,11 @@ package tracking
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 // ClaudeStatus holds the parsed Claude Max credit status from Python script
@@ -16,6 +18,8 @@ type ClaudeStatus struct {
 	WeeklySonnetLeft *int    `json:"weekly_sonnet_left"`
 	SessionResets    *string `json:"session_resets"`
 	WeeklyResets     *string `json:"weekly_resets"`
+	SessionResetsISO *string `json:"session_resets_iso"`
+	WeeklyResetsISO  *string `json:"weekly_resets_iso"`
 	Error            string  `json:"error"`
 	Message          string  `json:"message"` // Human-readable error message
 }
@@ -23,6 +27,37 @@ type ClaudeStatus struct {
 // IsITerm2Error returns true if the error is related to iTerm2 not being available
 func (s *ClaudeStatus) IsITerm2Error() bool {
 	return s.Error == "not_iterm2" || s.Error == "no_iterm2_package"
+}
+
+// FormatResetsIn returns a human-friendly "in Xh Ym" string from an ISO timestamp.
+// Returns empty string if the ISO timestamp is nil or unparseable.
+func FormatResetsIn(iso *string) string {
+	if iso == nil || *iso == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, *iso)
+	if err != nil {
+		// Try without timezone offset (some Python isoformat variants)
+		t, err = time.Parse("2006-01-02T15:04:05", *iso)
+		if err != nil {
+			return ""
+		}
+	}
+	d := time.Until(t)
+	if d <= 0 {
+		return "now"
+	}
+	hours := int(d.Hours())
+	mins := int(math.Mod(d.Minutes(), 60))
+	days := hours / 24
+	hours = hours % 24
+	if days > 0 {
+		return fmt.Sprintf("in %dd %dh", days, hours)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("in %dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("in %dm", mins)
 }
 
 // GetClaudeStatus fetches the current Claude Max credit status using the Python script
@@ -111,19 +146,13 @@ func ShowClaudeStatusOnly() {
 	if hasData {
 		// Session limit (5-hour rolling window)
 		if status.SessionLeft != nil {
-			resets := ""
-			if status.SessionResets != nil {
-				resets = fmt.Sprintf(" %sresets %s%s", Dim, *status.SessionResets, Reset)
-			}
+			resets := formatResetDisplay(status.SessionResets, status.SessionResetsISO)
 			fmt.Printf("  %sSession:%s      %s%s%%%s left%s\n", Dim, Reset, Green, FormatCredit(status.SessionLeft), Reset, resets)
 		}
 
 		// Weekly all models
 		if status.WeeklyAllLeft != nil {
-			resets := ""
-			if status.WeeklyResets != nil {
-				resets = fmt.Sprintf(" %sresets %s%s", Dim, *status.WeeklyResets, Reset)
-			}
+			resets := formatResetDisplay(status.WeeklyResets, status.WeeklyResetsISO)
 			fmt.Printf("  %sWeekly:%s       %s%s%%%s left%s\n", Dim, Reset, Green, FormatCredit(status.WeeklyAllLeft), Reset, resets)
 		}
 
@@ -136,6 +165,26 @@ func ShowClaudeStatusOnly() {
 		fmt.Printf("  %sCheck /tmp/rclaude_status_debug.txt for raw output%s\n", Dim, Reset)
 	}
 	fmt.Printf("%s%s══════════════════════════════════════════%s\n", Bold, Cyan, Reset)
+}
+
+// formatResetDisplay builds the reset suffix string for display.
+// Shows "resets in Xh Ym" when ISO is available, falls back to raw string.
+func formatResetDisplay(raw *string, iso *string) string {
+	countdown := FormatResetsIn(iso)
+	if countdown != "" {
+		label := ""
+		if raw != nil {
+			label = *raw
+		}
+		if label != "" {
+			return fmt.Sprintf(" %sresets %s (%s)%s", Dim, countdown, label, Reset)
+		}
+		return fmt.Sprintf(" %sresets %s%s", Dim, countdown, Reset)
+	}
+	if raw != nil {
+		return fmt.Sprintf(" %sresets %s%s", Dim, *raw, Reset)
+	}
+	return ""
 }
 
 // PrintClaudeStatusBefore prints the credit status before a task

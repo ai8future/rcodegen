@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.9] - 2026-03-07
+
+### Changed
+- **get_claude_status.py: robust section-based parser** — Replaced fragile regex-per-field parsing with a section-based approach that finds every "N% used" line, walks backwards for the section header, and forwards for reset times. Survives header renames, reordering, extra whitespace, and minor wording changes. Classifies sections by keyword matching ("session", "week", "sonnet") instead of exact string match.
+- **get_claude_status.py: ISO 8601 reset timestamps** — Reset times like "7am" and "Mar 13 at 8am" are now resolved to full ISO 8601 datetimes using the timezone from the status output (e.g. Europe/Paris). New JSON fields: session_resets_iso, weekly_resets_iso.
+- **rclaude: countdown display for resets** — Status display now shows "resets in 2h 50m (7am)" and "resets in 6d 3h (Mar 13 at 8am)" instead of raw time strings. Falls back to raw strings when ISO timestamps are unavailable.
+
+### Agent
+- Claude:Opus 4.6
+
 ## [2.2.8] - 2026-03-07
 
 ### Fixed

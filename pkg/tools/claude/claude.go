@@ -209,7 +209,10 @@ func (t *Tool) PrintStatusSummary(before, after interface{}) {
 			}
 		}
 		resetsSession := ""
-		if statusAfter.SessionResets != nil {
+		countdown := tracking.FormatResetsIn(statusAfter.SessionResetsISO)
+		if countdown != "" {
+			resetsSession = fmt.Sprintf(" %sresets %s%s", runner.Dim, countdown, runner.Reset)
+		} else if statusAfter.SessionResets != nil {
 			resetsSession = fmt.Sprintf(" %sresets %s%s", runner.Dim, *statusAfter.SessionResets, runner.Reset)
 		}
 
@@ -234,7 +237,10 @@ func (t *Tool) PrintStatusSummary(before, after interface{}) {
 			}
 		}
 		resetsWeekly := ""
-		if statusAfter.WeeklyResets != nil {
+		countdownW := tracking.FormatResetsIn(statusAfter.WeeklyResetsISO)
+		if countdownW != "" {
+			resetsWeekly = fmt.Sprintf(" %sresets %s%s", runner.Dim, countdownW, runner.Reset)
+		} else if statusAfter.WeeklyResets != nil {
 			resetsWeekly = fmt.Sprintf(" %sresets %s%s", runner.Dim, *statusAfter.WeeklyResets, runner.Reset)
 		}
 

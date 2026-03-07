@@ -23,7 +23,8 @@ import re
 import sys
 import os
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 # Debug mode - set RCLAUDE_DEBUG=1 to enable debug output
 DEBUG_MODE = os.environ.get('RCLAUDE_DEBUG', '').lower() in ('1', 'true', 'yes')
@@ -51,56 +52,230 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CLAUDE_WRAPPER = os.path.join(SCRIPT_DIR, "claude_wrapper.sh")
 
 
+def _find_sections(text: str) -> list[dict]:
+    """Split screen text into sections based on percentage-used lines.
+
+    Instead of matching rigid section headers, we find every line containing
+    'N% used' and walk backwards/forwards to grab context. This survives
+    header renames, reordering, and extra whitespace/punctuation.
+
+    Returns a list of dicts with keys:
+        label  - lowercased text of the header line (e.g. 'current session')
+        pct    - integer percent used (0-100)
+        resets - raw reset string if found, else None
+        tz     - timezone string if found, else None
+    """
+    lines = text.split('\n')
+    sections = []
+
+    for i, line in enumerate(lines):
+        # Find lines matching "NN% used" anywhere
+        m = re.search(r'(\d{1,3})%\s*used', line, re.IGNORECASE)
+        if not m:
+            continue
+
+        pct = int(m.group(1))
+
+        # Walk backwards to find the nearest non-empty, non-bar line as label
+        label = ''
+        for j in range(i - 1, max(i - 5, -1), -1):
+            candidate = lines[j].strip()
+            # Skip empty lines and lines that are just progress bars
+            if not candidate or re.fullmatch(r'[█▌▐▏▎▍▋▊▉\s]+', candidate):
+                continue
+            label = candidate.lower()
+            break
+
+        # Walk forward to find "Resets ..." line
+        resets_raw = None
+        tz = None
+        for j in range(i + 1, min(i + 4, len(lines))):
+            rm = re.search(r'resets\s+(.+)', lines[j], re.IGNORECASE)
+            if rm:
+                resets_raw = rm.group(1).strip()
+                # Extract timezone from parentheses
+                tz_m = re.search(r'\(([^)]+)\)', resets_raw)
+                if tz_m:
+                    tz = tz_m.group(1).strip()
+                    # Remove the timezone part from the display string
+                    resets_raw = resets_raw[:tz_m.start()].strip().rstrip(',')
+                break
+
+        sections.append({
+            'label': label,
+            'pct': pct,
+            'resets': resets_raw,
+            'tz': tz,
+        })
+
+    return sections
+
+
+def _classify_section(label: str) -> str | None:
+    """Map a section label to a known category using fuzzy keyword matching.
+
+    Returns 'session', 'weekly_all', 'weekly_sonnet', or None.
+    """
+    l = label.lower()
+    if 'session' in l:
+        return 'session'
+    if 'week' in l:
+        if 'sonnet' in l:
+            return 'weekly_sonnet'
+        # "all models" or just "week" without "sonnet"
+        return 'weekly_all'
+    return None
+
+
+def _parse_reset_time(raw: str, tz_name: str | None) -> str | None:
+    """Parse a reset time string into an ISO 8601 datetime.
+
+    Handles formats like:
+        '7am'
+        '11pm'
+        'Mar 13 at 8am'
+        'Mar 13, 8am'
+        'Jan 15 9am'
+        'March 13 at 8am'
+        'Mar 13'
+    """
+    if not raw:
+        return None
+
+    now = datetime.now(timezone.utc)
+
+    # Resolve timezone
+    tz = None
+    if tz_name:
+        try:
+            tz = ZoneInfo(tz_name)
+        except (KeyError, Exception):
+            pass
+
+    if tz:
+        now_local = now.astimezone(tz)
+    else:
+        # Fall back to system local time
+        now_local = now.astimezone()
+        tz = now_local.tzinfo
+
+    # Normalize: strip punctuation noise, collapse whitespace
+    s = raw.strip().rstrip(',').strip()
+    s = re.sub(r'\s+', ' ', s)
+
+    # Try: "Mon DD [at] HHam/pm" or "Month DD [at] HHam/pm"
+    m = re.match(
+        r'([A-Za-z]+)\s+(\d{1,2}),?\s*(?:at\s+)?(\d{1,2})\s*(am|pm)',
+        s, re.IGNORECASE
+    )
+    if m:
+        month_str, day_str, hour_str, ampm = m.groups()
+        hour = int(hour_str)
+        if ampm.lower() == 'pm' and hour != 12:
+            hour += 12
+        elif ampm.lower() == 'am' and hour == 12:
+            hour = 0
+
+        # Parse month name
+        month = _parse_month(month_str)
+        if month:
+            day = int(day_str)
+            # Use current year, but if the date is in the past, use next year
+            year = now_local.year
+            try:
+                dt = datetime(year, month, day, hour, 0, 0, tzinfo=tz)
+                if dt < now_local - timedelta(hours=1):
+                    dt = datetime(year + 1, month, day, hour, 0, 0, tzinfo=tz)
+                return dt.isoformat()
+            except ValueError:
+                pass
+
+    # Try: just "HHam/pm"
+    m = re.match(r'(\d{1,2})\s*(am|pm)', s, re.IGNORECASE)
+    if m:
+        hour_str, ampm = m.groups()
+        hour = int(hour_str)
+        if ampm.lower() == 'pm' and hour != 12:
+            hour += 12
+        elif ampm.lower() == 'am' and hour == 12:
+            hour = 0
+
+        dt = now_local.replace(hour=hour, minute=0, second=0, microsecond=0)
+        # If this time already passed today, it means tomorrow
+        if dt <= now_local:
+            dt += timedelta(days=1)
+        return dt.isoformat()
+
+    # Try: "Mon DD" without time (assume midnight)
+    m = re.match(r'([A-Za-z]+)\s+(\d{1,2})', s, re.IGNORECASE)
+    if m:
+        month_str, day_str = m.groups()
+        month = _parse_month(month_str)
+        if month:
+            day = int(day_str)
+            year = now_local.year
+            try:
+                dt = datetime(year, month, day, 0, 0, 0, tzinfo=tz)
+                if dt < now_local - timedelta(hours=1):
+                    dt = datetime(year + 1, month, day, 0, 0, 0, tzinfo=tz)
+                return dt.isoformat()
+            except ValueError:
+                pass
+
+    return None
+
+
+def _parse_month(s: str) -> int | None:
+    """Parse a month name or abbreviation to a month number (1-12)."""
+    months = {
+        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+        'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+        'january': 1, 'february': 2, 'march': 3, 'april': 4,
+        'june': 6, 'july': 7, 'august': 8, 'september': 9,
+        'october': 10, 'november': 11, 'december': 12,
+    }
+    return months.get(s.lower())
+
+
 def parse_status_output(text: str) -> dict:
-    """Parse /status output to extract credit percentages.
+    """Parse /status output to extract credit percentages and reset times.
 
-    Claude Max status shows (on Usage tab):
-        Current session
-        ████████████████████████▌                          49% used
-        Resets 11am (Europe/Paris)
-
-        Current week (all models)
-        ██████▌                                            13% used
-        Resets Jan 15, 9am (Europe/Paris)
-
-        Current week (Sonnet only)
-        █                                                  2% used
-        Resets 8pm (Europe/Paris)
+    Uses a section-based approach: finds every 'N% used' line, walks
+    backwards for the section header, and forwards for the reset time.
+    This is resilient to layout changes, reordering, extra whitespace,
+    and minor wording changes.
     """
     result = {
         "session_left": None,
         "weekly_all_left": None,
         "weekly_sonnet_left": None,
         "session_resets": None,
-        "weekly_resets": None
+        "weekly_resets": None,
+        "session_resets_iso": None,
+        "weekly_resets_iso": None,
     }
 
-    # Current session: look for "Current session" followed by "XX% used"
-    match = re.search(r'Current session[^\d]*(\d+)%\s*used', text, re.IGNORECASE | re.DOTALL)
-    if match:
-        result["session_left"] = 100 - int(match.group(1))
+    sections = _find_sections(text)
 
-    # Current week (all models): look for pattern
-    match = re.search(r'Current week\s*\(all models\)[^\d]*(\d+)%\s*used', text, re.IGNORECASE | re.DOTALL)
-    if match:
-        result["weekly_all_left"] = 100 - int(match.group(1))
+    for sec in sections:
+        category = _classify_section(sec['label'])
+        if not category:
+            continue
 
-    # Current week (Sonnet only)
-    match = re.search(r'Current week\s*\(Sonnet only\)[^\d]*(\d+)%\s*used', text, re.IGNORECASE | re.DOTALL)
-    if match:
-        result["weekly_sonnet_left"] = 100 - int(match.group(1))
+        left = 100 - sec['pct']
 
-    # Session reset time - look for "Resets" after "Current session"
-    # Format: "Resets 11am" or "Resets 11pm"
-    session_section = re.search(r'Current session.*?Resets\s+(\d{1,2}(?:am|pm))', text, re.IGNORECASE | re.DOTALL)
-    if session_section:
-        result["session_resets"] = session_section.group(1)
-
-    # Weekly reset - look for "Resets" after "Current week (all models)"
-    # Format: 'Resets Mar 13 at 8am' or 'Resets Jan 15, 9am'
-    weekly_section = re.search(r'Current week\s*\(all models\).*?Resets\s+([A-Za-z]+\s+\d+,?\s+(?:at\s+)?\d{1,2}(?:am|pm))', text, re.IGNORECASE | re.DOTALL)
-    if weekly_section:
-        result["weekly_resets"] = weekly_section.group(1)
+        if category == 'session':
+            result["session_left"] = left
+            if sec['resets']:
+                result["session_resets"] = sec['resets']
+                result["session_resets_iso"] = _parse_reset_time(sec['resets'], sec['tz'])
+        elif category == 'weekly_all':
+            result["weekly_all_left"] = left
+            if sec['resets']:
+                result["weekly_resets"] = sec['resets']
+                result["weekly_resets_iso"] = _parse_reset_time(sec['resets'], sec['tz'])
+        elif category == 'weekly_sonnet':
+            result["weekly_sonnet_left"] = left
 
     return result
 
