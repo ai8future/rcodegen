@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/ai8future/chassis-go/v8/registry"
 )
 
 // BatchResult summarises the outcome of a complete batch run.
@@ -76,6 +78,15 @@ func (br *BatchRunner) Run(ctx context.Context) *BatchResult {
 			mu.Unlock()
 			goto wait
 		default:
+		}
+
+		// Check if a graceful stop has been requested via the registry.
+		if registry.StopRequested() {
+			mu.Lock()
+			result.Status = "stopped"
+			result.StopReason = "stop requested"
+			mu.Unlock()
+			goto wait
 		}
 
 		// Budget check at group boundaries.
