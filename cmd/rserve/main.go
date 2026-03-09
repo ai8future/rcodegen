@@ -18,19 +18,19 @@ import (
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
 
-	chassis "github.com/ai8future/chassis-go/v8"
-	"github.com/ai8future/chassis-go/v8/grpckit"
-	"github.com/ai8future/chassis-go/v8/health"
-	"github.com/ai8future/chassis-go/v8/lifecycle"
-	"github.com/ai8future/chassis-go/v8/logz"
-	"github.com/ai8future/chassis-go/v8/registry"
-	"github.com/ai8future/chassis-go/v8/xyops"
+	chassis "github.com/ai8future/chassis-go/v9"
+	"github.com/ai8future/chassis-go/v9/grpckit"
+	"github.com/ai8future/chassis-go/v9/health"
+	"github.com/ai8future/chassis-go/v9/lifecycle"
+	"github.com/ai8future/chassis-go/v9/logz"
+	"github.com/ai8future/chassis-go/v9/registry"
+	"github.com/ai8future/chassis-go/v9/xyops"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
 
 func main() {
-	chassis.RequireMajor(8)
+	chassis.RequireMajor(9)
 
 	defaultPort := chassis.Port("rserve", chassis.PortGRPC)
 	port := flag.Int("port", defaultPort, "gRPC listen port")

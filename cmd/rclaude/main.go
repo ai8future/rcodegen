@@ -6,13 +6,13 @@ import (
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/tools/claude"
 
-	chassis "github.com/ai8future/chassis-go/v8"
-	"github.com/ai8future/chassis-go/v8/logz"
-	"github.com/ai8future/chassis-go/v8/registry"
+	chassis "github.com/ai8future/chassis-go/v9"
+	"github.com/ai8future/chassis-go/v9/logz"
+	"github.com/ai8future/chassis-go/v9/registry"
 )
 
 func main() {
-	chassis.RequireMajor(8)
+	chassis.RequireMajor(9)
 	logger := logz.New("info")
 	if err := registry.InitCLI(chassis.Version); err != nil {
 		logger.Error("registry init failed", "error", err)

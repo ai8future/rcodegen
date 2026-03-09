@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.3] - 2026-03-08
+- Upgrade chassis-go from v8 to v9: update all import paths across 12 Go files, go.mod require/replace, RequireMajor(9), VERSION.chassis, README example
+- (Claude Code:Opus 4.6)
+
 ## [3.0.2] - 2026-03-07
 
 ### Fixed

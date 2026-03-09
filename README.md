@@ -442,13 +442,13 @@ grpcurl -plaintext -d '{"tool":"claude","task":"hello","work_dirs":["/tmp"]}' \
    package main
 
    import (
-       chassis "github.com/ai8future/chassis-go/v8"
+       chassis "github.com/ai8future/chassis-go/v9"
        "rcodegen/pkg/runner"
        "rcodegen/pkg/tools/newtool"
    )
 
    func main() {
-       chassis.RequireMajor(8)
+       chassis.RequireMajor(9)
        tool := newtool.New()
        r := runner.NewRunner(tool)
        r.RunAndExit()

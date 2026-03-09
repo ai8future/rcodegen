@@ -3,7 +3,7 @@ module rcodegen
 go 1.25.5
 
 require (
-	github.com/ai8future/chassis-go/v8 v8.0.3
+	github.com/ai8future/chassis-go/v9 v9.0.0
 	google.golang.org/grpc v1.79.1
 	google.golang.org/protobuf v1.36.11
 )
@@ -24,4 +24,4 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260128011058-8636f8732409 // indirect
 )
 
-replace github.com/ai8future/chassis-go/v8 => ../../chassis_suite/chassis-go
+replace github.com/ai8future/chassis-go/v9 => ../../chassis_suite/chassis-go
