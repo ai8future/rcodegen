@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.4] - 2026-03-12
+
+### Added
+- **OpenAI-compatible HTTP endpoint for rserve** — Any app that speaks the OpenAI `/v1/chat/completions` format can now use rcodegen tools
+  - `POST /v1/chat/completions` — streaming (SSE) and non-streaming JSON responses
+  - `GET /v1/models` — lists available tools (auto-detected via CLI presence on PATH)
+  - `GET /health` — server status with version, active runs, concurrency info
+  - Model routing via prefixed format: `claude`, `claude:opus-4`, `codex:o3-pro`, `gemini:2.5-flash`
+  - System messages used as task preamble, last user message as task prompt
+  - Optional tool-use visibility via `X-Show-Tool-Use: true` header
+  - HTTP server runs on gRPC port+1, shares concurrency limits with gRPC
+  - New package: `pkg/server/openai/` (types, handler, SSE writer, model parsing)
+
+### Agent
+- Claude:Opus 4.6
+
 ## [3.0.3] - 2026-03-08
 - Upgrade chassis-go from v8 to v9: update all import paths across 12 Go files, go.mod require/replace, RequireMajor(9), VERSION.chassis, README example
 - (Claude Code:Opus 4.6)
