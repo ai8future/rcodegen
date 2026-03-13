@@ -1,5 +1,5 @@
-// rserve is a gRPC server that exposes rclaude, rcodex, rgemini, and
-// bundle orchestration as streaming RPCs for the web dashboard.
+// rserve exposes rclaude, rcodex, rgemini, and bundle orchestration
+// via gRPC (streaming RPCs) and an OpenAI-compatible HTTP API.
 package main
 
 import (

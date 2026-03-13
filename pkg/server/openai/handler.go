@@ -164,40 +164,30 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, ru
 			return
 		}
 		for _, block := range event.Message.Content {
+			var chunk *ChatCompletionChunk
 			switch block.Type {
 			case "text":
 				if block.Text != "" {
-					mu.Lock()
-					_ = sse.WriteChunk(ChatCompletionChunk{
-						ID:      "chatcmpl-" + runID,
-						Object:  "chat.completion.chunk",
-						Created: nowUnix(),
-						Model:   model,
-						Choices: []StreamChoice{
-							{
-								Index: 0,
-								Delta: Delta{Content: block.Text},
-							},
-						},
-					})
-					mu.Unlock()
+					chunk = &ChatCompletionChunk{
+						ID: "chatcmpl-" + runID, Object: "chat.completion.chunk", Created: nowUnix(), Model: model,
+						Choices: []StreamChoice{{Index: 0, Delta: Delta{Content: block.Text}}},
+					}
 				}
 			case "tool_use":
 				if showToolUse {
-					mu.Lock()
-					_ = sse.WriteChunk(ChatCompletionChunk{
-						ID:      "chatcmpl-" + runID,
-						Object:  "chat.completion.chunk",
-						Created: nowUnix(),
-						Model:   model,
-						Choices: []StreamChoice{
-							{
-								Index: 0,
-								Delta: Delta{Content: formatToolUse(block)},
-							},
-						},
-					})
-					mu.Unlock()
+					chunk = &ChatCompletionChunk{
+						ID: "chatcmpl-" + runID, Object: "chat.completion.chunk", Created: nowUnix(), Model: model,
+						Choices: []StreamChoice{{Index: 0, Delta: Delta{Content: formatToolUse(block)}}},
+					}
+				}
+			}
+			if chunk != nil {
+				mu.Lock()
+				err := sse.WriteChunk(*chunk)
+				mu.Unlock()
+				if err != nil {
+					cancel() // Stop the subprocess — client is gone
+					return
 				}
 			}
 		}

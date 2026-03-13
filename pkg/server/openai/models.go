@@ -2,6 +2,7 @@ package openai
 
 import (
 	"os/exec"
+	"sort"
 	"strings"
 
 	"rcodegen/pkg/runner"
@@ -63,6 +64,7 @@ func DetectAvailableTools(toolFactories map[string]server.ToolFactory) []string 
 			available = append(available, name)
 		}
 	}
+	sort.Strings(available)
 	return available
 }
 
