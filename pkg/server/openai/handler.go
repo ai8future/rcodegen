@@ -69,6 +69,10 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Limit request body to 10MB to prevent memory exhaustion from oversized payloads.
+	const maxBodySize = 10 << 20 // 10 MB
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+
 	var req ChatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, NewErrorResponse(

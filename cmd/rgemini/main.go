@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"rcodegen/pkg/runner"
@@ -20,6 +21,10 @@ func main() {
 	}
 	tool := gemini.New()
 	r := runner.NewRunner(tool)
-	r.RunAndExit()
-	registry.ShutdownCLI(0)
+	result := r.Run()
+	if result.Error != nil {
+		fmt.Fprintln(os.Stderr, result.Error)
+	}
+	registry.ShutdownCLI(result.ExitCode)
+	os.Exit(result.ExitCode)
 }

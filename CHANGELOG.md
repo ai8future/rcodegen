@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.5] - 2026-03-14
+
+### Fixed
+- **Unreachable cleanup in CLI mains** — `rclaude`, `rcodex`, `rgemini` now use `Run()` instead of `RunAndExit()` so `registry.ShutdownCLI` actually executes
+- **HTTP request body size limit** — OpenAI-compatible endpoint now limits request bodies to 10MB via `http.MaxBytesReader` to prevent memory exhaustion
+- **Path traversal in batch names** — `BatchDir()` now validates batch names against a strict regex, preventing directory traversal via names like `../../etc`
+- **Spool filename-to-manifest correlation** — `Spool.Scan()` now returns `SpoolEntry` pairs (filename + manifest) instead of separate slices, eliminating index misalignment when files fail to parse
+- **Default model inconsistency** — `LoadWithFallback()` now defaults Claude to "sonnet" and Gemini to "gemini-3", matching `GetDefaultSettings()`
+- **Defensive copy of proto map in RunTask** — `cfg.Vars` is now a copy of `req.Variables` to prevent mutation of the original request
+- **`os.Getenv("HOME")` replaced with `os.UserHomeDir()`** — Fixed in `cmd/rcodegen` `expandPath()` and `pkg/tools/codex` `findWrapper()`
+- **`createExecutor` no longer calls `os.Exit`** — Returns an error instead, making the function testable and idiomatic
+- **Custom `max()` shadowing Go 1.21+ builtin** — Renamed to `maxN()` in orchestrator to avoid shadowing
+- **Duplicate `getVersion()` in orchestrator** — Removed in favor of `runner.GetVersion()`
+- **Session ID propagation** — Added TODO comments documenting that executors don't capture new session IDs from tool output (session chaining limitation)
+
+### Agent
+- Claude Code:Opus 4.6
+
 ## [3.0.4] - 2026-03-12
 
 ### Added

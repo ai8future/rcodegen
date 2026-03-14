@@ -133,7 +133,10 @@ func (t *Tool) findWrapper() (string, error) {
 	}
 
 	// 3. Check ~/.rcodegen/
-	home := os.Getenv("HOME")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("codex PTY wrapper script %s not found (searched executable dir, CWD, and ~/.rcodegen/)", wrapperName)
+	}
 	path := filepath.Join(home, ".rcodegen", wrapperName)
 	if _, err := os.Stat(path); err == nil {
 		return path, nil

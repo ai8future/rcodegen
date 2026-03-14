@@ -222,13 +222,13 @@ func LoadWithFallback() (*Settings, bool, error) {
 		settings.Defaults.Codex.Effort = "xhigh"
 	}
 	if settings.Defaults.Claude.Model == "" {
-		settings.Defaults.Claude.Model = "opus"
+		settings.Defaults.Claude.Model = "sonnet"
 	}
 	if settings.Defaults.Claude.Budget == "" {
 		settings.Defaults.Claude.Budget = "10.00"
 	}
 	if settings.Defaults.Gemini.Model == "" {
-		settings.Defaults.Gemini.Model = "gemini-3-pro-preview"
+		settings.Defaults.Gemini.Model = "gemini-3"
 	}
 	if settings.DefaultBuildDir == "" {
 		settings.DefaultBuildDir = settings.CodeDir // Default to code_dir if not set

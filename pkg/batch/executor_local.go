@@ -92,6 +92,10 @@ func (e *LocalExecutor) Execute(ctx context.Context, job *JobDef, sessionID stri
 	result := r.RunWithContext(ctx, cfg)
 	elapsed := time.Since(start)
 
+	// TODO: Extract new session ID from tool output for proper session chaining.
+	// Currently returns the incoming sessionID unchanged because RunResult does not
+	// expose the session ID from the tool's response. This means session chaining
+	// (sequential jobs in the same conversation) starts a fresh session each time.
 	return &JobResult{
 		ExitCode:  result.ExitCode,
 		Cost:      result.TotalCostUSD,

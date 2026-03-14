@@ -79,6 +79,9 @@ func (r *RemoteExecutor) Execute(ctx context.Context, job *JobDef, sessionID str
 
 	elapsed := time.Since(start)
 
+	// TODO: Extract new session ID from RunTask response for proper session chaining.
+	// Currently returns the incoming sessionID unchanged because the gRPC response
+	// does not include the new session ID from the tool.
 	return &JobResult{
 		ExitCode:  int(exitCode),
 		Cost:      cost,

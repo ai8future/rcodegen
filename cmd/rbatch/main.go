@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -127,7 +126,11 @@ func cmdRun(args []string) int {
 	}
 
 	// Create executor.
-	exec, cleanup := createExecutor(*serverAddr, *verbose)
+	exec, cleanup, execErr := createExecutor(*serverAddr, *verbose)
+	if execErr != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", execErr)
+		return 1
+	}
 	defer cleanup()
 
 	// Set up signal-aware context.
@@ -187,63 +190,50 @@ func cmdSpool(args []string) int {
 		return 1
 	}
 
-	manifests, err := sp.Scan()
+	entries, err := sp.Scan()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error scanning spool: %v\n", err)
 		return 1
 	}
 
-	if len(manifests) == 0 {
+	if len(entries) == 0 {
 		fmt.Println("no pending manifests found")
 		return 0
 	}
 
-	fmt.Printf("found %d manifest(s) in spool\n", len(manifests))
+	fmt.Printf("found %d manifest(s) in spool\n", len(entries))
 
 	// Create executor.
-	exec, cleanup := createExecutor(*serverAddr, *verbose)
+	exec, cleanup, execErr := createExecutor(*serverAddr, *verbose)
+	if execErr != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", execErr)
+		return 1
+	}
 	defer cleanup()
 
 	// Set up signal-aware context.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	// Collect filenames corresponding to each manifest (same order from Scan).
-	pendingDir := filepath.Join(spoolDir, "pending")
-	pendingEntries, _ := os.ReadDir(pendingDir)
-	var jsonFiles []string
-	for _, e := range pendingEntries {
-		if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
-			jsonFiles = append(jsonFiles, e.Name())
-		}
-	}
-	// Sort to match Scan ordering.
-	sort.Strings(jsonFiles)
-
-	registry.Status(fmt.Sprintf("spool: processing %d manifests", len(manifests)))
+	registry.Status(fmt.Sprintf("spool: processing %d manifests", len(entries)))
 
 	totalFailed := 0
-	for i, m := range manifests {
+	for i, entry := range entries {
 		// Check for cancellation between manifests.
 		select {
 		case <-ctx.Done():
-			fmt.Fprintf(os.Stderr, "\ninterrupted after %d/%d manifests\n", i, len(manifests))
+			fmt.Fprintf(os.Stderr, "\ninterrupted after %d/%d manifests\n", i, len(entries))
 			return 1
 		default:
 		}
 
-		// Determine the spool filename for this manifest.
-		var filename string
-		if i < len(jsonFiles) {
-			filename = jsonFiles[i]
-		}
+		m := entry.Manifest
+		filename := entry.Filename
 
-		fmt.Printf("\n--- manifest %d/%d: %s ---\n", i+1, len(manifests), m.Name)
+		fmt.Printf("\n--- manifest %d/%d: %s ---\n", i+1, len(entries), m.Name)
 
 		// Mark as running in the spool.
-		if filename != "" {
-			_ = sp.MarkRunning(filename)
-		}
+		_ = sp.MarkRunning(filename)
 
 		br := batch.NewBatchRunner(m, exec)
 		start := time.Now()
@@ -256,12 +246,10 @@ func cmdSpool(args []string) int {
 		batch.PrintBatchSummary(result)
 
 		// Move to done or failed in the spool.
-		if filename != "" {
-			if result.JobsFailed > 0 || result.Status == "stopped" || result.Status == "cancelled" {
-				_ = sp.MarkFailed(filename)
-			} else {
-				_ = sp.MarkDone(filename)
-			}
+		if result.JobsFailed > 0 || result.Status == "stopped" || result.Status == "cancelled" {
+			_ = sp.MarkFailed(filename)
+		} else {
+			_ = sp.MarkDone(filename)
 		}
 
 		if result.JobsFailed > 0 {
@@ -345,7 +333,11 @@ func cmdResume(args []string) int {
 	}
 
 	// Create executor.
-	exec, cleanup := createExecutor(*serverAddr, *verbose)
+	exec, cleanup, execErr := createExecutor(*serverAddr, *verbose)
+	if execErr != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", execErr)
+		return 1
+	}
 	defer cleanup()
 
 	// Set up signal-aware context.
@@ -494,24 +486,22 @@ func printBatchRow(name, batchDir string) {
 
 // createExecutor returns a LocalExecutor or RemoteExecutor depending on flags,
 // along with a cleanup function that should be deferred.
-func createExecutor(serverAddr string, verbose bool) (batch.Executor, func()) {
+func createExecutor(serverAddr string, verbose bool) (batch.Executor, func(), error) {
 	if serverAddr != "" {
 		if verbose {
 			fmt.Printf("connecting to rserve at %s\n", serverAddr)
 		}
 		exec, err := batch.NewRemoteExecutor(serverAddr)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+			return nil, nil, err
 		}
-		return exec, func() { exec.Close() }
+		return exec, func() { exec.Close() }, nil
 	}
 
 	// Local executor.
 	s, _, err := settings.LoadWithFallback()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error loading settings: %v\n", err)
-		os.Exit(1)
+		return nil, nil, fmt.Errorf("loading settings: %w", err)
 	}
 
 	if verbose {
@@ -519,7 +509,7 @@ func createExecutor(serverAddr string, verbose bool) (batch.Executor, func()) {
 	}
 
 	exec := batch.NewLocalExecutor(s)
-	return exec, func() {} // no cleanup needed for local
+	return exec, func() {}, nil // no cleanup needed for local
 }
 
 // printDryRun shows the execution plan without running any jobs.

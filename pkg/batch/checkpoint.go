@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 )
 
@@ -88,12 +89,26 @@ func FindLatestCheckpoint(baseDir string) (string, error) {
 	return latestPath, nil
 }
 
+// validBatchName matches alphanumeric characters, hyphens, and underscores only.
+// This prevents path traversal via names like "../../etc" or names with path separators.
+var validBatchName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
 // BatchDir returns the standard checkpoint directory for a named batch:
 // ~/.rcodegen/batches/<batchName>
+// The batch name is validated to prevent path traversal.
 func BatchDir(batchName string) (string, error) {
+	if !validBatchName.MatchString(batchName) {
+		return "", fmt.Errorf("invalid batch name %q: must be alphanumeric with hyphens/underscores/dots only", batchName)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolving home dir: %w", err)
 	}
-	return filepath.Join(home, ".rcodegen", "batches", batchName), nil
+	dir := filepath.Join(home, ".rcodegen", "batches", batchName)
+	// Final safety check: ensure the resolved path is under the expected base.
+	base := filepath.Join(home, ".rcodegen", "batches")
+	if !filepath.HasPrefix(dir, base) {
+		return "", fmt.Errorf("batch name %q resolves outside batches directory", batchName)
+	}
+	return dir, nil
 }

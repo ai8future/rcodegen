@@ -598,8 +598,8 @@ func generateRunReport(path, jobID, bundleName string, duration time.Duration, t
 
 		// Calculate widths
 		labelW := 9
-		col1W := max(len(codexTitle), len(codexOpening), len(codexAngle), len(codexData), len(codexTone), 20)
-		col2W := max(len(geminiTitle), len(geminiOpening), len(geminiAngle), len(geminiData), len(geminiTone), 20)
+		col1W := maxN(len(codexTitle), len(codexOpening), len(codexAngle), len(codexData), len(codexTone), 20)
+		col2W := maxN(len(geminiTitle), len(geminiOpening), len(geminiAngle), len(geminiData), len(geminiTone), 20)
 		if col1W > 48 {
 			col1W = 48
 		}
@@ -679,7 +679,10 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-func max(nums ...int) int {
+// maxN returns the maximum value from a variadic list of ints.
+// Named maxN to avoid shadowing the Go 1.21+ builtin max (which only
+// takes 2+ args of comparable type, not a variadic int slice).
+func maxN(nums ...int) int {
 	m := nums[0]
 	for _, n := range nums {
 		if n > m {
@@ -1110,7 +1113,7 @@ func generateFinalReportJSON(
 			TotalCostUSD:    totalCost,
 			DurationSeconds: int64(duration.Seconds()),
 			DurationHuman:   duration.Round(time.Second).String(),
-			RcodegenVersion: getVersion(),
+			RcodegenVersion: runner.GetVersion(),
 			StepsTotal:      len(stepStats),
 			StepsSucceeded:  stepsSucceeded,
 			StepsFailed:     stepsFailed,
@@ -1311,20 +1314,3 @@ func extractOverviewFromSummary(path string) string {
 	return overview
 }
 
-// getVersion returns the rcodegen version from the VERSION file
-func getVersion() string {
-	// Try common locations
-	candidates := []string{
-		"VERSION",
-		"../VERSION",
-		"../../VERSION",
-	}
-
-	for _, path := range candidates {
-		if data, err := os.ReadFile(path); err == nil {
-			return strings.TrimSpace(string(data))
-		}
-	}
-
-	return "unknown"
-}

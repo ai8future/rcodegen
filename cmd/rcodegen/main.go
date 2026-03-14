@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"rcodegen/pkg/bundle"
@@ -194,7 +195,11 @@ Examples:
 
 func expandPath(path string) string {
 	if strings.HasPrefix(path, "~/") {
-		return os.Getenv("HOME") + path[1:]
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return filepath.Join(home, path[2:])
 	}
 	return path
 }

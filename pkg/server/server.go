@@ -77,7 +77,13 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	cfg := runner.NewConfig()
 	cfg.Task = req.Task
 	cfg.WorkDirs = req.WorkDirs
-	cfg.Vars = req.Variables
+	// Defensive copy — proto maps should not be mutated during execution.
+	if len(req.Variables) > 0 {
+		cfg.Vars = make(map[string]string, len(req.Variables))
+		for k, v := range req.Variables {
+			cfg.Vars[k] = v
+		}
+	}
 	cfg.Output = io.Discard // CLI-formatted output suppressed; events go via callback
 	cfg.Logger = logz.New("warn")
 

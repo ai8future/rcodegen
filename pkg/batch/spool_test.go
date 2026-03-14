@@ -81,11 +81,17 @@ func TestSpoolScan(t *testing.T) {
 	}
 
 	// Should be sorted by filename, so lint-a first, test-b second
-	if results[0].Name != "lint-a" {
-		t.Errorf("results[0].Name = %q, want %q", results[0].Name, "lint-a")
+	if results[0].Manifest.Name != "lint-a" {
+		t.Errorf("results[0].Manifest.Name = %q, want %q", results[0].Manifest.Name, "lint-a")
 	}
-	if results[1].Name != "test-b" {
-		t.Errorf("results[1].Name = %q, want %q", results[1].Name, "test-b")
+	if results[0].Filename != "01-lint.json" {
+		t.Errorf("results[0].Filename = %q, want %q", results[0].Filename, "01-lint.json")
+	}
+	if results[1].Manifest.Name != "test-b" {
+		t.Errorf("results[1].Manifest.Name = %q, want %q", results[1].Manifest.Name, "test-b")
+	}
+	if results[1].Filename != "02-test.json" {
+		t.Errorf("results[1].Filename = %q, want %q", results[1].Filename, "02-test.json")
 	}
 }
 
@@ -114,8 +120,11 @@ func TestSpoolScanSkipsInvalid(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("Scan() returned %d manifests, want 1 (bad file should be skipped)", len(results))
 	}
-	if results[0].Name != "good" {
-		t.Errorf("results[0].Name = %q, want %q", results[0].Name, "good")
+	if results[0].Manifest.Name != "good" {
+		t.Errorf("results[0].Manifest.Name = %q, want %q", results[0].Manifest.Name, "good")
+	}
+	if results[0].Filename != "01-good.json" {
+		t.Errorf("results[0].Filename = %q, want %q", results[0].Filename, "01-good.json")
 	}
 }
 

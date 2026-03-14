@@ -31,10 +31,19 @@ func (s *Spool) Init() error {
 	return nil
 }
 
+// SpoolEntry pairs a manifest with the filename it was loaded from,
+// so callers can reliably track which file corresponds to which manifest.
+type SpoolEntry struct {
+	Filename string
+	Manifest *Manifest
+}
+
 // Scan reads all .json files from the pending/ subdirectory, sorted by
 // filename for deterministic session chain ordering. Each file is parsed
 // with LoadManifest. Files that fail to parse are warned about and skipped.
-func (s *Spool) Scan() ([]*Manifest, error) {
+// Returns SpoolEntry pairs so callers can track filenames reliably even
+// when some files are skipped due to parse errors.
+func (s *Spool) Scan() ([]SpoolEntry, error) {
 	pendingDir := filepath.Join(s.Dir, "pending")
 	entries, err := os.ReadDir(pendingDir)
 	if err != nil {
@@ -53,7 +62,7 @@ func (s *Spool) Scan() ([]*Manifest, error) {
 	}
 	sort.Strings(jsonFiles)
 
-	var manifests []*Manifest
+	var results []SpoolEntry
 	for _, name := range jsonFiles {
 		path := filepath.Join(pendingDir, name)
 		m, err := LoadManifest(path)
@@ -61,10 +70,10 @@ func (s *Spool) Scan() ([]*Manifest, error) {
 			fmt.Fprintf(os.Stderr, "spool: skipping %s: %v\n", name, err)
 			continue
 		}
-		manifests = append(manifests, m)
+		results = append(results, SpoolEntry{Filename: name, Manifest: m})
 	}
 
-	return manifests, nil
+	return results, nil
 }
 
 // MarkRunning moves a file from pending/ to running/.
