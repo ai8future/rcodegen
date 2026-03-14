@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -106,8 +107,8 @@ func BatchDir(batchName string) (string, error) {
 	}
 	dir := filepath.Join(home, ".rcodegen", "batches", batchName)
 	// Final safety check: ensure the resolved path is under the expected base.
-	base := filepath.Join(home, ".rcodegen", "batches")
-	if !filepath.HasPrefix(dir, base) {
+	base := filepath.Join(home, ".rcodegen", "batches") + string(filepath.Separator)
+	if !strings.HasPrefix(dir+string(filepath.Separator), base) {
 		return "", fmt.Errorf("batch name %q resolves outside batches directory", batchName)
 	}
 	return dir, nil
