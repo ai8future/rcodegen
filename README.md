@@ -18,6 +18,7 @@ rcodegen provides two layers of automation:
 | `rcodex` | OpenAI Codex CLI automation wrapper |
 | `rgemini` | Google Gemini CLI automation wrapper |
 | `rcodegen` | Multi-tool orchestrator for bundles |
+| `rbatch` | Batch job runner for executing multiple coding agent tasks with concurrency control, session chaining, and checkpoint/resume |
 | `rserve` | gRPC server exposing all tools and bundles as streaming RPCs (default port 14260) |
 
 ## Prerequisites
@@ -29,7 +30,7 @@ rcodegen provides two layers of automation:
 ## Installation
 
 ```bash
-# Build all 4 binaries into bin/
+# Build all 6 binaries into bin/
 make
 
 # Build individually
@@ -37,6 +38,8 @@ make rclaude
 make rcodex
 make rgemini
 make rcodegen
+make rbatch
+make rserve
 
 # Run tests
 make test
