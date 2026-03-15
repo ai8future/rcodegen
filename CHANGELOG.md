@@ -2,10 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
-## [3.0.9] - 2026-03-15
+## [4.0.1] - 2026-03-15
 
 ### Added
 - **File upload/download endpoints in rserve HTTP API** — `POST /v1/files` (multipart), `GET /v1/files`, `GET /v1/files/{id}`, `DELETE /v1/files/{id}` with 50MB limit, 24h auto-purge, disk recovery on restart; uploaded files are saved to `/tmp/rserve-files/` and can be referenced by path in chat completions
+- **rserve `--bind` flag** — configurable bind address (default `127.0.0.1`); use `--bind 0.0.0.0` to listen on all interfaces
+
+### Fixed
+- **Multipart temp file leak** — `handleUploadFile` now calls `r.MultipartForm.RemoveAll()` to clean up temp files after multipart parsing
+- **Double-close panic in FileStore.Stop()** — `Stop()` is now safe to call multiple times via `atomic.Bool` guard
 - Agent: Claude:Opus 4.6
 
 ## [3.0.8] - 2026-03-15

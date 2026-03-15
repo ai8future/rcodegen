@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,6 +38,7 @@ type FileStore struct {
 	mu      sync.RWMutex
 	files   map[string]*fileMeta // id -> meta
 	stopCh  chan struct{}
+	stopped atomic.Bool
 }
 
 // NewFileStore creates a FileStore rooted at baseDir and starts a background
@@ -56,9 +58,11 @@ func NewFileStore(baseDir string) (*FileStore, error) {
 	return fs, nil
 }
 
-// Stop terminates the background purge goroutine.
+// Stop terminates the background purge goroutine. Safe to call multiple times.
 func (fs *FileStore) Stop() {
-	close(fs.stopCh)
+	if fs.stopped.CompareAndSwap(false, true) {
+		close(fs.stopCh)
+	}
 }
 
 // sanitizeFilename strips path separators and non-printable characters.
@@ -264,6 +268,7 @@ func (h *Handler) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 		))
 		return
 	}
+	defer r.MultipartForm.RemoveAll() // clean up temp files from multipart parsing
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
