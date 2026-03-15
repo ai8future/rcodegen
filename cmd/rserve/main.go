@@ -1,5 +1,5 @@
-// rserve exposes rclaude, rcodex, rgemini, and bundle orchestration
-// via gRPC (streaming RPCs) and an OpenAI-compatible HTTP API.
+// rserve is a gRPC server that exposes rclaude, rcodex, rgemini, and
+// bundle orchestration as streaming RPCs for the web dashboard.
 package main
 
 import (
@@ -7,13 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"time"
 
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/server"
-	"rcodegen/pkg/server/openai"
 	"rcodegen/pkg/server/pb"
 	"rcodegen/pkg/settings"
 	"rcodegen/pkg/tools/claude"
@@ -36,6 +34,7 @@ func main() {
 
 	defaultPort := chassis.Port("rserve", chassis.PortGRPC)
 	port := flag.Int("port", defaultPort, "gRPC listen port")
+	bind := flag.String("bind", "127.0.0.1", "bind address (use 0.0.0.0 for all interfaces)")
 	maxConcurrent := flag.Int("max-concurrent", 3, "max simultaneous runs")
 	showVersion := flag.Bool("v", false, "show version and exit")
 	flag.Parse()
@@ -64,8 +63,7 @@ func main() {
 	runRegistry := server.NewRunRegistry(*maxConcurrent)
 	srv := server.NewServer(s, toolFactories, runRegistry)
 
-	// Bind localhost only — use a reverse proxy for remote access
-	lis, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *port))
+	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", *bind, *port))
 	if err != nil {
 		logger.Error("failed to listen", "port", *port, "error", err)
 		os.Exit(1)
@@ -88,23 +86,11 @@ func main() {
 		"self": func(_ context.Context) error { return nil },
 	}))
 
-	// Detect available tool CLIs and create OpenAI-compatible HTTP handler
-	availableTools := openai.DetectAvailableTools(toolFactories)
-	httpHandler := openai.NewHandler(s, toolFactories, runRegistry, availableTools)
-	httpPort := *port + 1
-
 	// Register with chassis registry for operational visibility
 	os.Setenv("CHASSIS_SERVICE_NAME", "rserve")
 	registry.Port(chassis.PortGRPC, *port, "gRPC API")
-	registry.Port(chassis.PortHTTP, httpPort, "OpenAI-compatible HTTP API")
 
-	logger.Info("rserve starting",
-		"version", runner.GetVersion(),
-		"grpc_port", *port,
-		"http_port", httpPort,
-		"max_concurrent", *maxConcurrent,
-		"available_tools", availableTools,
-	)
+	logger.Info("rserve starting", "version", runner.GetVersion(), "bind", *bind, "port", *port, "max_concurrent", *maxConcurrent)
 
 	// Build lifecycle components.
 	components := []any{
@@ -127,26 +113,6 @@ func main() {
 				}
 				return nil
 			case err := <-errCh:
-				return err
-			}
-		},
-		// OpenAI-compatible HTTP server on port+1
-		func(ctx context.Context) error {
-			httpServer := &http.Server{
-				Addr:    fmt.Sprintf("127.0.0.1:%d", httpPort),
-				Handler: httpHandler,
-			}
-			errCh := make(chan error, 1)
-			go func() { errCh <- httpServer.ListenAndServe() }()
-			select {
-			case <-ctx.Done():
-				shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer shutCancel()
-				return httpServer.Shutdown(shutCtx)
-			case err := <-errCh:
-				if err == http.ErrServerClosed {
-					return nil
-				}
 				return err
 			}
 		},
