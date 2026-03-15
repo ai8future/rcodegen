@@ -23,21 +23,42 @@ type Handler struct {
 	toolFactories  map[string]server.ToolFactory
 	registry       *server.RunRegistry
 	availableTools []string
+	fileStore      *FileStore
 }
 
 // NewHandler creates a new Handler and registers routes on its internal mux.
-func NewHandler(s *settings.Settings, toolFactories map[string]server.ToolFactory, registry *server.RunRegistry, availableTools []string) *Handler {
+// If fileStore is non-nil, file upload/download endpoints are enabled.
+func NewHandler(s *settings.Settings, toolFactories map[string]server.ToolFactory, registry *server.RunRegistry, availableTools []string, fileStore *FileStore) *Handler {
 	h := &Handler{
 		mux:            http.NewServeMux(),
 		settings:       s,
 		toolFactories:  toolFactories,
 		registry:       registry,
 		availableTools: availableTools,
+		fileStore:      fileStore,
 	}
 	h.mux.HandleFunc("/v1/chat/completions", h.handleChatCompletions)
 	h.mux.HandleFunc("/v1/models", h.handleModels)
 	h.mux.HandleFunc("/health", h.handleHealth)
+	if fileStore != nil {
+		h.mux.HandleFunc("/v1/files", h.handleFiles)
+		h.mux.HandleFunc("/v1/files/", h.handleFileByID)
+	}
 	return h
+}
+
+// handleFiles routes /v1/files to upload (POST) or list (GET).
+func (h *Handler) handleFiles(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		h.handleUploadFile(w, r)
+	case http.MethodGet:
+		h.handleListFiles(w, r)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse(
+			"method not allowed", "invalid_request_error", "method_not_allowed",
+		))
+	}
 }
 
 // ServeHTTP delegates to the internal mux.

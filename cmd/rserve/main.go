@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"rcodegen/pkg/runner"
@@ -88,9 +89,18 @@ func main() {
 		"self": func(_ context.Context) error { return nil },
 	}))
 
+	// File store for upload endpoint (rooted in /tmp/rserve-files)
+	fileDir := filepath.Join(os.TempDir(), "rserve-files")
+	fileStore, err := openai.NewFileStore(fileDir)
+	if err != nil {
+		logger.Error("failed to create file store", "dir", fileDir, "error", err)
+		os.Exit(1)
+	}
+	defer fileStore.Stop()
+
 	// Detect available tool CLIs and create OpenAI-compatible HTTP handler
 	availableTools := openai.DetectAvailableTools(toolFactories)
-	httpHandler := openai.NewHandler(s, toolFactories, runRegistry, availableTools)
+	httpHandler := openai.NewHandler(s, toolFactories, runRegistry, availableTools, fileStore)
 	httpPort := *port + 1
 
 	// Register with chassis registry for operational visibility

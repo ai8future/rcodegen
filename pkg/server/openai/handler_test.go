@@ -11,7 +11,7 @@ import (
 )
 
 func TestHandleModels(t *testing.T) {
-	h := NewHandler(nil, nil, server.NewRunRegistry(5), []string{"claude", "gemini"})
+	h := NewHandler(nil, nil, server.NewRunRegistry(5), []string{"claude", "gemini"}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	rec := httptest.NewRecorder()
@@ -35,7 +35,7 @@ func TestHandleModels(t *testing.T) {
 
 func TestHandleHealth(t *testing.T) {
 	reg := server.NewRunRegistry(5)
-	h := NewHandler(nil, nil, reg, nil)
+	h := NewHandler(nil, nil, reg, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -58,7 +58,7 @@ func TestHandleHealth(t *testing.T) {
 }
 
 func TestHandleChatCompletions_BadMethod(t *testing.T) {
-	h := NewHandler(nil, nil, server.NewRunRegistry(5), nil)
+	h := NewHandler(nil, nil, server.NewRunRegistry(5), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
@@ -70,7 +70,7 @@ func TestHandleChatCompletions_BadMethod(t *testing.T) {
 }
 
 func TestHandleChatCompletions_UnknownTool(t *testing.T) {
-	h := NewHandler(nil, map[string]server.ToolFactory{}, server.NewRunRegistry(5), nil)
+	h := NewHandler(nil, map[string]server.ToolFactory{}, server.NewRunRegistry(5), nil, nil)
 
 	body := `{"model":"unknown","messages":[{"role":"user","content":"hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))

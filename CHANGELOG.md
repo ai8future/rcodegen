@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.9] - 2026-03-15
+
+### Added
+- **File upload/download endpoints in rserve HTTP API** — `POST /v1/files` (multipart), `GET /v1/files`, `GET /v1/files/{id}`, `DELETE /v1/files/{id}` with 50MB limit, 24h auto-purge, disk recovery on restart; uploaded files are saved to `/tmp/rserve-files/` and can be referenced by path in chat completions
+- Agent: Claude:Opus 4.6
+
 ## [3.0.8] - 2026-03-15
 
 ### Fixed

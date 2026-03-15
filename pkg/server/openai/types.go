@@ -106,6 +106,34 @@ type HealthResponse struct {
 }
 
 // ---------------------------------------------------------------------------
+// File types
+// ---------------------------------------------------------------------------
+
+// FileObject represents an uploaded file (OpenAI Files API compatible).
+type FileObject struct {
+	ID        string `json:"id"`
+	Object    string `json:"object"`
+	Bytes     int64  `json:"bytes"`
+	CreatedAt int64  `json:"created_at"`
+	Filename  string `json:"filename"`
+	Purpose   string `json:"purpose"`
+	Path      string `json:"path"` // local disk path for reference in prompts
+}
+
+// FileList represents the response from GET /v1/files.
+type FileList struct {
+	Object string       `json:"object"`
+	Data   []FileObject `json:"data"`
+}
+
+// FileDeleteResponse represents the response from DELETE /v1/files/{id}.
+type FileDeleteResponse struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Deleted bool   `json:"deleted"`
+}
+
+// ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
 
