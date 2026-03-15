@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.8] - 2026-03-15
+
+### Fixed
+- **Restored OpenAI-compatible HTTP server in rserve** — HTTP listener on port+1 was lost during a `git checkout`; restored with `--bind` flag support so both gRPC and HTTP honor the bind address
+- Agent: Claude:Opus 4.6
+
 ## [3.0.7] - 2026-03-15
 
 ### Added

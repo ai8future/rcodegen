@@ -1,5 +1,5 @@
-// rserve is a gRPC server that exposes rclaude, rcodex, rgemini, and
-// bundle orchestration as streaming RPCs for the web dashboard.
+// rserve exposes rclaude, rcodex, rgemini, and bundle orchestration
+// via gRPC (streaming RPCs) and an OpenAI-compatible HTTP API.
 package main
 
 import (
@@ -7,11 +7,13 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"time"
 
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/server"
+	"rcodegen/pkg/server/openai"
 	"rcodegen/pkg/server/pb"
 	"rcodegen/pkg/settings"
 	"rcodegen/pkg/tools/claude"
@@ -86,11 +88,24 @@ func main() {
 		"self": func(_ context.Context) error { return nil },
 	}))
 
+	// Detect available tool CLIs and create OpenAI-compatible HTTP handler
+	availableTools := openai.DetectAvailableTools(toolFactories)
+	httpHandler := openai.NewHandler(s, toolFactories, runRegistry, availableTools)
+	httpPort := *port + 1
+
 	// Register with chassis registry for operational visibility
 	os.Setenv("CHASSIS_SERVICE_NAME", "rserve")
 	registry.Port(chassis.PortGRPC, *port, "gRPC API")
+	registry.Port(chassis.PortHTTP, httpPort, "OpenAI-compatible HTTP API")
 
-	logger.Info("rserve starting", "version", runner.GetVersion(), "bind", *bind, "port", *port, "max_concurrent", *maxConcurrent)
+	logger.Info("rserve starting",
+		"version", runner.GetVersion(),
+		"bind", *bind,
+		"grpc_port", *port,
+		"http_port", httpPort,
+		"max_concurrent", *maxConcurrent,
+		"available_tools", availableTools,
+	)
 
 	// Build lifecycle components.
 	components := []any{
@@ -113,6 +128,26 @@ func main() {
 				}
 				return nil
 			case err := <-errCh:
+				return err
+			}
+		},
+		// OpenAI-compatible HTTP server on port+1
+		func(ctx context.Context) error {
+			httpServer := &http.Server{
+				Addr:    fmt.Sprintf("%s:%d", *bind, httpPort),
+				Handler: httpHandler,
+			}
+			errCh := make(chan error, 1)
+			go func() { errCh <- httpServer.ListenAndServe() }()
+			select {
+			case <-ctx.Done():
+				shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer shutCancel()
+				return httpServer.Shutdown(shutCtx)
+			case err := <-errCh:
+				if err == http.ErrServerClosed {
+					return nil
+				}
 				return err
 			}
 		},
