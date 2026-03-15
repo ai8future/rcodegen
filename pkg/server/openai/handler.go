@@ -124,6 +124,9 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	cfg.Output = io.Discard
 	cfg.Logger = logz.New("warn")
 	cfg.Stderr = &bytes.Buffer{}
+	if len(req.WorkDirs) > 0 {
+		cfg.WorkDirs = req.WorkDirs
+	}
 
 	// Apply tool defaults, then model override, then fallback
 	tool.ApplyToolDefaults(cfg)

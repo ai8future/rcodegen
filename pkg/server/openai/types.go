@@ -11,6 +11,7 @@ type ChatCompletionRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
 	Stream   bool      `json:"stream,omitempty"`
+	WorkDirs []string  `json:"work_dirs,omitempty"`
 }
 
 // Message represents a single chat message with a role and content.

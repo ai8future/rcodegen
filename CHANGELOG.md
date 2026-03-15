@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.6] - 2026-03-15
+
+### Added
+- **work_dirs support in OpenAI HTTP API** — `POST /v1/chat/completions` now accepts `work_dirs` array field to set the working directories for the task runner
+- Agent: Claude:Opus 4.6
+
 ## [3.0.5] - 2026-03-14
 
 ### Fixed
