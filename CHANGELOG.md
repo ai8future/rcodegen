@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.0.2] - 2026-03-17
+
+### Added
+- **SessionStore for multi-turn session management** — `pkg/server/session.go` provides a thread-safe in-memory store mapping client session IDs to underlying tool session IDs, with TTL-based expiry and background sweep goroutine; `Stop()` allows clean shutdown in tests
+- Agent: Claude:Sonnet 4.6
+
 ## [4.0.1] - 2026-03-15
 
 ### Added
