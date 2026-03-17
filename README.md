@@ -463,7 +463,7 @@ grpcurl -plaintext -d '{"tool":"claude","task":"hello","work_dirs":["/tmp"]}' \
 
 ### OpenAI-Compatible HTTP API
 
-The HTTP API on port+1 is compatible with any OpenAI SDK. Model names follow the format `{tool}` or `{tool}/{model}` (e.g., `claude`, `claude/opus`, `gemini/gemini-3.1-pro-preview`).
+The HTTP API on port+1 is compatible with any OpenAI SDK. Model names follow the format `{tool}` or `{tool}:{model}` (e.g., `claude`, `claude:opus`, `gemini:gemini-3.1-pro-preview`).
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -484,7 +484,7 @@ curl http://127.0.0.1:14261/v1/chat/completions \
 # Streaming request
 curl http://127.0.0.1:14261/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"claude/opus","messages":[{"role":"user","content":"hello"}],"stream":true}'
+  -d '{"model":"claude:opus","messages":[{"role":"user","content":"hello"}],"stream":true}'
 
 # With working directories
 curl http://127.0.0.1:14261/v1/chat/completions \
