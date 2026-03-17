@@ -24,11 +24,12 @@ type Handler struct {
 	registry       *server.RunRegistry
 	availableTools []string
 	fileStore      *FileStore
+	sessions       *server.SessionStore
 }
 
 // NewHandler creates a new Handler and registers routes on its internal mux.
 // If fileStore is non-nil, file upload/download endpoints are enabled.
-func NewHandler(s *settings.Settings, toolFactories map[string]server.ToolFactory, registry *server.RunRegistry, availableTools []string, fileStore *FileStore) *Handler {
+func NewHandler(s *settings.Settings, toolFactories map[string]server.ToolFactory, registry *server.RunRegistry, availableTools []string, fileStore *FileStore, sessions *server.SessionStore) *Handler {
 	h := &Handler{
 		mux:            http.NewServeMux(),
 		settings:       s,
@@ -36,6 +37,7 @@ func NewHandler(s *settings.Settings, toolFactories map[string]server.ToolFactor
 		registry:       registry,
 		availableTools: availableTools,
 		fileStore:      fileStore,
+		sessions:       sessions,
 	}
 	h.mux.HandleFunc("/v1/chat/completions", h.handleChatCompletions)
 	h.mux.HandleFunc("/v1/models", h.handleModels)
@@ -149,6 +151,13 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		cfg.WorkDirs = req.WorkDirs
 	}
 
+	// Resume existing session if session_id provided (validate tool matches)
+	if req.SessionID != "" && h.sessions != nil {
+		if entry, ok := h.sessions.Get(req.SessionID); ok && entry.Tool == toolName {
+			cfg.SessionID = entry.ToolSessionID
+		}
+	}
+
 	// Apply tool defaults, then model override, then fallback
 	tool.ApplyToolDefaults(cfg)
 	if modelOverride != "" {
@@ -161,14 +170,14 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	oaiModel := req.Model // echo back the original model string
 
 	if req.Stream {
-		h.handleStreaming(w, runCtx, runID, oaiModel, tool, cfg, showToolUse, cancel)
+		h.handleStreaming(w, runCtx, runID, oaiModel, toolName, tool, cfg, showToolUse, cancel)
 	} else {
-		h.handleNonStreaming(w, runCtx, tool, cfg, oaiModel, runID)
+		h.handleNonStreaming(w, runCtx, tool, cfg, oaiModel, toolName, runID)
 	}
 }
 
 // handleStreaming handles a streaming chat completion request.
-func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, runID, model string, tool runner.Tool, cfg *runner.Config, showToolUse bool, cancel context.CancelFunc) {
+func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, runID, model, toolName string, tool runner.Tool, cfg *runner.Config, showToolUse bool, cancel context.CancelFunc) {
 	sse := NewSSEWriter(w)
 	sse.SetHeaders()
 
@@ -227,12 +236,20 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, ru
 	}
 	result := rn.RunWithContext(ctx, cfg)
 
+	// Store session for multi-turn (use toolName, NOT cfg.Model)
+	sessionID := ""
+	if result.SessionID != "" && h.sessions != nil {
+		sessionID = runID
+		h.sessions.Store(sessionID, toolName, result.SessionID)
+	}
+
 	// Send final chunk with finish_reason and optional usage
 	finalChunk := ChatCompletionChunk{
-		ID:      "chatcmpl-" + runID,
-		Object:  "chat.completion.chunk",
-		Created: nowUnix(),
-		Model:   model,
+		ID:        "chatcmpl-" + runID,
+		Object:    "chat.completion.chunk",
+		Created:   nowUnix(),
+		Model:     model,
+		SessionID: sessionID,
 		Choices: []StreamChoice{
 			{
 				Index:        0,
@@ -256,7 +273,7 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, ru
 }
 
 // handleNonStreaming handles a non-streaming chat completion request.
-func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context, tool runner.Tool, cfg *runner.Config, model, runID string) {
+func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context, tool runner.Tool, cfg *runner.Config, model, toolName, runID string) {
 	var buf bytes.Buffer
 	cfg.OnStreamEvent = func(event *runner.StreamEvent) {
 		if event.Type != "assistant" || event.Message == nil {
@@ -275,11 +292,19 @@ func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context,
 	}
 	result := rn.RunWithContext(ctx, cfg)
 
+	// Store session for multi-turn (use toolName, NOT cfg.Model)
+	sessionID := ""
+	if result.SessionID != "" && h.sessions != nil {
+		sessionID = runID
+		h.sessions.Store(sessionID, toolName, result.SessionID)
+	}
+
 	resp := ChatCompletionResponse{
-		ID:      "chatcmpl-" + runID,
-		Object:  "chat.completion",
-		Created: nowUnix(),
-		Model:   model,
+		ID:        "chatcmpl-" + runID,
+		Object:    "chat.completion",
+		Created:   nowUnix(),
+		Model:     model,
+		SessionID: sessionID,
 		Choices: []Choice{
 			{
 				Index:        0,

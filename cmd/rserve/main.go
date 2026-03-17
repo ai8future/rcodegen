@@ -101,7 +101,7 @@ func main() {
 
 	// Detect available tool CLIs and create OpenAI-compatible HTTP handler
 	availableTools := openai.DetectAvailableTools(toolFactories)
-	httpHandler := openai.NewHandler(s, toolFactories, runRegistry, availableTools, fileStore)
+	httpHandler := openai.NewHandler(s, toolFactories, runRegistry, availableTools, fileStore, sessionStore)
 	httpPort := *port + 1
 
 	// Register with chassis registry for operational visibility

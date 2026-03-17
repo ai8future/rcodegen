@@ -31,7 +31,7 @@ func newTestFileStore(t *testing.T) *FileStore {
 func newTestHandler(t *testing.T) (*Handler, *FileStore) {
 	t.Helper()
 	fs := newTestFileStore(t)
-	h := NewHandler(nil, nil, server.NewRunRegistry(5), nil, fs)
+	h := NewHandler(nil, nil, server.NewRunRegistry(5), nil, fs, nil)
 	return h, fs
 }
 
