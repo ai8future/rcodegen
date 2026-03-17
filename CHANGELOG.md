@@ -2,11 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
-## [4.0.2] - 2026-03-17
+## [4.0.3] - 2026-03-17
 
 ### Added
-- **SessionStore for multi-turn session management** — `pkg/server/session.go` provides a thread-safe in-memory store mapping client session IDs to underlying tool session IDs, with TTL-based expiry and background sweep goroutine; `Stop()` allows clean shutdown in tests
-- Agent: Claude:Sonnet 4.6
+- **Multi-turn session support for rserve** — both gRPC and OpenAI-compatible HTTP APIs now accept `session_id` to resume previous conversations; underlying tool CLIs (claude, codex, gemini) are resumed via their native `--resume` flag
+- **SessionStore** — thread-safe in-memory store mapping client session IDs to tool session IDs, with 30-minute sliding TTL expiry and background sweep
+- **StreamParser session capture** — `StreamParser` now extracts `session_id` from CLI init events and propagates through `RunResult`
+- **Proto updates** — `session_id` added to `RunTaskRequest` (field 7) and `ResultEvent` (field 6)
+- Agent: Claude:Opus 4.6
 
 ## [4.0.1] - 2026-03-15
 
