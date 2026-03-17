@@ -25,18 +25,20 @@ type ToolFactory func() runner.Tool
 // Server implements the RServe gRPC service.
 type Server struct {
 	pb.UnimplementedRServeServer
-	settings     *settings.Settings
+	settings      *settings.Settings
 	toolFactories map[string]ToolFactory
-	registry     *RunRegistry
+	registry      *RunRegistry
+	sessions      *SessionStore
 }
 
 // NewServer creates a new gRPC server instance.
 // toolFactories maps tool names to factory functions that create fresh instances.
-func NewServer(s *settings.Settings, toolFactories map[string]ToolFactory, registry *RunRegistry) *Server {
+func NewServer(s *settings.Settings, toolFactories map[string]ToolFactory, registry *RunRegistry, sessions *SessionStore) *Server {
 	return &Server{
 		settings:      s,
 		toolFactories: toolFactories,
 		registry:      registry,
+		sessions:      sessions,
 	}
 }
 
@@ -86,6 +88,13 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	}
 	cfg.Output = io.Discard // CLI-formatted output suppressed; events go via callback
 	cfg.Logger = logz.New("warn")
+
+	// Resume existing session if session_id provided (validate tool matches)
+	if req.SessionId != "" && s.sessions != nil {
+		if entry, ok := s.sessions.Get(req.SessionId); ok && entry.Tool == req.Tool {
+			cfg.SessionID = entry.ToolSessionID
+		}
+	}
 
 	// Capture stderr so we can report errors to the client
 	var stderrBuf bytes.Buffer
@@ -143,10 +152,18 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	// Run with context for cancellation support
 	result := r.RunWithContext(runCtx, cfg)
 
+	// Store session ID for multi-turn reuse
+	sessionID := ""
+	if result.SessionID != "" && s.sessions != nil {
+		sessionID = runID // Use runID as the client-facing session ID
+		s.sessions.Store(sessionID, req.Tool, result.SessionID)
+	}
+
 	// Send result event
 	resultEvent := &pb.ResultEvent{
 		ExitCode:     int32(result.ExitCode),
 		TotalCostUsd: result.TotalCostUSD,
+		SessionId:    sessionID,
 	}
 	if stderrBuf.Len() > 0 {
 		resultEvent.Output = stderrBuf.String()

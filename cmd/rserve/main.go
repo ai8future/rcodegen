@@ -64,7 +64,8 @@ func main() {
 	}
 
 	runRegistry := server.NewRunRegistry(*maxConcurrent)
-	srv := server.NewServer(s, toolFactories, runRegistry)
+	sessionStore := server.NewSessionStore(30 * time.Minute)
+	srv := server.NewServer(s, toolFactories, runRegistry, sessionStore)
 
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", *bind, *port))
 	if err != nil {
