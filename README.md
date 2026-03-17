@@ -19,7 +19,7 @@ rcodegen provides two layers of automation:
 | `rgemini` | Google Gemini CLI automation wrapper |
 | `rcodegen` | Multi-tool orchestrator for bundles |
 | `rbatch` | Batch job runner for executing multiple coding agent tasks with concurrency control, session chaining, and checkpoint/resume |
-| `rserve` | gRPC server exposing all tools and bundles as streaming RPCs (default port 14260) |
+| `rserve` | gRPC + OpenAI-compatible HTTP server exposing all tools and bundles (default gRPC port 14260, HTTP port 14261) |
 
 ## Prerequisites
 
@@ -181,6 +181,8 @@ Custom tasks can be added in `~/.rcodegen/settings.json`. Built-in task names ar
 **rgemini:**
 ```
 --flash                 Use gemini-3-flash-preview model
+-s, --status            Track usage before/after task
+-S, --no-status         Disable usage tracking
 ```
 
 **rcodegen:**
@@ -265,7 +267,7 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
   "defaults": {
     "codex": { "model": "gpt-5.3-codex", "effort": "xhigh" },
     "claude": { "model": "opus", "budget": "10.00" },
-    "gemini": { "model": "gemini-3-pro-preview" }
+    "gemini": { "model": "gemini-3.1-pro-preview" }
   },
   "tasks": {
     "my-custom-task": {
@@ -301,7 +303,7 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
 `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex` (default: `gpt-5.3-codex`)
 
 ### Gemini
-`gemini-3-pro-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.0-pro`, `gemini-2.0-flash` (default: `gemini-3-pro-preview`)
+`gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` (default: `gemini-3.1-pro-preview`)
 
 ## Locking & Concurrency
 
@@ -336,9 +338,9 @@ Use `--static` to disable animation.
 | CLI Command | `claude -p` | `codex exec` | `gemini -p` |
 | Permission Bypass | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--yolo` |
 | Output Format | stream-json | --json | stream-json |
-| Cost Tracking | iTerm2 API | iTerm2 API | Not yet |
+| Cost Tracking | iTerm2 API | iTerm2 API | iTerm2 API |
 | Budget Control | `--max-budget-usd` | None | None |
-| Default Model | opus | gpt-5.3-codex | gemini-3-pro-preview |
+| Default Model | opus | gpt-5.3-codex | gemini-3.1-pro-preview |
 
 ## Project Structure
 
@@ -349,7 +351,8 @@ rcodegen/
 │   ├── rcodex/main.go               # Codex CLI entry point (~15 lines)
 │   ├── rgemini/main.go              # Gemini CLI entry point (~15 lines)
 │   ├── rcodegen/main.go             # Orchestrator entry point
-│   └── rserve/main.go               # gRPC server entry point (default port 14260)
+│   ├── rbatch/main.go               # Batch job runner entry point
+│   └── rserve/main.go               # gRPC + HTTP server entry point (default port 14260)
 ├── pkg/
 │   ├── runner/                      # Core execution framework
 │   │   ├── tool.go                  # Tool interface (27 methods)
@@ -381,10 +384,22 @@ rcodegen/
 │   │   ├── bundle.go                # Bundle/Step structs
 │   │   ├── loader.go                # Load from disk or builtin
 │   │   └── builtin/                 # 9 embedded JSON bundles
-│   ├── server/                      # gRPC server implementation
-│   │   ├── server.go                # RServe service handler
+│   ├── server/                      # gRPC + HTTP server implementation
+│   │   ├── server.go                # RServe gRPC service handler
 │   │   ├── registry.go              # Run concurrency registry
+│   │   ├── session.go               # Multi-turn session store (TTL-based)
+│   │   ├── openai/                  # OpenAI-compatible HTTP API
+│   │   │   ├── handler.go           # /v1/chat/completions, /v1/models, /health
+│   │   │   ├── types.go             # Request/response types
+│   │   │   ├── models.go            # Model name parsing
+│   │   │   ├── sse.go               # Server-sent events writer
+│   │   │   └── files.go             # /v1/files upload/download endpoints
 │   │   └── pb/                      # Generated protobuf/gRPC stubs
+│   ├── batch/                       # Batch job execution engine
+│   │   ├── runner.go                # Batch runner with concurrency control
+│   │   ├── queue.go                 # Job queue with checkpoint/resume
+│   │   ├── scheduler.go             # Job scheduling and prioritization
+│   │   └── executor.go              # Local and remote job executors
 │   ├── envelope/                    # Standardized result envelope
 │   ├── workspace/                   # Job workspace management
 │   ├── settings/                    # JSON config & setup wizard
@@ -402,24 +417,33 @@ rcodegen/
 └── codex_pty_wrapper.py             # Codex PTY wrapper for session resume
 ```
 
-## rserve (gRPC Server)
+## rserve (gRPC + HTTP Server)
 
-`rserve` exposes all tools and bundle orchestration as a streaming gRPC API, intended for use by dashboards or remote agents.
+`rserve` exposes all tools and bundle orchestration via both a streaming gRPC API and an OpenAI-compatible HTTP API, intended for use by dashboards, remote agents, or any OpenAI SDK client.
 
-**Default port:** `14260` (djb2 of "rserve" + gRPC offset; localhost only; use a reverse proxy for remote access)
+**Default ports:** gRPC `14260`, HTTP `14261` (port+1). Binds to localhost only by default.
 
 ```bash
 # Start with defaults
 rserve
 
-# Custom port and concurrency
-rserve -port 9000 -max-concurrent 5
+# Custom port, concurrency, and bind address
+rserve -port 9000 -max-concurrent 5 -bind 0.0.0.0
 
 # Show version
 rserve -v
 ```
 
-**RPCs:**
+**Flags:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-port` | gRPC listen port (HTTP is port+1) | `14260` |
+| `-bind` | Bind address (`0.0.0.0` for all interfaces) | `127.0.0.1` |
+| `-max-concurrent` | Max simultaneous runs | `3` |
+| `-v` | Show version and exit | |
+
+### gRPC API
 
 | RPC | Description |
 |-----|-------------|
@@ -435,6 +459,69 @@ gRPC reflection is enabled — use `grpcurl` or any gRPC client to discover the 
 grpcurl -plaintext 127.0.0.1:14260 list
 grpcurl -plaintext -d '{"tool":"claude","task":"hello","work_dirs":["/tmp"]}' \
   127.0.0.1:14260 rserve.RServe/RunTask
+```
+
+### OpenAI-Compatible HTTP API
+
+The HTTP API on port+1 is compatible with any OpenAI SDK. Model names follow the format `{tool}` or `{tool}/{model}` (e.g., `claude`, `claude/opus`, `gemini/gemini-3.1-pro-preview`).
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/chat/completions` | POST | Chat completion (streaming and non-streaming) |
+| `/v1/models` | GET | List available tool/model combinations |
+| `/v1/files` | POST | Upload a file (multipart, 50MB limit) |
+| `/v1/files` | GET | List uploaded files |
+| `/v1/files/{id}` | GET | Download a file |
+| `/v1/files/{id}` | DELETE | Delete a file |
+| `/health` | GET | Server health and active run count |
+
+```bash
+# Non-streaming request
+curl http://127.0.0.1:14261/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude","messages":[{"role":"user","content":"hello"}]}'
+
+# Streaming request
+curl http://127.0.0.1:14261/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude/opus","messages":[{"role":"user","content":"hello"}],"stream":true}'
+
+# With working directories
+curl http://127.0.0.1:14261/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude","messages":[{"role":"user","content":"audit this code"}],"work_dirs":["/path/to/project"]}'
+```
+
+### Multi-Turn Sessions
+
+Both the gRPC and HTTP APIs support multi-turn conversations via `session_id`. The first response includes a `session_id`; send it back in subsequent requests to resume the conversation. Sessions expire after 30 minutes of inactivity.
+
+```bash
+# First request — get session_id from response
+curl http://127.0.0.1:14261/v1/chat/completions \
+  -d '{"model":"claude","messages":[{"role":"user","content":"read main.go"}]}'
+# Response includes: "session_id": "abc123..."
+
+# Continue the conversation
+curl http://127.0.0.1:14261/v1/chat/completions \
+  -d '{"model":"claude","messages":[{"role":"user","content":"now add tests"}],"session_id":"abc123..."}'
+```
+
+Under the hood, `session_id` maps to the underlying CLI tool's native session resume mechanism (`claude --resume`, `codex` session resume, `gemini --resume`).
+
+### File Uploads
+
+Upload files to reference them in chat completions. Files are stored in `/tmp/rserve-files/` and automatically purged after 24 hours.
+
+```bash
+# Upload a file
+curl http://127.0.0.1:14261/v1/files \
+  -F purpose=assistants \
+  -F file=@data.csv
+
+# Reference it in a prompt (use the returned path)
+curl http://127.0.0.1:14261/v1/chat/completions \
+  -d '{"model":"claude","messages":[{"role":"user","content":"analyze /tmp/rserve-files/.../data.csv"}]}'
 ```
 
 ## Adding a New Tool
@@ -470,6 +557,6 @@ Only use on trusted codebases in controlled environments. Lock files are stored 
 
 ## Version
 
-Current version: **2.3.0**
+Current version: **4.0.3**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
