@@ -162,3 +162,34 @@ func TestExtractToolInfo(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamParser_CapturesSessionID(t *testing.T) {
+	var buf bytes.Buffer
+	p := NewStreamParser(&buf)
+
+	p.ProcessLine(`{"type":"system","subtype":"init","session_id":"sess-abc-123"}`)
+
+	if p.SessionID != "sess-abc-123" {
+		t.Errorf("expected SessionID='sess-abc-123', got %q", p.SessionID)
+	}
+}
+
+func TestStreamParser_CapturesSessionID_ViaCallback(t *testing.T) {
+	var buf bytes.Buffer
+	var capturedSessionID string
+	cb := func(event *StreamEvent) {
+		if event.SessionID != "" {
+			capturedSessionID = event.SessionID
+		}
+	}
+	p := NewStreamParserWithCallback(&buf, nil, cb)
+
+	p.ProcessLine(`{"type":"system","subtype":"init","session_id":"sess-xyz-789"}`)
+
+	if p.SessionID != "sess-xyz-789" {
+		t.Errorf("expected parser SessionID='sess-xyz-789', got %q", p.SessionID)
+	}
+	if capturedSessionID != "sess-xyz-789" {
+		t.Errorf("expected callback to receive session_id='sess-xyz-789', got %q", capturedSessionID)
+	}
+}

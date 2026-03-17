@@ -21,6 +21,7 @@ type StreamEvent struct {
 	Usage        *TokenUsage     `json:"usage,omitempty"`
 	TotalCostUSD float64         `json:"total_cost_usd,omitempty"`
 	Stats        *GeminiStats    `json:"stats,omitempty"` // Gemini CLI format
+	SessionID    string          `json:"session_id,omitempty"`
 }
 
 // TokenUsage represents token usage from a Claude run
@@ -67,6 +68,7 @@ type StreamParser struct {
 	initialized  bool
 	Usage        *TokenUsage // Captured from result event
 	TotalCostUSD float64     // Captured from result event
+	SessionID    string      // Captured from init event
 	logger       *slog.Logger // Structured logger for diagnostics
 	callback     StreamCallback // Optional callback for each event
 }
@@ -135,7 +137,9 @@ func (p *StreamParser) ProcessLine(line string) {
 func (p *StreamParser) handleSystem(event StreamEvent) {
 	switch event.Subtype {
 	case "init":
-		// Show a brief initialization message
+		if event.SessionID != "" {
+			p.SessionID = event.SessionID
+		}
 		if !p.initialized {
 			fmt.Fprintf(p.writer, "%s%s⚡ Claude initialized%s\n", Dim, Cyan, Reset)
 			p.initialized = true

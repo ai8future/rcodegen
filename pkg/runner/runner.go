@@ -64,6 +64,7 @@ type RunResult struct {
 	ExitCode     int
 	TokenUsage   *TokenUsage
 	TotalCostUSD float64
+	SessionID    string
 	Error        error
 }
 
@@ -551,6 +552,7 @@ func (r *Runner) RunWithContext(ctx context.Context, cfg *Config) *RunResult {
 		ExitCode:     exitCode,
 		TokenUsage:   cfg.TokenUsage,
 		TotalCostUSD: cfg.TotalCostUSD,
+		SessionID:    cfg.SessionID,
 	}
 }
 
@@ -628,6 +630,9 @@ func (r *Runner) executeWithStreamParserCtx(ctx context.Context, cfg *Config, cm
 	}
 	if parser.TotalCostUSD > 0 {
 		cfg.TotalCostUSD = parser.TotalCostUSD
+	}
+	if parser.SessionID != "" {
+		cfg.SessionID = parser.SessionID
 	}
 
 	err = cmd.Wait()
