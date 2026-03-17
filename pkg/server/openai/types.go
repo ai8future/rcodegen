@@ -10,8 +10,9 @@ import "time"
 type ChatCompletionRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
-	Stream   bool      `json:"stream,omitempty"`
-	WorkDirs []string  `json:"work_dirs,omitempty"`
+	Stream    bool      `json:"stream,omitempty"`
+	WorkDirs  []string  `json:"work_dirs,omitempty"`
+	SessionID string    `json:"session_id,omitempty"`
 }
 
 // Message represents a single chat message with a role and content.
@@ -30,8 +31,9 @@ type ChatCompletionResponse struct {
 	Object  string   `json:"object"`
 	Created int64    `json:"created"`
 	Model   string   `json:"model"`
-	Choices []Choice `json:"choices"`
-	Usage   *Usage   `json:"usage,omitempty"`
+	Choices   []Choice `json:"choices"`
+	Usage     *Usage   `json:"usage,omitempty"`
+	SessionID string   `json:"session_id,omitempty"`
 }
 
 // Choice represents a single completion choice.
@@ -58,8 +60,9 @@ type ChatCompletionChunk struct {
 	Object  string         `json:"object"`
 	Created int64          `json:"created"`
 	Model   string         `json:"model"`
-	Choices []StreamChoice `json:"choices"`
-	Usage   *Usage         `json:"usage,omitempty"`
+	Choices   []StreamChoice `json:"choices"`
+	Usage     *Usage         `json:"usage,omitempty"`
+	SessionID string         `json:"session_id,omitempty"`
 }
 
 // StreamChoice represents a single choice within a streaming chunk.
