@@ -26,6 +26,7 @@ message RunTaskRequest {
   string max_budget = 4;     // Budget in USD (optional)
   repeated string work_dirs = 5; // Target directories
   map<string, string> variables = 6; // Template variables (-x key=val)
+  string session_id = 7;           // Resume existing session (multi-turn)
 }
 
 message RunBundleRequest {
@@ -79,6 +80,7 @@ message ResultEvent {
   TokenUsage usage = 3;
   double total_cost_usd = 4;
   string grade = 5;          // Extracted grade if present
+  string session_id = 6;          // Session ID for multi-turn continuation
 }
 
 message ErrorEvent {
