@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ai8future/chassis-go/v9/config"
+	"github.com/ai8future/chassis-go/v10/config"
 )
 
 const (

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ai8future/chassis-go/v9/registry"
+	"github.com/ai8future/chassis-go/v10/registry"
 )
 
 // BatchResult summarises the outcome of a complete batch run.

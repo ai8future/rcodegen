@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -21,19 +22,21 @@ import (
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
 
-	chassis "github.com/ai8future/chassis-go/v9"
-	"github.com/ai8future/chassis-go/v9/grpckit"
-	"github.com/ai8future/chassis-go/v9/health"
-	"github.com/ai8future/chassis-go/v9/lifecycle"
-	"github.com/ai8future/chassis-go/v9/logz"
-	"github.com/ai8future/chassis-go/v9/registry"
-	"github.com/ai8future/chassis-go/v9/xyops"
+	chassis "github.com/ai8future/chassis-go/v10"
+	"github.com/ai8future/chassis-go/v10/grpckit"
+	"github.com/ai8future/chassis-go/v10/health"
+	"github.com/ai8future/chassis-go/v10/kafkakit"
+	"github.com/ai8future/chassis-go/v10/lifecycle"
+	"github.com/ai8future/chassis-go/v10/logz"
+	otelinit "github.com/ai8future/chassis-go/v10/otel"
+	"github.com/ai8future/chassis-go/v10/registry"
+	"github.com/ai8future/chassis-go/v10/xyops"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
 
 func main() {
-	chassis.RequireMajor(9)
+	chassis.RequireMajor(10)
 
 	defaultPort := chassis.Port("rserve", chassis.PortGRPC)
 	port := flag.Int("port", defaultPort, "gRPC listen port")
@@ -48,6 +51,18 @@ func main() {
 	}
 
 	logger := logz.New("info")
+
+	// --- chassis: OTel initialization (before creating interceptors/metrics) ---
+	var shutdownOtel otelinit.ShutdownFunc
+	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); endpoint != "" {
+		shutdownOtel = otelinit.Init(otelinit.Config{
+			ServiceName:    "rserve",
+			ServiceVersion: runner.GetVersion(),
+			Endpoint:       endpoint,
+			Insecure:       true,
+		})
+		logger.Info("OpenTelemetry initialized", "endpoint", endpoint)
+	}
 
 	// Load settings (non-interactive: fall back to defaults if missing)
 	s, _, err := settings.LoadWithFallback()
@@ -73,13 +88,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// --- chassis: gRPC server with recovery, logging, tracing, and metrics interceptors ---
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			grpckit.UnaryRecovery(logger),
+			grpckit.UnaryTracing(),
+			grpckit.UnaryMetrics(),
 			grpckit.UnaryLogging(logger),
 		),
 		grpc.ChainStreamInterceptor(
 			grpckit.StreamRecovery(logger),
+			grpckit.StreamMetrics(),
 			grpckit.StreamLogging(logger),
 		),
 	)
@@ -103,6 +122,25 @@ func main() {
 	availableTools := openai.DetectAvailableTools(toolFactories)
 	httpHandler := openai.NewHandler(s, toolFactories, runRegistry, availableTools, fileStore, sessionStore)
 	httpPort := *port + 1
+
+	// --- chassis: kafkakit publisher (optional — enabled when KAFKA_BOOTSTRAP_SERVERS is set) ---
+	var pub *kafkakit.Publisher
+	kafkaCfg := kafkakit.Config{
+		BootstrapServers: os.Getenv("KAFKA_BOOTSTRAP_SERVERS"),
+		Source:           "rserve",
+		TenantID:         os.Getenv("KAFKA_TENANT_ID"),
+	}
+	if kafkaCfg.TenantID == "" {
+		kafkaCfg.TenantID = "ai8"
+	}
+	if kafkaCfg.Enabled() {
+		pub, err = kafkakit.NewPublisher(kafkaCfg)
+		if err != nil {
+			logger.Warn("kafkakit publisher initialization failed (non-fatal)", "error", err)
+		} else {
+			logger.Info("kafkakit publisher initialized")
+		}
+	}
 
 	// Register with chassis registry for operational visibility
 	os.Setenv("CHASSIS_SERVICE_NAME", "rserve")
@@ -136,6 +174,18 @@ func main() {
 				case <-time.After(30 * time.Second):
 					logger.Warn("graceful stop timed out, forcing stop")
 					grpcServer.Stop()
+				}
+				// Shutdown kafkakit publisher
+				if pub != nil {
+					pub.Close()
+				}
+				// Shutdown OTel
+				if shutdownOtel != nil {
+					shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer shutCancel()
+					if err := shutdownOtel(shutCtx); err != nil {
+						logger.Warn("OTel shutdown error", "error", err)
+					}
 				}
 				return nil
 			case err := <-errCh:
@@ -176,8 +226,23 @@ func main() {
 	}
 
 	// lifecycle.Run handles SIGTERM/SIGINT, coordinated shutdown, and registry
-	if err := lifecycle.Run(context.Background(), components...); err != nil {
+	lifecycleArgs := []any{lifecycle.WithKafkaConfig(kafkaCfg)}
+	for _, c := range components {
+		lifecycleArgs = append(lifecycleArgs, c)
+	}
+	if err := lifecycle.Run(context.Background(), lifecycleArgs...); err != nil {
 		logger.Error("serve error", "error", err)
 		os.Exit(1)
+	}
+}
+
+// publishRunCompleted publishes a codegen run.completed event to the event bus.
+// Exported for use by the gRPC server handlers if needed.
+func publishRunCompleted(ctx context.Context, pub *kafkakit.Publisher, logger *slog.Logger, data map[string]any) {
+	if pub == nil {
+		return
+	}
+	if err := pub.Publish(ctx, "ai8.codegen.run.completed", data); err != nil {
+		logger.Warn("failed to publish event", "error", err, "subject", "ai8.codegen.run.completed")
 	}
 }

@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.0.5] - 2026-03-23
+
+### Added
+- **Cross-platform build support** — Makefile now builds linux-amd64 and darwin-arm64 binaries for all 6 tools (rclaude, rcodex, rgemini, rcodegen, rserve, rbatch) with consistent `*-linux-amd64` / `*-darwin-arm64` naming; added `CGO_ENABLED=0` to all build targets for fully static binaries; added `darwin:` and `build-all:` meta-targets
+- **Launcher scripts** — 6 platform-detecting launcher scripts (`scripts/launcher-*.sh`) that auto-select the correct binary for the current OS/arch; `make build-all` copies them into `bin/` as the bare command names
+- Agent: Claude:Opus 4.6 (1M context)
+
+## [4.0.4] - 2026-03-22
+
+### Changed
+- **Upgraded chassis-go dependency from v9 to v10** — all import paths updated from `github.com/ai8future/chassis-go/v9` to `github.com/ai8future/chassis-go/v10` across all 6 binaries (rclaude, rcodex, rgemini, rcodegen, rserve, rbatch) and all library packages; `RequireMajor(9)` calls updated to `RequireMajor(10)`; go.mod module reference and replace directive updated; go.sum regenerated via `go mod tidy`
+- Agent: Claude:Opus 4.6
+
 ## [4.0.3] - 2026-03-17
 
 ### Added
