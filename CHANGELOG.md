@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.0.6] - 2026-03-25
+
+### Fixed
+- **Kafka env var naming convention** -- renamed `KAFKA_BOOTSTRAP_SERVERS` and `KAFKA_TENANT_ID` to `KAFKAKIT_BOOTSTRAP_SERVERS` and `KAFKAKIT_TENANT_ID` in rserve to match chassis v10 kafkakit naming convention
+- **Removed stale Syncthing conflict `.go` files** in `cmd/rserve/` and `cmd/rcodegen/` that referenced the old chassis v9 and blocked compilation
+- Agent: Claude:Opus 4.6
+
 ## [4.0.5] - 2026-03-23
 
 ### Added

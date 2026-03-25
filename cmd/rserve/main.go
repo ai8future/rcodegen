@@ -123,12 +123,12 @@ func main() {
 	httpHandler := openai.NewHandler(s, toolFactories, runRegistry, availableTools, fileStore, sessionStore)
 	httpPort := *port + 1
 
-	// --- chassis: kafkakit publisher (optional — enabled when KAFKA_BOOTSTRAP_SERVERS is set) ---
+	// --- chassis: kafkakit publisher (optional — enabled when KAFKAKIT_BOOTSTRAP_SERVERS is set) ---
 	var pub *kafkakit.Publisher
 	kafkaCfg := kafkakit.Config{
-		BootstrapServers: os.Getenv("KAFKA_BOOTSTRAP_SERVERS"),
+		BootstrapServers: os.Getenv("KAFKAKIT_BOOTSTRAP_SERVERS"),
 		Source:           "rserve",
-		TenantID:         os.Getenv("KAFKA_TENANT_ID"),
+		TenantID:         os.Getenv("KAFKAKIT_TENANT_ID"),
 	}
 	if kafkaCfg.TenantID == "" {
 		kafkaCfg.TenantID = "ai8"
