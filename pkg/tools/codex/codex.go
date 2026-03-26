@@ -49,12 +49,12 @@ func (t *Tool) ReportPrefix() string {
 
 // ValidModels returns the list of valid model names
 func (t *Tool) ValidModels() []string {
-	return []string{"gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1-codex", "gpt-4o-codex"}
+	return []string{"gpt-5.4-codex", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1-codex", "gpt-4o-codex"}
 }
 
 // DefaultModel returns the default model name
 func (t *Tool) DefaultModel() string {
-	return "gpt-5.3-codex"
+	return "gpt-5.4-codex"
 }
 
 // DefaultModelSetting returns the default model from settings
@@ -222,7 +222,7 @@ func (t *Tool) ToolSpecificFlags() []runner.FlagDef {
 			Long:        "--effort",
 			Description: "Reasoning effort: low, medium, high, xhigh",
 			TakesArg:    true,
-			Default:     "xhigh",
+			Default:     "high",
 			Target:      "Effort",
 		},
 		{
@@ -245,7 +245,7 @@ func (t *Tool) ToolSpecificFlags() []runner.FlagDef {
 // ApplyToolDefaults applies Codex-specific defaults from settings
 func (t *Tool) ApplyToolDefaults(cfg *runner.Config) {
 	// Set default effort
-	cfg.Effort = "xhigh"
+	cfg.Effort = "high"
 	cfg.TrackStatus = true
 
 	// Apply settings defaults if available
@@ -315,7 +315,7 @@ func (t *Tool) ToolSpecificHelpSections() []runner.HelpSection {
 		{
 			Title: "Codex Options",
 			Lines: []string{
-				fmt.Sprintf("  %s-e%s, %s--effort%s %s<lvl>%s    Reasoning effort: low, medium, high, xhigh %s(default: xhigh)%s",
+				fmt.Sprintf("  %s-e%s, %s--effort%s %s<lvl>%s    Reasoning effort: low, medium, high, xhigh %s(default: high)%s",
 					runner.Green, runner.Reset, runner.Green, runner.Reset, runner.Yellow, runner.Reset, runner.Dim, runner.Reset),
 			},
 		},

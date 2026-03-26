@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.0.7] - 2026-03-26
+
+### Changed
+- **Default rcodex model updated to gpt-5.4-codex** with default effort level changed from xhigh to high. Added gpt-5.4-codex to valid models list. Updated settings defaults, setup wizard, and documentation.
+- Agent: Claude:Opus 4.6
+
 ## [4.0.6] - 2026-03-25
 
 ### Fixed
