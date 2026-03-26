@@ -1,5 +1,9 @@
 # Changelog
 
+## [4.0.9] - 2026-03-26
+- GO-BEST-PRACTICES conformance: Makefile with cross-platform build targets (build-linux, build-darwin, build-all), launcher script, binary naming, LDFLAGS with version injection, CGO_ENABLED=0 static builds
+- Agent: Claude:Opus 4.6
+
 All notable changes to this project will be documented in this file.
 
 ## [4.0.8] - 2026-03-26

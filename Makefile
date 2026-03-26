@@ -1,85 +1,60 @@
 VERSION := $(shell cat VERSION | tr -d '[:space:]')
-LDFLAGS := -X rcodegen/pkg/runner.Version=$(VERSION)
+LDFLAGS := -ldflags="-w -s -X rcodegen/pkg/runner.Version=$(VERSION)"
 BINDIR  := bin
 
 BINS := rclaude rcodex rgemini rcodegen rserve rbatch
 
-.PHONY: all $(BINS) linux darwin build-all clean test proto \
-        rclaude_linux rcodex_linux rgemini_linux rcodegen_linux rserve_linux rbatch_linux \
-        rclaude_darwin rcodex_darwin rgemini_darwin rcodegen_darwin rserve_darwin rbatch_darwin
+.DEFAULT_GOAL := build
 
-all: $(BINS)
+.PHONY: build build-linux build-darwin build-all test clean lint deps run proto \
+        $(foreach b,$(BINS),$(b) $(b)-linux $(b)-darwin)
 
-rclaude:
-	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rclaude ./cmd/rclaude
+# --- Native build (one target per binary) ---
+build: $(BINS)
 
-rcodex:
-	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rcodex ./cmd/rcodex
+$(foreach b,$(BINS),$(eval \
+$(b): ; @rm -f $(BINDIR)/$(b) && CGO_ENABLED=0 go build $(LDFLAGS) -o $(BINDIR)/$(b) ./cmd/$(b)))
 
-rgemini:
-	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rgemini ./cmd/rgemini
+# --- Linux amd64 cross-compilation ---
+build-linux: $(addsuffix -linux,$(BINS))
 
-rcodegen:
-	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rcodegen ./cmd/rcodegen
+$(foreach b,$(BINS),$(eval \
+$(b)-linux: ; @rm -f $(BINDIR)/$(b)-linux-amd64 && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BINDIR)/$(b)-linux-amd64 ./cmd/$(b)))
 
-rserve:
-	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rserve ./cmd/rserve
+# --- Darwin arm64 cross-compilation ---
+build-darwin: $(addsuffix -darwin,$(BINS))
 
-rbatch:
-	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rbatch ./cmd/rbatch
+$(foreach b,$(BINS),$(eval \
+$(b)-darwin: ; @rm -f $(BINDIR)/$(b)-darwin-arm64 && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BINDIR)/$(b)-darwin-arm64 ./cmd/$(b)))
 
-# Linux amd64
-linux: rclaude_linux rcodex_linux rgemini_linux rcodegen_linux rserve_linux rbatch_linux
+# --- Build all platforms + launcher scripts ---
+build-all: build-linux build-darwin
+	@for bin in $(BINS); do \
+		cp scripts/launcher-$$bin.sh $(BINDIR)/$$bin && chmod +x $(BINDIR)/$$bin; \
+	done
 
-rclaude_linux:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rclaude-linux-amd64 ./cmd/rclaude
-
-rcodex_linux:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rcodex-linux-amd64 ./cmd/rcodex
-
-rgemini_linux:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rgemini-linux-amd64 ./cmd/rgemini
-
-rcodegen_linux:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rcodegen-linux-amd64 ./cmd/rcodegen
-
-rserve_linux:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rserve-linux-amd64 ./cmd/rserve
-
-rbatch_linux:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rbatch-linux-amd64 ./cmd/rbatch
-
-# Darwin arm64
-darwin: rclaude_darwin rcodex_darwin rgemini_darwin rcodegen_darwin rserve_darwin rbatch_darwin
-
-rclaude_darwin:
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rclaude-darwin-arm64 ./cmd/rclaude
-
-rcodex_darwin:
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rcodex-darwin-arm64 ./cmd/rcodex
-
-rgemini_darwin:
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rgemini-darwin-arm64 ./cmd/rgemini
-
-rcodegen_darwin:
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rcodegen-darwin-arm64 ./cmd/rcodegen
-
-rserve_darwin:
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rserve-darwin-arm64 ./cmd/rserve
-
-rbatch_darwin:
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/rbatch-darwin-arm64 ./cmd/rbatch
-
-# Build all platforms + launchers
-build-all: linux darwin
-	@for bin in $(BINS); do cp scripts/launcher-$$bin.sh $(BINDIR)/$$bin && chmod +x $(BINDIR)/$$bin; done
-
-clean:
-	rm -f $(foreach bin,$(BINS),$(BINDIR)/$(bin) $(BINDIR)/$(bin)-linux-amd64 $(BINDIR)/$(bin)-darwin-arm64)
-
+# --- Test ---
 test:
 	go test ./pkg/...
 
+# --- Clean ---
+clean:
+	@rm -f $(foreach b,$(BINS),$(BINDIR)/$(b) $(BINDIR)/$(b)-linux-amd64 $(BINDIR)/$(b)-darwin-arm64)
+
+# --- Lint ---
+lint:
+	golangci-lint run ./...
+
+# --- Deps ---
+deps:
+	go mod download
+	go mod tidy
+
+# --- Run (default binary) ---
+run: rcodegen
+	./$(BINDIR)/rcodegen
+
+# --- Protobuf ---
 proto:
 	PATH="$$PATH:$$(go env GOPATH)/bin" protoc --go_out=. --go-grpc_out=. proto/rserve.proto
 	@# Move generated files to pkg/server/pb/ if protoc placed them under module path
