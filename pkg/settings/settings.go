@@ -25,7 +25,7 @@ type TaskDef struct {
 
 // CodexDefaults holds default settings for rcodex
 type CodexDefaults struct {
-	Model  string `json:"model"`  // Default model (e.g., "gpt-5.4-codex")
+	Model  string `json:"model"`  // Default model (e.g., "gpt-5.4")
 	Effort string `json:"effort"` // Default effort level (low, medium, high, xhigh)
 }
 
@@ -192,8 +192,8 @@ func GetDefaultSettings() *Settings {
 		DefaultBuildDir: "", // Optional, will use CodeDir if not set
 		Defaults: Defaults{
 			Codex: CodexDefaults{
-				Model:  "gpt-5.4-codex",
-				Effort: "high",
+				Model:  "gpt-5.4",
+				Effort: "xhigh",
 			},
 			Claude: ClaudeDefaults{
 				Model:  "sonnet",
@@ -216,7 +216,7 @@ func LoadWithFallback() (*Settings, bool, error) {
 	}
 	// Fill in any missing defaults
 	if settings.Defaults.Codex.Model == "" {
-		settings.Defaults.Codex.Model = "gpt-5.4-codex"
+		settings.Defaults.Codex.Model = "gpt-5.4"
 	}
 	if settings.Defaults.Codex.Effort == "" {
 		settings.Defaults.Codex.Effort = "high"
@@ -551,19 +551,19 @@ func RunInteractiveSetup() (*Settings, bool) {
 
 	fmt.Printf("%s%sDefault model for rcodex?%s\n", bold, green, reset)
 	fmt.Printf("%sThe model name used with OpenAI Codex CLI.%s\n\n", dim, reset)
-	fmt.Printf("%sCodex model%s [%sgpt-5.4-codex%s]: ", bold, reset, yellow, reset)
+	fmt.Printf("%sCodex model%s [%sgpt-5.4%s]: ", bold, reset, yellow, reset)
 
 	codexModelInput, _ := reader.ReadString('\n')
 	codexModelInput = strings.TrimSpace(codexModelInput)
-	codexModel := "gpt-5.4-codex"
+	codexModel := "gpt-5.4"
 	if codexModelInput != "" {
 		codexModel = codexModelInput
 	}
 
 	fmt.Printf("\n%s%sDefault reasoning effort?%s\n", bold, green, reset)
 	fmt.Printf("%sHigher effort = better results but slower and uses more credits.%s\n\n", dim, reset)
-	fmt.Printf("  %s1.%s %shigh%s %s(recommended)%s\n", dim, reset, magenta, reset, dim, reset)
-	fmt.Printf("  %s2.%s %sxhigh%s %s(most thorough)%s\n", dim, reset, magenta, reset, dim, reset)
+	fmt.Printf("  %s1.%s %sxhigh%s %s(recommended - most thorough)%s\n", dim, reset, magenta, reset, dim, reset)
+	fmt.Printf("  %s2.%s %shigh%s\n", dim, reset, magenta, reset)
 	fmt.Printf("  %s3.%s %smedium%s\n", dim, reset, magenta, reset)
 	fmt.Printf("  %s4.%s %slow%s %s(fastest)%s\n\n", dim, reset, magenta, reset, dim, reset)
 
@@ -571,12 +571,12 @@ func RunInteractiveSetup() (*Settings, bool) {
 	effortInput, _ := reader.ReadString('\n')
 	effortInput = strings.TrimSpace(effortInput)
 
-	codexEffort := "high" // default
+	codexEffort := "xhigh" // default
 	switch effortInput {
-	case "", "1", "high":
-		codexEffort = "high"
-	case "2", "xhigh":
+	case "", "1", "xhigh":
 		codexEffort = "xhigh"
+	case "2", "high":
+		codexEffort = "high"
 	case "3", "medium":
 		codexEffort = "medium"
 	case "4", "low":

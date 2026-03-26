@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.0.8] - 2026-03-26
+
+### Changed
+- **Default rcodex model updated to gpt-5.4** (dropped `-codex` suffix to match OpenAI's new naming convention). Effort remains xhigh.
+- Agent: Claude:Opus 4.6
+
 ## [4.0.7] - 2026-03-26
 
 ### Changed

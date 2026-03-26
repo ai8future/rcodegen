@@ -265,7 +265,7 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
   "output_dir": "",
   "default_build_dir": "",
   "defaults": {
-    "codex": { "model": "gpt-5.4-codex", "effort": "high" },
+    "codex": { "model": "gpt-5.4", "effort": "xhigh" },
     "claude": { "model": "opus", "budget": "10.00" },
     "gemini": { "model": "gemini-3.1-pro-preview" }
   },
@@ -300,7 +300,7 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
 `sonnet`, `opus`, `haiku` (default: `opus`)
 
 ### Codex
-`gpt-5.4-codex`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex` (default: `gpt-5.4-codex`)
+`gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex` (default: `gpt-5.4`)
 
 ### Gemini
 `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` (default: `gemini-3.1-pro-preview`)
@@ -340,7 +340,7 @@ Use `--static` to disable animation.
 | Output Format | stream-json | --json | stream-json |
 | Cost Tracking | iTerm2 API | iTerm2 API | iTerm2 API |
 | Budget Control | `--max-budget-usd` | None | None |
-| Default Model | opus | gpt-5.4-codex | gemini-3.1-pro-preview |
+| Default Model | opus | gpt-5.4 | gemini-3.1-pro-preview |
 
 ## Project Structure
 

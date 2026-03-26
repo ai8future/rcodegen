@@ -3,8 +3,8 @@
   "output_dir": "",
   "defaults": {
     "codex": {
-      "model": "gpt-5.4-codex",
-      "effort": "high"
+      "model": "gpt-5.4",
+      "effort": "xhigh"
     },
     "claude": {
       "model": "sonnet",
