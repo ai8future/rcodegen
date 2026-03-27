@@ -1,5 +1,9 @@
 # Changelog
 
+## [4.0.11] - 2026-03-27
+- `-A`/`--dir-all` now randomizes the order of discovered project folders so they're not always processed alphabetically
+- Agent: Claude:Opus 4.6
+
 ## [4.0.10] - 2026-03-27
 - `-A`/`--dir-all` now discovers directories with a VERSION file in addition to `.git`, so projects without git are included
 - Agent: Claude:Opus 4.6

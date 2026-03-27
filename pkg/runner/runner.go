@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -1159,6 +1160,10 @@ func (r *Runner) parseArgs() (*Config, error) {
 		if len(allDirs) == 0 {
 			return nil, fmt.Errorf("--dir-all: no code projects found")
 		}
+		// Randomize order so projects aren't always processed alphabetically
+		rand.Shuffle(len(allDirs), func(i, j int) {
+			allDirs[i], allDirs[j] = allDirs[j], allDirs[i]
+		})
 		cfg.WorkDirs = allDirs
 		cfg.Codebase = filepath.Base(allDirs[0])
 	}
