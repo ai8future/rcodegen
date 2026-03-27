@@ -1,5 +1,9 @@
 # Changelog
 
+## [4.0.10] - 2026-03-27
+- `-A`/`--dir-all` now discovers directories with a VERSION file in addition to `.git`, so projects without git are included
+- Agent: Claude:Opus 4.6
+
 ## [4.0.9] - 2026-03-26
 - GO-BEST-PRACTICES conformance: Makefile with cross-platform build targets (build-linux, build-darwin, build-all), launcher script, binary naming, LDFLAGS with version injection, CGO_ENABLED=0 static builds
 - Agent: Claude:Opus 4.6

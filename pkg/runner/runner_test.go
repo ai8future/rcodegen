@@ -136,3 +136,30 @@ func TestDiscoverDirectories_SingleLevel(t *testing.T) {
 		t.Errorf("expected repo2, got %s", filepath.Base(dirs[1]))
 	}
 }
+
+func TestDiscoverDirectories_VersionFile(t *testing.T) {
+	base := t.TempDir()
+	// Project with only a VERSION file (no .git)
+	os.MkdirAll(filepath.Join(base, "proj_version"), 0755)
+	os.WriteFile(filepath.Join(base, "proj_version", "VERSION"), []byte("1.0.0"), 0644)
+	// Project with both .git and VERSION
+	os.MkdirAll(filepath.Join(base, "proj_both", ".git"), 0755)
+	os.WriteFile(filepath.Join(base, "proj_both", "VERSION"), []byte("2.0.0"), 0644)
+	// Directory with neither
+	os.MkdirAll(filepath.Join(base, "plain_dir"), 0755)
+
+	dirs, err := discoverDirectories(base, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sort.Strings(dirs)
+	if len(dirs) != 2 {
+		t.Fatalf("expected 2 projects, got %d: %v", len(dirs), dirs)
+	}
+	if filepath.Base(dirs[0]) != "proj_both" {
+		t.Errorf("expected proj_both, got %s", filepath.Base(dirs[0]))
+	}
+	if filepath.Base(dirs[1]) != "proj_version" {
+		t.Errorf("expected proj_version, got %s", filepath.Base(dirs[1]))
+	}
+}
