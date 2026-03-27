@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.0.12] - 2026-03-27
+- `-r`/`--recursive` now also randomizes folder order (matching `-A` behavior from 4.0.11)
+- Updated recursive error message to say "no code projects" instead of "no git repositories" since VERSION-based projects are also discovered
+- Agent: Claude:Opus 4.6
+
 ## [4.0.11] - 2026-03-27
 - `-A`/`--dir-all` now randomizes the order of discovered project folders so they're not always processed alphabetically
 - Agent: Claude:Opus 4.6

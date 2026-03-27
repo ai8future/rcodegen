@@ -1193,9 +1193,13 @@ func (r *Runner) parseArgs() (*Config, error) {
 		}
 
 		if len(expanded) == 0 {
-			return nil, fmt.Errorf("no git repositories found with --recursive")
+			return nil, fmt.Errorf("no code projects found with --recursive")
 		}
 
+		// Randomize order so projects aren't always processed alphabetically
+		rand.Shuffle(len(expanded), func(i, j int) {
+			expanded[i], expanded[j] = expanded[j], expanded[i]
+		})
 		cfg.WorkDirs = expanded
 		cfg.Codebase = filepath.Base(expanded[0])
 	}
