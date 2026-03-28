@@ -532,16 +532,31 @@ curl http://127.0.0.1:14261/v1/chat/completions \
    package main
 
    import (
-       chassis "github.com/ai8future/chassis-go/v9"
+       "fmt"
+       "os"
+
+       chassis "github.com/ai8future/chassis-go/v10"
+       "github.com/ai8future/chassis-go/v10/logz"
+       "github.com/ai8future/chassis-go/v10/registry"
        "rcodegen/pkg/runner"
        "rcodegen/pkg/tools/newtool"
    )
 
    func main() {
-       chassis.RequireMajor(9)
+       chassis.RequireMajor(10)
+       logger := logz.New("info")
+       if err := registry.InitCLI(chassis.Version); err != nil {
+           logger.Error("registry init failed", "error", err)
+           os.Exit(1)
+       }
        tool := newtool.New()
        r := runner.NewRunner(tool)
-       r.RunAndExit()
+       result := r.Run()
+       if result.Error != nil {
+           fmt.Fprintln(os.Stderr, result.Error)
+       }
+       registry.ShutdownCLI(result.ExitCode)
+       os.Exit(result.ExitCode)
    }
    ```
 3. Add a build target to the Makefile
@@ -557,6 +572,6 @@ Only use on trusted codebases in controlled environments. Lock files are stored 
 
 ## Version
 
-Current version: **4.0.3**
+Current version: **4.0.13**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.

@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.0.13] - 2026-03-27
+- Added unit tests for pkg/reports (20 tests): FindNewestReport, IsReportReviewed, ShouldSkipTask, DeleteOldReports
+- Added unit tests for pkg/tracking (12 tests): FormatCredit, IsITerm2Error, GetModelStatus, FormatResetsIn, GetScriptDir
+- Added unit tests for pkg/runner/grades.go (24 tests): ExtractGradeFromReport, ParseReportFilename, parseFlexibleDate, LoadGrades, SaveGrades, AppendGrade, escapeGlobPattern, FindNewestReport
+- Agent: Claude:Opus 4.6
+
 ## [4.0.12] - 2026-03-27
 - `-r`/`--recursive` now also randomizes folder order (matching `-A` behavior from 4.0.11)
 - Updated recursive error message to say "no code projects" instead of "no git repositories" since VERSION-based projects are also discovered
