@@ -23,3 +23,7 @@ make test     # run tests
 ```
 
 This uses `-ldflags` to embed the VERSION file into the binary so that `-v` works from any directory. Do NOT use bare `go build` without ldflags — the version will show as "unknown" when run outside the project directory.
+
+- Before building or debugging, verify vendor/ is current: run go mod vendor if using local replace directives.
+
+- Before building or debugging, verify vendor/ is current: run go mod vendor if using local replace directives.
