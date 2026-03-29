@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
+	rcodegenpkg "rcodegen"
 	"rcodegen/pkg/batch"
 	"rcodegen/pkg/colors"
-	"rcodegen/pkg/runner"
 	"rcodegen/pkg/settings"
 
 	chassis "github.com/ai8future/chassis-go/v10"
@@ -25,6 +25,7 @@ import (
 )
 
 func main() {
+	chassis.SetAppVersion(rcodegenpkg.AppVersion)
 	chassis.RequireMajor(10)
 	logger := logz.New("info")
 	if err := registry.InitCLI(chassis.Version); err != nil {
@@ -36,13 +37,6 @@ func main() {
 		printUsage()
 		registry.ShutdownCLI(1)
 		os.Exit(1)
-	}
-
-	// Handle top-level -v flag before subcommand dispatch.
-	if os.Args[1] == "-v" || os.Args[1] == "--version" {
-		fmt.Printf("rbatch %s\n", runner.GetVersion())
-		registry.ShutdownCLI(0)
-		os.Exit(0)
 	}
 
 	subcommand := os.Args[1]
@@ -645,7 +639,6 @@ func writeBatchResults(batchName string, result *batch.BatchResult) {
 // printUsage prints the top-level help message.
 func printUsage() {
 	name := "rbatch"
-	version := runner.GetVersion()
 
 	fmt.Fprintf(os.Stderr, `%s %s - batch job runner for coding agents
 
@@ -659,11 +652,8 @@ Commands:
   resume [state.json]    Resume from a checkpoint
   status [batch-name]    Show batch status
 
-Flags:
-  -v                     Show version
-
 Run '%s <command> --help' for command-specific help.
-`, name, version, name, name)
+`, name, rcodegenpkg.AppVersion, name, name)
 
 	// Collect unique tool names from the listing for context.
 	fmt.Fprintf(os.Stderr, `

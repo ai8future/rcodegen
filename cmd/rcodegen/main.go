@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	rcodegenpkg "rcodegen"
 	"rcodegen/pkg/bundle"
 	_ "rcodegen/pkg/executor" // Register dispatcher factory via init()
 	"rcodegen/pkg/orchestrator"
-	"rcodegen/pkg/runner"
 	"rcodegen/pkg/settings"
 
 	chassis "github.com/ai8future/chassis-go/v10"
@@ -20,6 +20,7 @@ import (
 )
 
 func main() {
+	chassis.SetAppVersion(rcodegenpkg.AppVersion)
 	chassis.RequireMajor(10)
 	logger := logz.New("info")
 	if err := registry.InitCLI(chassis.Version); err != nil {
@@ -38,8 +39,6 @@ func main() {
 		listBundles()
 	case "help", "-h", "--help":
 		printUsage()
-	case "version", "-V", "--version":
-		fmt.Printf("rcodegen %s\n", runner.GetVersion())
 	default:
 		// Treat as bundle name shortcut
 		os.Args = append([]string{os.Args[0], "bundle"}, os.Args[1:]...)

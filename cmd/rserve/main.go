@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
+	rcodegenpkg "rcodegen"
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/server"
 	"rcodegen/pkg/server/openai"
@@ -36,19 +37,14 @@ import (
 )
 
 func main() {
+	chassis.SetAppVersion(rcodegenpkg.AppVersion)
 	chassis.RequireMajor(10)
 
 	defaultPort := chassis.Port("rserve", chassis.PortGRPC)
 	port := flag.Int("port", defaultPort, "gRPC listen port")
 	bind := flag.String("bind", "127.0.0.1", "bind address (use 0.0.0.0 for all interfaces)")
 	maxConcurrent := flag.Int("max-concurrent", 3, "max simultaneous runs")
-	showVersion := flag.Bool("v", false, "show version and exit")
 	flag.Parse()
-
-	if *showVersion {
-		fmt.Printf("rserve %s\n", runner.GetVersion())
-		os.Exit(0)
-	}
 
 	logger := logz.New("info")
 
@@ -57,7 +53,7 @@ func main() {
 	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); endpoint != "" {
 		shutdownOtel = otelinit.Init(otelinit.Config{
 			ServiceName:    "rserve",
-			ServiceVersion: runner.GetVersion(),
+			ServiceVersion: rcodegenpkg.AppVersion,
 			Endpoint:       endpoint,
 			Insecure:       true,
 		})
@@ -148,7 +144,7 @@ func main() {
 	registry.Port(chassis.PortHTTP, httpPort, "OpenAI-compatible HTTP API")
 
 	logger.Info("rserve starting",
-		"version", runner.GetVersion(),
+		"version", rcodegenpkg.AppVersion,
 		"bind", *bind,
 		"grpc_port", *port,
 		"http_port", httpPort,

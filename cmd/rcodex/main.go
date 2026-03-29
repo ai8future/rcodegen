@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	rcodegenpkg "rcodegen"
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/tools/codex"
 
@@ -13,6 +14,7 @@ import (
 )
 
 func main() {
+	chassis.SetAppVersion(rcodegenpkg.AppVersion)
 	chassis.RequireMajor(10)
 	logger := logz.New("info")
 	if err := registry.InitCLI(chassis.Version); err != nil {
