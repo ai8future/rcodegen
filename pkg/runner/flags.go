@@ -119,6 +119,7 @@ func CommonFlagGroups() []FlagAliases {
 		{Names: []string{"-A", "--dir-all"}, TakesArg: true},
 		{Names: []string{"-V", "--verbose"}, TakesArg: false},
 		{Names: []string{"-v", "--version"}, TakesArg: false},
+		{Names: []string{"-f", "--force"}, TakesArg: false},
 	}
 }
 

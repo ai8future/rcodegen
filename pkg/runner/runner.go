@@ -309,6 +309,12 @@ func (r *Runner) runForWorkDir(cfg *Config, workDir string) int {
 	startTime := time.Now()
 	cfg.Logger.Debug("running task", "work_dir", workDir, "task_shortcut", cfg.TaskShortcut)
 
+	// Resolve repo directory for VERSION check
+	repoDir := workDir
+	if repoDir == "" {
+		repoDir, _ = os.Getwd()
+	}
+
 	// For multi-codebase runs, regenerate task with correct codebase name
 	// This ensures each codebase gets its own report filename
 	if len(cfg.WorkDirs) > 1 && cfg.TaskShortcut != "" && workDir != "" {
@@ -327,18 +333,34 @@ func (r *Runner) runForWorkDir(cfg *Config, workDir string) int {
 
 	// Execute the task
 	var exitCode int
+	toolName := strings.ToLower(r.Tool.Name())
 	if cfg.Task == TaskSuite {
-		exitCode = r.runMultipleReports(cfg, workDir)
+		exitCode = r.runMultipleReports(cfg, workDir, repoDir)
 	} else {
 		// Check if we should skip due to unreviewed previous report
 		reportDir := r.getReportDir(cfg, workDir)
 		pattern := r.TaskConfig.ReportPatterns[cfg.TaskShortcut]
 		if reports.ShouldSkipTask(reportDir, cfg.TaskShortcut, pattern, cfg.RequireReview) {
 			exitCode = 0 // Skipped, not an error
+		} else if cfg.TaskShortcut != "" && !cfg.Force {
+			// Check VERSION state — only for known task shortcuts
+			if skip, msg := CheckVersionState(repoDir, reportDir, toolName, cfg.TaskShortcut); skip {
+				fmt.Printf("%s%s%s\n", Yellow, msg, Reset)
+				exitCode = 0
+			} else {
+				exitCode = r.runSingleTask(cfg, workDir)
+				if exitCode == 0 {
+					RecordVersionState(repoDir, reportDir, toolName, cfg.TaskShortcut)
+					r.persistGrade(cfg, workDir, cfg.TaskShortcut)
+				}
+			}
 		} else {
 			exitCode = r.runSingleTask(cfg, workDir)
 			// Persist grade after successful task completion
 			if exitCode == 0 && cfg.TaskShortcut != "" {
+				// Record version state even on forced runs
+				reportDir := r.getReportDir(cfg, workDir)
+				RecordVersionState(repoDir, reportDir, toolName, cfg.TaskShortcut)
 				r.persistGrade(cfg, workDir, cfg.TaskShortcut)
 			}
 		}
@@ -650,7 +672,7 @@ func (r *Runner) executeWithStreamParserCtx(ctx context.Context, cfg *Config, cm
 }
 
 // runMultipleReports runs the "suite" meta-task (5 sequential reports)
-func (r *Runner) runMultipleReports(cfg *Config, workDir string) int {
+func (r *Runner) runMultipleReports(cfg *Config, workDir, repoDir string) int {
 	overallExit := 0
 
 	fmt.Printf("%s%sRunning all %d report types sequentially...%s\n\n", Bold, Cyan, len(ReportTypes), Reset)
@@ -678,6 +700,15 @@ func (r *Runner) runMultipleReports(cfg *Config, workDir string) int {
 			continue
 		}
 
+		// Check VERSION state for this report type
+		suiteToolName := strings.ToLower(r.Tool.Name())
+		if !cfg.Force {
+			if skip, msg := CheckVersionState(repoDir, reportDir, suiteToolName, reportType); skip {
+				fmt.Printf("%s%s%s\n\n", Yellow, msg, Reset)
+				continue
+			}
+		}
+
 		// Handle dry run mode
 		if cfg.DryRun {
 			task := r.getTask(cfg, workDir, reportType)
@@ -697,7 +728,8 @@ func (r *Runner) runMultipleReports(cfg *Config, workDir string) int {
 		if exitCode != 0 {
 			overallExit = exitCode
 		} else {
-			// Persist grade after successful report completion
+			// Record version state and persist grade after successful report completion
+			RecordVersionState(repoDir, reportDir, suiteToolName, reportType)
 			r.persistGrade(cfg, workDir, reportType)
 		}
 	}
@@ -991,6 +1023,8 @@ func (r *Runner) parseArgs() (*Config, error) {
 	flag.BoolVar(&cfg.StatusOnly, "status-only", false, "Show status and exit")
 	flag.BoolVar(&cfg.DryRun, "n", false, "Dry run - show command without executing")
 	flag.BoolVar(&cfg.DryRun, "dry-run", false, "Dry run - show command without executing")
+	flag.BoolVar(&cfg.Force, "f", false, "Force run even if VERSION unchanged since last run")
+	flag.BoolVar(&cfg.Force, "force", false, "Force run even if VERSION unchanged since last run")
 	flag.BoolVar(&showTasks, "t", false, "List available task shortcuts")
 	flag.BoolVar(&showTasks, "tasks", false, "List available task shortcuts")
 	flag.BoolVar(&showHelp, "h", false, "Show help message")
@@ -1391,6 +1425,7 @@ func (r *Runner) printUsage() {
 	// Execution Options
 	fmt.Printf("%s%sExecution Options:%s\n", Bold, Cyan, Reset)
 	fmt.Printf("  %s-m%s, %s--model%s %s<name>%s    Specify model %s(default: %s)%s\n", Green, Reset, Green, Reset, Yellow, Reset, Dim, r.Tool.DefaultModel(), Reset)
+	fmt.Printf("  %s-f%s, %s--force%s           Force run even if VERSION unchanged\n", Green, Reset, Green, Reset)
 	fmt.Printf("  %s-n%s, %s--dry-run%s         Show command without executing\n", Green, Reset, Green, Reset)
 	fmt.Printf("  %s-l%s, %s--lock%s            Queue behind other running %s instances\n", Green, Reset, Green, Reset, toolName)
 	fmt.Printf("  %s-j%s, %s--json%s            Output as newline-delimited JSON\n", Green, Reset, Green, Reset)

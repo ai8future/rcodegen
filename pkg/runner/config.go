@@ -67,6 +67,7 @@ type Config struct {
 
 	// Execution control
 	DryRun bool // If true, show what would be executed without running
+	Force  bool // If true, bypass VERSION state check and run anyway
 
 	// Output destination (nil defaults to os.Stdout)
 	Output io.Writer

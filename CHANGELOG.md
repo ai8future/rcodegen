@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.14] - 2026-03-30
+- Added VERSION state tracking: tasks (audit, test, fix, refactor, quick, suite) now check the target repo's VERSION file and skip if unchanged since last successful run
+- State stored per tool+task in `_rcodegen/version_state.json` (e.g., rclaude:audit doesn't block rcodex:audit)
+- Suite mode records each sub-task individually so partial re-runs work correctly
+- Added `-f`/`--force` flag to bypass the VERSION check
+- Agent: Claude:Opus 4.6
+
 ## [4.0.13] - 2026-03-27
 - Added unit tests for pkg/reports (20 tests): FindNewestReport, IsReportReviewed, ShouldSkipTask, DeleteOldReports
 - Added unit tests for pkg/tracking (12 tests): FormatCredit, IsITerm2Error, GetModelStatus, FormatResetsIn, GetScriptDir
