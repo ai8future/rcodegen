@@ -158,6 +158,7 @@ Custom tasks can be added in `~/.rcodegen/settings.json`. Built-in task names ar
 -v, --version           Show version
 -V, --verbose           Enable debug logging
 -t, --tasks             List available task shortcuts
+-f, --force             Bypass VERSION state check and force run
 --status-only           Show status and exit
 -h, --help              Show help
 ```
@@ -266,8 +267,8 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
   "default_build_dir": "",
   "defaults": {
     "codex": { "model": "gpt-5.4", "effort": "xhigh" },
-    "claude": { "model": "opus", "budget": "10.00" },
-    "gemini": { "model": "gemini-3.1-pro-preview" }
+    "claude": { "model": "sonnet", "budget": "10.00" },
+    "gemini": { "model": "gemini-3-pro-preview" }
   },
   "tasks": {
     "my-custom-task": {
@@ -363,7 +364,9 @@ rcodegen/
 │   │   ├── tasks.go                 # Task type constants
 │   │   ├── output.go                # Banners, summaries, stats
 │   │   ├── stream.go                # Stream-JSON parser
-│   │   └── validate.go              # Model validation
+│   │   ├── validate.go              # Model validation
+│   │   ├── versionstate.go          # VERSION-based skip state (per tool+task)
+│   │   └── migrate.go               # Grade migration utilities
 │   ├── tools/
 │   │   ├── claude/claude.go         # Claude tool implementation
 │   │   ├── codex/codex.go           # Codex tool implementation
@@ -397,9 +400,16 @@ rcodegen/
 │   │   └── pb/                      # Generated protobuf/gRPC stubs
 │   ├── batch/                       # Batch job execution engine
 │   │   ├── runner.go                # Batch runner with concurrency control
-│   │   ├── queue.go                 # Job queue with checkpoint/resume
+│   │   ├── queue.go                 # Job queue
 │   │   ├── scheduler.go             # Job scheduling and prioritization
-│   │   └── executor.go              # Local and remote job executors
+│   │   ├── executor.go              # Executor interface
+│   │   ├── executor_local.go        # Local process execution
+│   │   ├── executor_remote.go       # Remote rserve gRPC execution
+│   │   ├── checkpoint.go            # Checkpoint/resume state
+│   │   ├── spool.go                 # Spool directory processing
+│   │   ├── budget.go                # Budget-aware execution
+│   │   ├── reporter.go              # Batch run reporting
+│   │   └── manifest.go              # Job manifest parsing
 │   ├── envelope/                    # Standardized result envelope
 │   ├── workspace/                   # Job workspace management
 │   ├── settings/                    # JSON config & setup wizard
@@ -413,6 +423,7 @@ rcodegen/
 ├── settings.json.example            # Example config
 ├── get_codex_status.py              # Codex credit tracking (iTerm2)
 ├── get_claude_status.py             # Claude credit tracking (iTerm2)
+├── get_gemini_status.py             # Gemini credit tracking (iTerm2)
 ├── claude_question_handler.py       # Claude question detection/answering
 └── codex_pty_wrapper.py             # Codex PTY wrapper for session resume
 ```
@@ -561,6 +572,18 @@ curl http://127.0.0.1:14261/v1/chat/completions \
    ```
 3. Add a build target to the Makefile
 
+## VERSION State Tracking
+
+Tasks automatically skip if the target repository's `VERSION` file has not changed since the last successful run of the same tool+task combination. State is stored in `_rcodegen/version_state.json` within each project directory.
+
+Use `-f`/`--force` to bypass the check and run regardless:
+
+```bash
+rclaude -f -c myproject audit
+```
+
+Suite mode records each sub-task individually, so partial re-runs work correctly. Codebases without a `VERSION` file are always eligible to run.
+
 ## Security Notes
 
 All tools disable permission prompts for unattended operation:
@@ -572,6 +595,6 @@ Only use on trusted codebases in controlled environments. Lock files are stored 
 
 ## Version
 
-Current version: **4.0.13**
+Current version: **4.0.14**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.

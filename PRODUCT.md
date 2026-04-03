@@ -40,11 +40,13 @@ Each wrapper binary (`rclaude`, `rcodex`, `rgemini`) converts the native interac
 
 - **Permission bypass**: Each tool's safety prompts are automatically bypassed (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`) because there is no human to approve them. This is the critical technical enabler that makes unattended operation possible.
 
-- **Task shortcuts**: Eight built-in task types (`audit`, `test`, `fix`, `refactor`, `quick`, `grade`, `generate`, `study`) plus a `suite` meta-task that runs all five standard report types sequentially. Each shortcut is a carefully engineered prompt that instructs the AI to analyze the codebase, produce a structured report with patch-ready diffs, assign a numerical grade, save the report with a specific filename pattern, and explicitly avoid editing the source code.
+- **Task shortcuts**: Eight built-in task types (`audit`, `test`, `fix`, `refactor`, `quick`, `grade`, `generate`, `study`) plus a `suite` meta-task that runs the five standard report types (`audit`, `test`, `fix`, `refactor`, `quick`) sequentially. The remaining three (`grade`, `generate`, `study`) are standalone shortcuts not included in `suite`. Each shortcut is a carefully engineered prompt that instructs the AI to analyze the codebase, produce a structured report with patch-ready diffs, assign a numerical grade, save the report with a specific filename pattern, and explicitly avoid editing the source code.
 
 - **Multi-codebase execution**: A single command can target multiple codebases (via comma-separated paths, recursive git repo discovery, or directory listing). Each codebase gets its own individually-named report. This enables portfolio-wide analysis in a single invocation.
 
 - **Report lifecycle management**: Reports follow a strict naming convention (`{codebase}-{tool}-{task}-YYYY-MM-DD_HHMM.md`) with automatic creation timestamps, a review workflow (reports get a `Date Created:` field; humans add a `Date Modified:` field after review), and automatic cleanup of old reports via the `-D` flag. The `-R` flag prevents re-running tasks whose previous reports have not been reviewed by a human.
+
+- **VERSION-based idempotency**: If the target codebase contains a `VERSION` file, each tool+task combination records the last-run VERSION to `_rcodegen/version_state.json`. On subsequent runs, if the VERSION has not changed, the task is automatically skipped with a message. Use the `-f`/`--force` flag to run regardless of VERSION state. This prevents redundant AI calls against unchanged codebases.
 
 - **Grade extraction and persistence**: After each task completes, the system scans the generated report for grade patterns (`TOTAL_SCORE: N/100`), extracts the numerical score, and appends it to a `.grades.json` file with cross-process file locking (both in-process mutex and `syscall.Flock`). This creates an auditable history of AI-assessed code quality.
 
@@ -66,7 +68,7 @@ The orchestrator executes "bundles" -- JSON workflow definitions that chain mult
 
 - **security-review**: Claude and Gemini independently audit for security vulnerabilities in parallel, then Claude synthesizes both audits into a prioritized report. This provides multi-perspective security analysis.
 
-- **article / article-parallel**: Content creation workflows where Gemini researches a writer's style, Codex/Gemini draft articles, and Gemini edits for authenticity. The parallel variant produces two competing articles for comparison. This extends the product beyond code into AI-powered content generation.
+- **article / article-parallel**: Content creation workflows where Gemini researches the writing style of Seth Levine (author of The New Builders), Codex drafts an article, and Gemini edits for authenticity. The parallel variant produces two competing articles (Codex and Gemini) for comparison. Note: these bundles are currently hardcoded to emulate Seth Levine's style; they require modification for other authors.
 
 - **summary**: Claude summarizes content, Gemini verifies the summary's accuracy. A simple two-step verification workflow.
 
@@ -101,7 +103,7 @@ The server binary exposes all capabilities via two network APIs:
 
 - **Concurrency control**: A run registry limits simultaneous executions (default 3 concurrent runs) and provides run IDs for cancellation.
 
-- **Multi-turn sessions**: Session IDs map client-facing IDs to underlying tool-native session resume mechanisms (`claude --resume`, etc.), with TTL-based expiry (30 minutes of inactivity). This enables conversational workflows over the API.
+- **Multi-turn sessions**: Session IDs map client-facing IDs to underlying tool-native session resume mechanisms (`--resume` for Claude and Gemini; a PTY wrapper script for Codex session continuation), with TTL-based expiry (30 minutes of inactivity). This enables conversational workflows over the API.
 
 - **File uploads**: Files up to 50MB can be uploaded and referenced in subsequent prompts, with automatic 24-hour cleanup.
 
@@ -111,7 +113,7 @@ The server binary exposes all capabilities via two network APIs:
 
 - **Layered configuration**: Settings are merged in priority order: hardcoded defaults < `~/.rcodegen/settings.json` < environment variables (`RCODEGEN_*`) < CLI flags. This supports both personal configuration and CI/CD pipeline parameterization.
 
-- **Custom tasks**: Users can define custom task shortcuts in their settings file with prompt templates using variable substitution (`{report_file}`, `{codebase}`, `{timestamp}`, and user-defined variables via `-x`). Built-in task names are reserved and cannot be overridden, protecting core workflow integrity.
+- **Custom tasks**: Users can define custom task shortcuts in their settings file with prompt templates using variable substitution (`{report_dir}`, `{report_file}`, `{codebase}`, `{timestamp}`, and user-defined variables via `-x`). Built-in task names are reserved and cannot be overridden, protecting core workflow integrity.
 
 - **Custom bundles**: User-defined workflow bundles can be placed in `~/.rcodegen/bundles/` alongside the 9 built-in bundles.
 
