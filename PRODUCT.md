@@ -50,7 +50,7 @@ Each wrapper binary (`rclaude`, `rcodex`, `rgemini`) converts the native interac
 
 - **Grade extraction and persistence**: After each task completes, the system scans the generated report for grade patterns (`TOTAL_SCORE: N/100`), extracts the numerical score, and appends it to a `.grades.json` file with cross-process file locking (both in-process mutex and `syscall.Flock`). This creates an auditable history of AI-assessed code quality.
 
-- **Run logging**: Every execution produces a `.runlog` file with metadata (tool, model, codebase, command, start/end times, duration, exit code, token usage, cost). This provides an operational audit trail.
+- **Run logging**: Every execution produces a `.runlog.md` file with metadata (tool, model, codebase, command, start/end times, duration, exit code, token usage, cost). This provides an operational audit trail.
 
 ### Multi-Tool Orchestration (rcodegen)
 

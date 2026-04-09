@@ -417,7 +417,7 @@ func (t *Tool) UsesStreamOutput() bool {
 	return true
 }
 
-// RunLogFields returns Claude-specific fields for the .runlog file
+// RunLogFields returns Claude-specific fields for the .runlog.md file
 func (t *Tool) RunLogFields(cfg *runner.Config) []string {
 	fields := []string{
 		"Model:  " + cfg.Model,

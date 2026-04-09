@@ -84,7 +84,7 @@ type Tool interface {
 	// that should be parsed and formatted nicely (vs raw terminal output)
 	UsesStreamOutput() bool
 
-	// RunLogFields returns tool-specific fields for the .runlog file
+	// RunLogFields returns tool-specific fields for the .runlog.md file
 	// Returns slice of "Key: Value" strings
 	RunLogFields(cfg *Config) []string
 }

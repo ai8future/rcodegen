@@ -1,5 +1,9 @@
 # Changelog
 
+## [4.0.16] - 2026-04-09
+- Changed run log file extension from `.runlog` to `.runlog.md` so files open natively in markdown editors
+- Agent: Claude:Opus 4.6
+
 ## [4.0.15] - 2026-04-09
 - Added `--session-ttl` flag to rserve (default 30 minutes, 0 = no expiry)
 - SessionStore now supports TTL=0 for sessions that never expire (no sweep goroutine started)

@@ -295,7 +295,7 @@ func (t *Tool) UsesStreamOutput() bool {
 	return true
 }
 
-// RunLogFields returns Gemini-specific fields for the .runlog file
+// RunLogFields returns Gemini-specific fields for the .runlog.md file
 func (t *Tool) RunLogFields(cfg *runner.Config) []string {
 	return []string{
 		"Model: " + cfg.Model,

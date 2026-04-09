@@ -1331,7 +1331,7 @@ func (r *Runner) listTasks() {
 	fmt.Printf("    Run audit, test, fix, refactor, quick sequentially as 5 separate sessions\n")
 }
 
-// writeRunLog writes a .runlog file with run metadata
+// writeRunLog writes a .runlog.md file with run metadata
 func (r *Runner) writeRunLog(cfg *Config, workDir string, startTime, endTime time.Time, exitCode int) {
 	// Determine output directory
 	outputDir := r.getReportDir(cfg, workDir)
@@ -1342,7 +1342,7 @@ func (r *Runner) writeRunLog(cfg *Config, workDir string, startTime, endTime tim
 		return
 	}
 
-	// Build filename: {codebase}-{task}-YYYY-MM-DD_HHMM.runlog
+	// Build filename: {codebase}-{task}-YYYY-MM-DD_HHMM.runlog.md
 	taskName := cfg.TaskShortcut
 	if taskName == "" {
 		taskName = "custom"
@@ -1352,7 +1352,7 @@ func (r *Runner) writeRunLog(cfg *Config, workDir string, startTime, endTime tim
 		codebaseName = "unnamed"
 	}
 	timestamp := startTime.Format("2006-01-02_1504")
-	filename := fmt.Sprintf("%s-%s-%s.runlog", codebaseName, taskName, timestamp)
+	filename := fmt.Sprintf("%s-%s-%s.runlog.md", codebaseName, taskName, timestamp)
 	filepath := filepath.Join(outputDir, filename)
 
 	// Build content

@@ -344,7 +344,7 @@ func (t *Tool) UsesStreamOutput() bool {
 	return false
 }
 
-// RunLogFields returns Codex-specific fields for the .runlog file
+// RunLogFields returns Codex-specific fields for the .runlog.md file
 func (t *Tool) RunLogFields(cfg *runner.Config) []string {
 	return []string{
 		"Model:  " + cfg.Model,
