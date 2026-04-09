@@ -30,7 +30,9 @@ func NewSessionStore(ttl time.Duration) *SessionStore {
 		ttl:      ttl,
 		done:     make(chan struct{}),
 	}
-	go s.sweepLoop(ttl / 2)
+	if ttl > 0 {
+		go s.sweepLoop(ttl / 2)
+	}
 	return s
 }
 
@@ -67,7 +69,7 @@ func (s *SessionStore) Get(sessionID string) (*SessionEntry, bool) {
 	if !ok {
 		return nil, false
 	}
-	if time.Since(entry.LastUsed) > s.ttl {
+	if s.ttl > 0 && time.Since(entry.LastUsed) > s.ttl {
 		delete(s.sessions, sessionID)
 		return nil, false
 	}

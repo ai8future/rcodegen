@@ -1,19 +1,9 @@
 # Changelog
 
-## [4.1.0] - 2026-04-04
-- rserve: Added chassis HTTP middleware stack to OpenAI-compatible HTTP API: httpkit.Recovery, httpkit.Tracing (OTel spans), tracekit.Middleware (X-Trace-ID propagation), httpkit.RequestID (X-Request-ID), httpkit.Logging (structured request logs)
-- rserve: Added OTel initialization (when OTEL_EXPORTER_OTLP_ENDPOINT is set)
-- rserve: Added gRPC tracing and metrics interceptors (UnaryTracing, UnaryMetrics, StreamTracing, StreamMetrics)
-- rserve: Added optional kafkakit publisher for event bus (when KAFKAKIT_BOOTSTRAP_SERVERS is set), with lifecycle.WithKafkaConfig for automatic heartbeatkit/announcekit
-- rserve: Wired chassis.SetAppVersion for --version flag and auto-rebuild support
-- rserve: Added publishRunCompleted helper for event bus integration
-- Deliberately omitted guard.Timeout on HTTP — SSE streaming on /v1/chat/completions is incompatible with response buffering
-- Agent: Claude:Opus 4.6 (1M context)
-
-## [4.0.15] - 2026-04-04
-- Upgraded chassis-go from v10.0.0 to v10.2.15 (synced vendor directory with local source)
-- Updated VERSION.chassis to 10.2.15
-- Agent: Claude:Opus 4.6 (1M context)
+## [4.0.15] - 2026-04-09
+- Added `--session-ttl` flag to rserve (default 30 minutes, 0 = no expiry)
+- SessionStore now supports TTL=0 for sessions that never expire (no sweep goroutine started)
+- Agent: Claude:Opus 4.6
 
 ## [4.0.14] - 2026-03-30
 - Added VERSION state tracking: tasks (audit, test, fix, refactor, quick, suite) now check the target repo's VERSION file and skip if unchanged since last successful run

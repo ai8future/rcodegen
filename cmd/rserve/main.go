@@ -26,13 +26,11 @@ import (
 	chassis "github.com/ai8future/chassis-go/v10"
 	"github.com/ai8future/chassis-go/v10/grpckit"
 	"github.com/ai8future/chassis-go/v10/health"
-	"github.com/ai8future/chassis-go/v10/httpkit"
 	"github.com/ai8future/chassis-go/v10/kafkakit"
 	"github.com/ai8future/chassis-go/v10/lifecycle"
 	"github.com/ai8future/chassis-go/v10/logz"
 	otelinit "github.com/ai8future/chassis-go/v10/otel"
 	"github.com/ai8future/chassis-go/v10/registry"
-	"github.com/ai8future/chassis-go/v10/tracekit"
 	"github.com/ai8future/chassis-go/v10/xyops"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -46,6 +44,7 @@ func main() {
 	port := flag.Int("port", defaultPort, "gRPC listen port")
 	bind := flag.String("bind", "127.0.0.1", "bind address (use 0.0.0.0 for all interfaces)")
 	maxConcurrent := flag.Int("max-concurrent", 3, "max simultaneous runs")
+	sessionTTL := flag.Int("session-ttl", 30, "session TTL in minutes (0 = no expiry)")
 	flag.Parse()
 
 	logger := logz.New("info")
@@ -77,7 +76,7 @@ func main() {
 	}
 
 	runRegistry := server.NewRunRegistry(*maxConcurrent)
-	sessionStore := server.NewSessionStore(30 * time.Minute)
+	sessionStore := server.NewSessionStore(time.Duration(*sessionTTL) * time.Minute)
 	srv := server.NewServer(s, toolFactories, runRegistry, sessionStore)
 
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", *bind, *port))
@@ -96,7 +95,6 @@ func main() {
 		),
 		grpc.ChainStreamInterceptor(
 			grpckit.StreamRecovery(logger),
-			grpckit.StreamTracing(),
 			grpckit.StreamMetrics(),
 			grpckit.StreamLogging(logger),
 		),
@@ -121,19 +119,6 @@ func main() {
 	availableTools := openai.DetectAvailableTools(toolFactories)
 	httpHandler := openai.NewHandler(s, toolFactories, runRegistry, availableTools, fileStore, sessionStore)
 	httpPort := *port + 1
-
-	// --- chassis: HTTP middleware stack (Recovery → Tracing → TraceID → RequestID → Logging → handler) ---
-	// No guard.Timeout — the /v1/chat/completions endpoint uses SSE streaming
-	// which is incompatible with response buffering.
-	wrappedHTTP := httpkit.Recovery(logger)(
-		httpkit.Tracing()(
-			tracekit.Middleware(
-				httpkit.RequestID(
-					httpkit.Logging(logger)(httpHandler),
-				),
-			),
-		),
-	)
 
 	// --- chassis: kafkakit publisher (optional — enabled when KAFKAKIT_BOOTSTRAP_SERVERS is set) ---
 	var pub *kafkakit.Publisher
@@ -165,6 +150,7 @@ func main() {
 		"grpc_port", *port,
 		"http_port", httpPort,
 		"max_concurrent", *maxConcurrent,
+		"session_ttl_min", *sessionTTL,
 		"available_tools", availableTools,
 	)
 
@@ -208,7 +194,7 @@ func main() {
 		func(ctx context.Context) error {
 			httpServer := &http.Server{
 				Addr:    fmt.Sprintf("%s:%d", *bind, httpPort),
-				Handler: wrappedHTTP,
+				Handler: httpHandler,
 			}
 			errCh := make(chan error, 1)
 			go func() { errCh <- httpServer.ListenAndServe() }()
