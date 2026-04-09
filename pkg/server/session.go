@@ -22,8 +22,8 @@ type SessionStore struct {
 }
 
 // NewSessionStore creates a store that expires sessions after ttl.
-// It starts a background goroutine that sweeps expired entries every ttl/2.
-// Call Stop() to release the goroutine (important in tests).
+// When ttl > 0 it starts a background sweep goroutine (call Stop() to release it).
+// When ttl == 0 sessions never expire and no goroutine is started.
 func NewSessionStore(ttl time.Duration) *SessionStore {
 	s := &SessionStore{
 		sessions: make(map[string]*SessionEntry),
