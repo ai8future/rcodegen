@@ -8,12 +8,28 @@
     "cluster": "prod-01"
   },
   "endpoints": {
-    "grpc": {"port": 14260, "protocol": "grpc"},
-    "api": {"port": 14261, "protocol": "http", "path": "/v1"}
+    "grpc": {
+      "port": 14260,
+      "protocol": "grpc"
+    },
+    "api": {
+      "port": 14261,
+      "protocol": "http",
+      "path": "/v1"
+    }
   },
   "dependencies": [
-    {"service": "redpanda", "port": 9092, "protocol": "tcp", "required": false},
-    {"service": "xyops", "port": 5522, "protocol": "https", "required": false},
-    {"service": "otel-collector", "port": 4317, "protocol": "grpc", "required": false}
+    {
+      "service": "redpanda",
+      "port": 9092,
+      "protocol": "tcp",
+      "required": false
+    },
+    {
+      "service": "otel-collector",
+      "port": 4317,
+      "protocol": "grpc",
+      "required": false
+    }
   ]
 }

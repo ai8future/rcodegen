@@ -23,22 +23,21 @@ import (
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
 
-	chassis "github.com/ai8future/chassis-go/v10"
-	"github.com/ai8future/chassis-go/v10/grpckit"
-	"github.com/ai8future/chassis-go/v10/health"
-	"github.com/ai8future/chassis-go/v10/kafkakit"
-	"github.com/ai8future/chassis-go/v10/lifecycle"
-	"github.com/ai8future/chassis-go/v10/logz"
-	otelinit "github.com/ai8future/chassis-go/v10/otel"
-	"github.com/ai8future/chassis-go/v10/registry"
-	"github.com/ai8future/chassis-go/v10/xyops"
+	chassis "github.com/ai8future/chassis-go/v11"
+	"github.com/ai8future/chassis-go/v11/grpckit"
+	"github.com/ai8future/chassis-go/v11/health"
+	"github.com/ai8future/chassis-go/v11/kafkakit"
+	"github.com/ai8future/chassis-go/v11/lifecycle"
+	"github.com/ai8future/chassis-go/v11/logz"
+	otelinit "github.com/ai8future/chassis-go/v11/otel"
+	"github.com/ai8future/chassis-go/v11/registry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
 
 func main() {
 	chassis.SetAppVersion(rcodegenpkg.AppVersion)
-	chassis.RequireMajor(10)
+	chassis.RequireMajor(11)
 
 	defaultPort := chassis.Port("rserve", chassis.PortGRPC)
 	port := flag.Int("port", defaultPort, "gRPC listen port")
@@ -210,17 +209,6 @@ func main() {
 				return err
 			}
 		},
-	}
-
-	// Optional xyops monitoring bridge — enabled when XYOPS_BASE_URL is set.
-	if baseURL := os.Getenv("XYOPS_BASE_URL"); baseURL != "" {
-		ops := xyops.New(xyops.Config{
-			BaseURL:     baseURL,
-			APIKey:      os.Getenv("XYOPS_API_KEY"),
-			ServiceName: "rserve",
-		}, xyops.WithMonitoring(30))
-		components = append(components, ops.Run)
-		logger.Info("xyops monitoring enabled", "base_url", baseURL)
 	}
 
 	// lifecycle.Run handles SIGTERM/SIGINT, coordinated shutdown, and registry

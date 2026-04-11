@@ -20,8 +20,8 @@ import (
 	"rcodegen/pkg/reports"
 	"rcodegen/pkg/settings"
 
-	chassis "github.com/ai8future/chassis-go/v10"
-	"github.com/ai8future/chassis-go/v10/logz"
+	chassis "github.com/ai8future/chassis-go/v11"
+	"github.com/ai8future/chassis-go/v11/logz"
 )
 
 // Version is set at build time via ldflags:

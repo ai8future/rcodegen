@@ -14,14 +14,14 @@ import (
 	"rcodegen/pkg/orchestrator"
 	"rcodegen/pkg/settings"
 
-	chassis "github.com/ai8future/chassis-go/v10"
-	"github.com/ai8future/chassis-go/v10/logz"
-	"github.com/ai8future/chassis-go/v10/registry"
+	chassis "github.com/ai8future/chassis-go/v11"
+	"github.com/ai8future/chassis-go/v11/logz"
+	"github.com/ai8future/chassis-go/v11/registry"
 )
 
 func main() {
 	chassis.SetAppVersion(rcodegenpkg.AppVersion)
-	chassis.RequireMajor(10)
+	chassis.RequireMajor(11)
 	logger := logz.New("info")
 	if err := registry.InitCLI(chassis.Version); err != nil {
 		logger.Error("registry init failed", "error", err)

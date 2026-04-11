@@ -14,7 +14,7 @@ import (
 	"rcodegen/pkg/tools/gemini"
 	"rcodegen/pkg/tracking"
 
-	"github.com/ai8future/chassis-go/v10/logz"
+	"github.com/ai8future/chassis-go/v11/logz"
 )
 
 // ToolFactory creates a fresh runner.Tool instance for each job execution.

@@ -13,7 +13,7 @@ import (
 	"rcodegen/pkg/server"
 	"rcodegen/pkg/settings"
 
-	"github.com/ai8future/chassis-go/v10/logz"
+	"github.com/ai8future/chassis-go/v11/logz"
 )
 
 // Handler implements the OpenAI-compatible HTTP API.
