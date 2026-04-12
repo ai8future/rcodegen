@@ -1,5 +1,9 @@
 # Changelog
 
+## [4.1.1] - 2026-04-12
+- Changed default `make` target from `build` (native only) to `build-all` (cross-compile + launchers)
+- Agent: Claude:Opus 4.6
+
 ## [4.1.0] - 2026-04-12
 - Aligned build system with chassis-go best practices for multi-OS binary compilation
 - Removed legacy runner.Version/GetVersion() in favor of appversion.go (go:embed) pattern

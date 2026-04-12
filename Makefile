@@ -4,7 +4,7 @@ BINDIR  := bin
 
 BINS := rclaude rcodex rgemini rcodegen rserve rbatch
 
-.DEFAULT_GOAL := build
+.DEFAULT_GOAL := build-all
 
 .PHONY: build build-linux build-darwin build-all test clean lint deps run proto \
         $(foreach b,$(BINS),$(b) $(b)-linux $(b)-darwin)
