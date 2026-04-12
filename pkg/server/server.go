@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	rcodegenpkg "rcodegen"
 	"rcodegen/pkg/bundle"
 	_ "rcodegen/pkg/executor" // Register dispatcher factory via init()
 	"rcodegen/pkg/orchestrator"
@@ -365,7 +366,7 @@ func (s *Server) ListTasks(ctx context.Context, req *pb.ListTasksRequest) (*pb.L
 // GetStatus returns server health and active run info.
 func (s *Server) GetStatus(ctx context.Context, req *pb.GetStatusRequest) (*pb.GetStatusResponse, error) {
 	resp := &pb.GetStatusResponse{
-		Version:       runner.GetVersion(),
+		Version:       rcodegenpkg.AppVersion,
 		ActiveRuns:    int32(s.registry.ActiveCount()),
 		MaxConcurrent: int32(s.registry.MaxConcurrent()),
 	}

@@ -1,5 +1,5 @@
-VERSION := $(shell cat VERSION | tr -d '[:space:]')
-LDFLAGS := -ldflags="-w -s -X rcodegen/pkg/runner.Version=$(VERSION)"
+VERSION := $(shell cat VERSION)
+LDFLAGS := -ldflags="-w -s"
 BINDIR  := bin
 
 BINS := rclaude rcodex rgemini rcodegen rserve rbatch
@@ -35,11 +35,11 @@ build-all: build-linux build-darwin
 
 # --- Test ---
 test:
-	go test ./pkg/...
+	go test -v -race -cover ./...
 
 # --- Clean ---
 clean:
-	@rm -f $(foreach b,$(BINS),$(BINDIR)/$(b) $(BINDIR)/$(b)-linux-amd64 $(BINDIR)/$(b)-darwin-arm64)
+	@rm -rf $(BINDIR)/
 
 # --- Lint ---
 lint:

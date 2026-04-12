@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	rcodegenpkg "rcodegen"
 	"rcodegen/pkg/bundle"
 	"rcodegen/pkg/envelope"
 	"rcodegen/pkg/runner"
@@ -1113,7 +1114,7 @@ func generateFinalReportJSON(
 			TotalCostUSD:    totalCost,
 			DurationSeconds: int64(duration.Seconds()),
 			DurationHuman:   duration.Round(time.Second).String(),
-			RcodegenVersion: runner.GetVersion(),
+			RcodegenVersion: rcodegenpkg.AppVersion,
 			StepsTotal:      len(stepStats),
 			StepsSucceeded:  stepsSucceeded,
 			StepsFailed:     stepsFailed,

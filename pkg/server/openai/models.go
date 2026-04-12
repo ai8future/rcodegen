@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"rcodegen/pkg/runner"
+	rcodegenpkg "rcodegen"
 	"rcodegen/pkg/server"
 )
 
@@ -90,5 +90,5 @@ func BuildModelList(available []string) ModelList {
 
 // ToolVersion returns the current rcodegen version string.
 func ToolVersion() string {
-	return runner.GetVersion()
+	return rcodegenpkg.AppVersion
 }

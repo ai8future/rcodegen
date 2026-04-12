@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	rcodegenpkg "rcodegen"
 	"rcodegen/pkg/lock"
 	"rcodegen/pkg/reports"
 	"rcodegen/pkg/settings"
@@ -24,28 +25,9 @@ import (
 	"github.com/ai8future/chassis-go/v11/logz"
 )
 
-// Version is set at build time via ldflags:
-//
-//	go build -ldflags "-X rcodegen/pkg/runner.Version=$(cat VERSION)" ./cmd/rcodex
-//
-// If not set, GetVersion() falls back to reading the VERSION file at runtime.
-var Version string
-
-// GetVersion returns the application version.
-// Prefers the build-time value; falls back to reading the VERSION file.
+// GetVersion returns the application version from the embedded VERSION file.
 func GetVersion() string {
-	if Version != "" {
-		return Version
-	}
-	for _, path := range []string{"VERSION", "../VERSION", "../../VERSION"} {
-		if data, err := os.ReadFile(path); err == nil {
-			v := strings.TrimSpace(string(data))
-			if v != "" {
-				return v
-			}
-		}
-	}
-	return "unknown"
+	return rcodegenpkg.AppVersion
 }
 
 // noTrackStatus is a package-level variable used by defineToolSpecificFlags

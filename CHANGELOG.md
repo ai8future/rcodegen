@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.1.0] - 2026-04-12
+- Aligned build system with chassis-go best practices for multi-OS binary compilation
+- Removed legacy runner.Version/GetVersion() in favor of appversion.go (go:embed) pattern
+- Callers now use rcodegen.AppVersion directly instead of runner.GetVersion()
+- Simplified Makefile LDFLAGS (version now embedded via go:embed, not linker flags)
+- Updated test target to use -v -race -cover ./... per chassis convention
+- Simplified clean target to rm -rf bin/
+- Agent: Claude:Opus 4.6
+
 ## [4.0.16] - 2026-04-09
 - Changed run log file extension from `.runlog` to `.runlog.md` so files open natively in markdown editors
 - Agent: Claude:Opus 4.6
