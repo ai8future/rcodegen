@@ -276,8 +276,10 @@ func (r *Runner) Run() *RunResult {
 		OutputStatsJSON(r.Tool, cfg, overallStart, endTime, overallExit)
 	}
 
-	// Write run log file
-	r.writeRunLog(cfg, primaryWorkDir, overallStart, endTime, overallExit)
+	// Write run log file (unless suppressed)
+	if !cfg.NoRunLog {
+		r.writeRunLog(cfg, primaryWorkDir, overallStart, endTime, overallExit)
+	}
 
 	return &RunResult{
 		ExitCode:     overallExit,
@@ -1017,6 +1019,7 @@ func (r *Runner) parseArgs() (*Config, error) {
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "Enable verbose/debug logging")
 	flag.BoolVar(&migrateGrades, "migrate-grades", false, "Migrate existing reports to .grades.json")
 	flag.BoolVar(&migrateGradesAll, "migrate-grades-all", false, "Migrate grades for all repos in code directory")
+	flag.BoolVar(&cfg.NoRunLog, "no-runlog", false, "Suppress .runlog.md file generation")
 	flag.BoolVar(&cfg.Recursive, "r", false, "Recursively scan subdirectories for git repos")
 	flag.BoolVar(&cfg.Recursive, "recursive", false, "Recursively scan subdirectories for git repos")
 	flag.IntVar(&cfg.RecurseLevels, "levels", 1, "Depth of recursive directory scan")
@@ -1425,7 +1428,8 @@ func (r *Runner) printUsage() {
 	// Report Options
 	fmt.Printf("%s%sReport Options:%s\n", Bold, Cyan, Reset)
 	fmt.Printf("  %s-D%s, %s--delete-old%s      Delete previous reports with same pattern after run\n", Green, Reset, Green, Reset)
-	fmt.Printf("  %s-R%s, %s--require-review%s  Skip if previous report unreviewed (no 'Date Modified:')\n\n", Green, Reset, Green, Reset)
+	fmt.Printf("  %s-R%s, %s--require-review%s  Skip if previous report unreviewed (no 'Date Modified:')\n", Green, Reset, Green, Reset)
+	fmt.Printf("  %s--no-runlog%s          Suppress .runlog.md file generation\n\n", Green, Reset)
 
 	// Variable Substitution
 	fmt.Printf("%s%sVariable Substitution:%s\n", Bold, Cyan, Reset)

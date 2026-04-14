@@ -44,6 +44,7 @@ type Config struct {
 	UseLock       bool              // Use file lock to queue instances
 	DeleteOld     bool              // Delete previous reports after run
 	RequireReview bool              // Skip if previous report unreviewed
+	NoRunLog      bool              // Suppress .runlog.md file generation
 	OriginalCmd   string            // Original command string for display
 	Vars          map[string]string // User-defined variables from -x flags
 

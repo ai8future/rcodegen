@@ -1,5 +1,9 @@
 # Changelog
 
+## [4.1.2] - 2026-04-14
+- Added `--no-runlog` flag to suppress `.runlog.md` file generation
+- Agent: Claude:Opus 4.6
+
 ## [4.1.1] - 2026-04-12
 - Changed default `make` target from `build` (native only) to `build-all` (cross-compile + launchers)
 - Agent: Claude:Opus 4.6
