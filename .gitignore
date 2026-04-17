@@ -41,3 +41,6 @@ dist/
 
 # Claude
 .claude/settings.local.json
+
+# Agent state
+.omc/

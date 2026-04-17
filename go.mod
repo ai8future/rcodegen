@@ -3,7 +3,7 @@ module rcodegen
 go 1.25.5
 
 require (
-	github.com/ai8future/chassis-go/v11 v11.0.0
+	github.com/ai8future/chassis-go/v11 v11.1.3
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
 )
