@@ -184,11 +184,27 @@ func Load() (*Settings, error) {
 	return &settings, nil
 }
 
+// detectCodeDir probes ~/Desktop/_code and ~/_code, returning the first that exists.
+// Returns empty string if neither exists — the binary still proceeds.
+func detectCodeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	for _, rel := range []string{"Desktop/_code", "_code"} {
+		dir := filepath.Join(home, rel)
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
+	}
+	return ""
+}
+
 // GetDefaultSettings returns settings with sensible defaults
-// Note: CodeDir is left empty - user should configure this in settings.json
+// CodeDir is auto-detected from ~/Desktop/_code or ~/_code
 func GetDefaultSettings() *Settings {
 	return &Settings{
-		CodeDir:         "", // User must configure this
+		CodeDir:         detectCodeDir(),
 		DefaultBuildDir: "", // Optional, will use CodeDir if not set
 		Defaults: Defaults{
 			Codex: CodexDefaults{
@@ -667,7 +683,23 @@ func LoadOrSetup() (*Settings, bool, error) {
 		return settings, true, nil
 	}
 
-	// Settings not found - run interactive setup
-	s, ok := RunInteractiveSetup()
-	return s, ok, nil
+	// Settings not found - use sensible defaults (no interactive setup)
+	settings = GetDefaultSettings()
+	applyEnvOverrides(settings)
+	if settings.Tasks == nil {
+		settings.Tasks = make(map[string]TaskDef)
+	}
+	for name, task := range GetDefaultTasks() {
+		settings.Tasks[name] = task
+	}
+
+	// Auto-create settings file so future runs skip this path
+	configDir := GetConfigDir()
+	if err := os.MkdirAll(configDir, 0755); err == nil {
+		if data, err := json.MarshalIndent(settings, "", "  "); err == nil {
+			_ = os.WriteFile(GetConfigPath(), data, 0600)
+		}
+	}
+
+	return settings, true, nil
 }

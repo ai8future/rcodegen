@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.1.3] - 2026-04-19
+- Remove interactive first-time setup wizard; auto-detect code_dir from ~/Desktop/_code or ~/_code
+- Binary now proceeds with sensible defaults even if neither directory exists
+- Auto-creates ~/.rcodegen/settings.json on first run so subsequent runs skip detection
+- Agent: Claude:Opus 4.6
+
 ## [4.1.2] - 2026-04-14
 - Added `--no-runlog` flag to suppress `.runlog.md` file generation
 - Agent: Claude:Opus 4.6
