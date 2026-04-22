@@ -1306,6 +1306,13 @@ func (r *Runner) defineToolSpecificFlags(cfg *Config) {
 			if fd.Long != "" {
 				flag.BoolVar(&cfg.Flash, strings.TrimPrefix(fd.Long, "--"), false, fd.Description)
 			}
+		case "ImagePath":
+			if fd.Short != "" {
+				flag.StringVar(&cfg.ImagePath, strings.TrimPrefix(fd.Short, "-"), "", fd.Description)
+			}
+			if fd.Long != "" {
+				flag.StringVar(&cfg.ImagePath, strings.TrimPrefix(fd.Long, "--"), "", fd.Description)
+			}
 		}
 	}
 }

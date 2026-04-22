@@ -61,6 +61,7 @@ type Config struct {
 	NoTrackStatus bool // User explicitly disabled status tracking via -S flag
 	SessionID   string // Session ID for resuming previous session
 	Flash       bool   // Gemini: use flash model variant
+	ImagePath   string // Gemini: input image file to include in request
 
 	// Logging
 	Verbose bool        // Enable verbose/debug logging

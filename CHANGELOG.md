@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.1.8] - 2026-04-21
+- Add `-i`/`--image` flag to rgemini for submitting an input image alongside the prompt
+- Enables image editing: `rgemini --model banana --image photo.jpg "add a sun"`
+- Resolves relative image paths against workdir or cwd
+- Agent: Claude:Sonnet 4.6
+
 ## [4.1.7] - 2026-04-21
 - Implement DirectAPIRunner interface: bypass Gemini CLI for image models and call REST API directly
 - Image models (gemini-3.1-flash-image-preview / banana) now save generated images to workdir

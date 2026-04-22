@@ -194,6 +194,13 @@ func (t *Tool) ToolSpecificFlags() []runner.FlagDef {
 			Target:      "Flash",
 		},
 		{
+			Short:       "-i",
+			Long:        "--image",
+			Description: "Input image file for editing",
+			TakesArg:    true,
+			Target:      "ImagePath",
+		},
+		{
 			Short:       "-s",
 			Long:        "--status",
 			Description: "Track usage before/after task",
@@ -276,6 +283,8 @@ func (t *Tool) ToolSpecificHelpSections() []runner.HelpSection {
 			Title: "Gemini Options",
 			Lines: []string{
 				"  " + runner.Green + "--flash" + runner.Reset + "            Use gemini-3-flash-preview instead of gemini-3.1-pro-preview",
+				fmt.Sprintf("  %s-i%s, %s--image%s <file>  Input image file for editing",
+					runner.Green, runner.Reset, runner.Green, runner.Reset),
 			},
 		},
 		{

@@ -46,6 +46,24 @@ func (t *Tool) RunDirectAPI(cfg *runner.Config, workDir, task string) int {
 		{"text": task},
 	}
 
+	if cfg.ImagePath != "" {
+		imgPath := cfg.ImagePath
+		if !filepath.IsAbs(imgPath) {
+			base := workDir
+			if base == "" {
+				base, _ = os.Getwd()
+			}
+			imgPath = filepath.Join(base, imgPath)
+		}
+		imgPart, err := imageFileToPart(imgPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to read image %q: %v\n", imgPath, err)
+			return 1
+		}
+		parts = append(parts, imgPart)
+		fmt.Fprintf(out, "%s📎 Including input image: %s%s\n", runner.Dim, imgPath, runner.Reset)
+	}
+
 	reqBody := map[string]interface{}{
 		"contents": []map[string]interface{}{
 			{"parts": parts},
@@ -126,6 +144,32 @@ func (t *Tool) RunDirectAPI(cfg *runner.Config, workDir, task string) int {
 	}
 
 	return 0
+}
+
+// imageFileToPart reads an image file and returns a Gemini API inlineData part.
+func imageFileToPart(path string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	mimeType := "image/jpeg"
+	lower := strings.ToLower(path)
+	switch {
+	case strings.HasSuffix(lower, ".png"):
+		mimeType = "image/png"
+	case strings.HasSuffix(lower, ".gif"):
+		mimeType = "image/gif"
+	case strings.HasSuffix(lower, ".webp"):
+		mimeType = "image/webp"
+	}
+
+	return map[string]interface{}{
+		"inlineData": map[string]interface{}{
+			"mimeType": mimeType,
+			"data":     base64.StdEncoding.EncodeToString(data),
+		},
+	}, nil
 }
 
 func saveImage(mimeType, b64data, workDir string) (string, error) {
