@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.11] - 2026-04-21
+- Auto-downscale oversized input images to 1568px max edge before sending to Gemini image API
+- Fixes `promptFeedback.blockReason: "OTHER"` failures on 4K/large images (e.g. 3840x2160 TV graphics)
+- Re-encodes downscaled images as JPEG q85 using CatmullRom resampling; small images pass through unchanged
+- Adds `golang.org/x/image` dependency (vendored)
+- Agent: Claude:Sonnet 4.6
+
 ## [4.1.10] - 2026-04-21
 - Relax @file expansion: no `.` or `/` required — any @token is tried as a file path; silently left unchanged if not found
 - Drop `./` requirement for current-directory files: `@file.txt` and `@instructions` both work

@@ -5,6 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
+	_ "image/gif"
+	_ "image/png"
 	"io"
 	"net/http"
 	"os"
@@ -12,8 +16,15 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/image/draw"
+
 	"rcodegen/pkg/runner"
 )
+
+// maxImageDim is the max edge length (pixels) sent to the Gemini API.
+// Images larger than this are downscaled to avoid safety-filter false positives
+// and reduce token count.
+const maxImageDim = 1568
 
 // imageModels lists models that generate images and require direct API calls
 // because the Gemini CLI does not expose image bytes in any headless output format.
@@ -55,13 +66,16 @@ func (t *Tool) RunDirectAPI(cfg *runner.Config, workDir, task string) int {
 			}
 			imgPath = filepath.Join(base, imgPath)
 		}
-		imgPart, err := imageFileToPart(imgPath)
+		imgPart, info, err := imageFileToPart(imgPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to read image %q: %v\n", imgPath, err)
 			return 1
 		}
 		parts = append(parts, imgPart)
 		fmt.Fprintf(out, "%s📎 Including input image: %s%s\n", runner.Dim, imgPath, runner.Reset)
+		if info != "" {
+			fmt.Fprintf(out, "%s   %s%s\n", runner.Dim, info, runner.Reset)
+		}
 	}
 
 	reqBody := map[string]interface{}{
@@ -147,10 +161,13 @@ func (t *Tool) RunDirectAPI(cfg *runner.Config, workDir, task string) int {
 }
 
 // imageFileToPart reads an image file and returns a Gemini API inlineData part.
-func imageFileToPart(path string) (map[string]interface{}, error) {
+// If the image exceeds maxImageDim on either axis, it's downscaled and re-encoded
+// as JPEG to reduce payload size and avoid safety-filter false positives on large images.
+// Returns the part, a short human-readable info string (empty if no downscaling), and any error.
+func imageFileToPart(path string) (map[string]interface{}, string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	mimeType := "image/jpeg"
@@ -164,12 +181,56 @@ func imageFileToPart(path string) (map[string]interface{}, error) {
 		mimeType = "image/webp"
 	}
 
+	// Try to decode to check dimensions. If decode fails (e.g., unsupported format),
+	// fall back to sending the original bytes.
+	src, _, decodeErr := image.Decode(bytes.NewReader(data))
+	if decodeErr != nil {
+		return map[string]interface{}{
+			"inlineData": map[string]interface{}{
+				"mimeType": mimeType,
+				"data":     base64.StdEncoding.EncodeToString(data),
+			},
+		}, "", nil
+	}
+
+	srcBounds := src.Bounds()
+	srcW, srcH := srcBounds.Dx(), srcBounds.Dy()
+
+	if srcW <= maxImageDim && srcH <= maxImageDim {
+		// No downscaling needed; send original bytes as-is to preserve format.
+		return map[string]interface{}{
+			"inlineData": map[string]interface{}{
+				"mimeType": mimeType,
+				"data":     base64.StdEncoding.EncodeToString(data),
+			},
+		}, "", nil
+	}
+
+	// Compute scaled dimensions preserving aspect ratio.
+	scale := float64(maxImageDim) / float64(srcW)
+	if s := float64(maxImageDim) / float64(srcH); s < scale {
+		scale = s
+	}
+	dstW := int(float64(srcW) * scale)
+	dstH := int(float64(srcH) * scale)
+
+	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), src, srcBounds, draw.Over, nil)
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85}); err != nil {
+		return nil, "", fmt.Errorf("re-encode jpeg: %w", err)
+	}
+
+	info := fmt.Sprintf("Downscaled %dx%d → %dx%d (JPEG q85, %d KB)",
+		srcW, srcH, dstW, dstH, buf.Len()/1024)
+
 	return map[string]interface{}{
 		"inlineData": map[string]interface{}{
-			"mimeType": mimeType,
-			"data":     base64.StdEncoding.EncodeToString(data),
+			"mimeType": "image/jpeg",
+			"data":     base64.StdEncoding.EncodeToString(buf.Bytes()),
 		},
-	}, nil
+	}, info, nil
 }
 
 func saveImage(mimeType, b64data, workDir string) (string, error) {
