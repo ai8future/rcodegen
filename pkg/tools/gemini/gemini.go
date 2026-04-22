@@ -51,7 +51,7 @@ func (t *Tool) ReportPrefix() string {
 
 // ValidModels returns the list of valid model names
 func (t *Tool) ValidModels() []string {
-	return []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.1-flash-image-preview"}
+	return []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.1-flash-image-preview", "banana"}
 }
 
 // DefaultModel returns the default model name
@@ -223,6 +223,11 @@ func (t *Tool) PrepareForExecution(cfg *runner.Config) {
 	// Override model if --flash flag is set
 	if cfg.Flash {
 		cfg.Model = "gemini-3-flash-preview"
+	}
+
+	// Resolve model aliases
+	if cfg.Model == "banana" {
+		cfg.Model = "gemini-3.1-flash-image-preview"
 	}
 
 	// Store model early so CaptureStatusBefore can use it

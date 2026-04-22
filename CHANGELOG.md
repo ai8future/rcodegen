@@ -1,5 +1,9 @@
 # Changelog
 
+## [4.1.5] - 2026-04-21
+- Add `banana` as a model alias for `gemini-3.1-flash-image-preview` in rgemini
+- Agent: Claude:Sonnet 4.6
+
 ## [4.1.4] - 2026-04-21
 - Add `gemini-3.1-flash-image-preview` (Nano Banana 2) to rgemini valid models list
 - Agent: Claude:Sonnet 4.6
