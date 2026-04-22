@@ -470,6 +470,12 @@ func (r *Runner) runSingleTask(cfg *Config, workDir string) int {
 
 // executeCommand builds and runs the tool command
 func (r *Runner) executeCommand(cfg *Config, workDir, task string) int {
+	// If the tool supports direct API execution (e.g. image generation models),
+	// bypass the CLI entirely.
+	if dar, ok := r.Tool.(DirectAPIRunner); ok && dar.ShouldUseDirectAPI(cfg) {
+		return dar.RunDirectAPI(cfg, workDir, task)
+	}
+
 	cmd := r.Tool.BuildCommand(cfg, workDir, task)
 	cfg.Logger.Debug("executing command", "binary", cmd.Path, "dir", cmd.Dir, "args_count", len(cmd.Args))
 
@@ -566,6 +572,10 @@ func (r *Runner) RunWithContext(ctx context.Context, cfg *Config) *RunResult {
 
 // executeCommandWithContext builds and runs the tool command with context for cancellation
 func (r *Runner) executeCommandWithContext(ctx context.Context, cfg *Config, workDir, task string) int {
+	if dar, ok := r.Tool.(DirectAPIRunner); ok && dar.ShouldUseDirectAPI(cfg) {
+		return dar.RunDirectAPI(cfg, workDir, task)
+	}
+
 	origCmd := r.Tool.BuildCommand(cfg, workDir, task)
 	cfg.Logger.Debug("executing command with context", "binary", origCmd.Path, "dir", origCmd.Dir)
 

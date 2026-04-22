@@ -89,6 +89,19 @@ type Tool interface {
 	RunLogFields(cfg *Config) []string
 }
 
+// DirectAPIRunner is an optional interface tools can implement to bypass the
+// CLI entirely and call the underlying AI API directly. The runner checks for
+// this interface and calls RunDirectAPI when ShouldUseDirectAPI returns true.
+type DirectAPIRunner interface {
+	// ShouldUseDirectAPI returns true when the tool should call the API directly
+	// instead of spawning the CLI subprocess (e.g. image-generation models).
+	ShouldUseDirectAPI(cfg *Config) bool
+
+	// RunDirectAPI executes the task by calling the API directly, writes output
+	// to cfg.Output (or os.Stdout), and returns the exit code.
+	RunDirectAPI(cfg *Config, workDir, task string) int
+}
+
 // FlagDef defines a command-line flag
 type FlagDef struct {
 	Short       string // Short flag (e.g., "-e")

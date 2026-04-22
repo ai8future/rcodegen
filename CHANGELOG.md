@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.1.7] - 2026-04-21
+- Implement DirectAPIRunner interface: bypass Gemini CLI for image models and call REST API directly
+- Image models (gemini-3.1-flash-image-preview / banana) now save generated images to workdir
+- Root cause: Gemini CLI exposes zero image bytes in any headless output format (stream-json or json)
+- Agent: Claude:Sonnet 4.6
+
 ## [4.1.6] - 2026-04-21
 - Save generated images to disk when Gemini returns inlineData content blocks
 - Images land in the task's working directory as `gemini-image-YYYYMMDD-HHMMSS.<ext>`
