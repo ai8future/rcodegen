@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.1.9] - 2026-04-21
+- Add `@file` reference expansion in prompts: `@path/to/file` tokens are replaced with the file's contents before the prompt reaches the AI
+- Works for all tools (rclaude, rcodex, rgemini) and rcodegen bundle inputs
+- Only tokens that look like file paths (containing `.` or `/`) are expanded; bare `@word` tokens are left unchanged
+- Agent: Claude:Sonnet 4.6
+
 ## [4.1.8] - 2026-04-21
 - Add `-i`/`--image` flag to rgemini for submitting an input image alongside the prompt
 - Enables image editing: `rgemini --model banana --image photo.jpg "add a sun"`

@@ -926,6 +926,31 @@ func applyVariableSubstitution(cfg *Config) {
 	}
 }
 
+// ExpandFileReferences replaces @path tokens in prompt with the contents of the referenced files.
+// Only tokens that look like file paths (containing `.` or `/`) are expanded; bare `@word` tokens
+// are left unchanged. Tilde paths (~/...) are resolved to the home directory. If the referenced
+// file does not exist, the @token is left unchanged.
+func ExpandFileReferences(prompt string) string {
+	re := regexp.MustCompile(`@([^\s@,;'"()\[\]{}]+)`)
+	return re.ReplaceAllStringFunc(prompt, func(match string) string {
+		path := match[1:] // strip @
+		// Only treat as a file path if it has a `.` or `/`
+		if !strings.ContainsAny(path, "./") {
+			return match
+		}
+		if strings.HasPrefix(path, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				path = filepath.Join(home, path[2:])
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return match // leave unchanged if file not found
+		}
+		return string(data)
+	})
+}
+
 // validatePlaceholders checks for unsubstituted placeholders and returns an error if found.
 func validatePlaceholders(task string) error {
 	if task == "" || task == TaskSuite {
@@ -1259,6 +1284,11 @@ func (r *Runner) parseArgs() (*Config, error) {
 	r.expandTaskShortcut(cfg)
 	applyVariableSubstitution(cfg)
 
+	// Expand @file references in the task prompt
+	if cfg.Task != "" {
+		cfg.Task = ExpandFileReferences(cfg.Task)
+	}
+
 	// Validate no unsubstituted placeholders remain
 	if err := validatePlaceholders(cfg.Task); err != nil {
 		return nil, err
@@ -1453,7 +1483,8 @@ func (r *Runner) printUsage() {
 	// Variable Substitution
 	fmt.Printf("%s%sVariable Substitution:%s\n", Bold, Cyan, Reset)
 	fmt.Printf("  %s-x%s %s<key=value>%s       Set variable for task template %s(can repeat)%s\n", Green, Reset, Yellow, Reset, Dim, Reset)
-	fmt.Printf("                        Variables use %s{name}%s syntax in prompts\n\n", Yellow, Reset)
+	fmt.Printf("                        Variables use %s{name}%s syntax in prompts\n", Yellow, Reset)
+	fmt.Printf("                        File refs use %s@path%s syntax — e.g. %s\"review @./spec.md\"%s\n\n", Yellow, Reset, Dim, Reset)
 
 	// Other Options
 	fmt.Printf("%s%sOther Options:%s\n", Bold, Cyan, Reset)

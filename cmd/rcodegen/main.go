@@ -12,6 +12,7 @@ import (
 	"rcodegen/pkg/bundle"
 	_ "rcodegen/pkg/executor" // Register dispatcher factory via init()
 	"rcodegen/pkg/orchestrator"
+	"rcodegen/pkg/runner"
 	"rcodegen/pkg/settings"
 
 	chassis "github.com/ai8future/chassis-go/v11"
@@ -97,6 +98,11 @@ func runBundle() {
 			// Positional argument without = is treated as "task" input
 			inputs["task"] = arg
 		}
+	}
+
+	// Expand @file references in all input values
+	for k, v := range inputs {
+		inputs[k] = runner.ExpandFileReferences(v)
 	}
 
 	// Load settings

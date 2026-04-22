@@ -163,3 +163,56 @@ func TestDiscoverDirectories_VersionFile(t *testing.T) {
 		t.Errorf("expected proj_version, got %s", filepath.Base(dirs[1]))
 	}
 }
+
+func TestExpandFileReferences(t *testing.T) {
+	tmp := t.TempDir()
+	specFile := filepath.Join(tmp, "spec.md")
+	if err := os.WriteFile(specFile, []byte("do the thing"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	noExtFile := filepath.Join(tmp, "instructions")
+	if err := os.WriteFile(noExtFile, []byte("step one"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "expands file reference with extension",
+			input: "review @" + specFile + " carefully",
+			want:  "review do the thing carefully",
+		},
+		{
+			name:  "expands file reference without extension",
+			input: "follow @" + noExtFile,
+			want:  "follow step one",
+		},
+		{
+			name:  "no reference left unchanged",
+			input: "just a plain prompt",
+			want:  "just a plain prompt",
+		},
+		{
+			name:  "missing file left unchanged",
+			input: "read @" + filepath.Join(tmp, "missing.txt") + " and act",
+			want:  "read @" + filepath.Join(tmp, "missing.txt") + " and act",
+		},
+		{
+			name:  "bare @word that is not a file left unchanged",
+			input: "ping @someone about this",
+			want:  "ping @someone about this",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExpandFileReferences(tc.input)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
