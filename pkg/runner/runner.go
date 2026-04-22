@@ -927,17 +927,12 @@ func applyVariableSubstitution(cfg *Config) {
 }
 
 // ExpandFileReferences replaces @path tokens in prompt with the contents of the referenced files.
-// Only tokens that look like file paths (containing `.` or `/`) are expanded; bare `@word` tokens
-// are left unchanged. Tilde paths (~/...) are resolved to the home directory. If the referenced
-// file does not exist, the @token is left unchanged.
+// Any @token is tried as a file path; if the file does not exist it is left unchanged.
+// Tilde paths (~/...) are resolved to the home directory.
 func ExpandFileReferences(prompt string) string {
 	re := regexp.MustCompile(`@([^\s@,;'"()\[\]{}]+)`)
 	return re.ReplaceAllStringFunc(prompt, func(match string) string {
 		path := match[1:] // strip @
-		// Only treat as a file path if it has a `.` or `/`
-		if !strings.ContainsAny(path, "./") {
-			return match
-		}
 		if strings.HasPrefix(path, "~/") {
 			if home, err := os.UserHomeDir(); err == nil {
 				path = filepath.Join(home, path[2:])

@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.1.10] - 2026-04-21
+- Relax @file expansion: no `.` or `/` required — any @token is tried as a file path; silently left unchanged if not found
+- Drop `./` requirement for current-directory files: `@file.txt` and `@instructions` both work
+- Agent: Claude:Sonnet 4.6
+
 ## [4.1.9] - 2026-04-21
 - Add `@file` reference expansion in prompts: `@path/to/file` tokens are replaced with the file's contents before the prompt reaches the AI
 - Works for all tools (rclaude, rcodex, rgemini) and rcodegen bundle inputs
