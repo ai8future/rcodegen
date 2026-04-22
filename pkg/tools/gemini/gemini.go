@@ -196,7 +196,7 @@ func (t *Tool) ToolSpecificFlags() []runner.FlagDef {
 		{
 			Short:       "-i",
 			Long:        "--image",
-			Description: "Input image file for editing",
+			Description: "Input image file(s) — comma-separated for multiple: -i a.png,b.png",
 			TakesArg:    true,
 			Target:      "ImagePath",
 		},
@@ -283,8 +283,9 @@ func (t *Tool) ToolSpecificHelpSections() []runner.HelpSection {
 			Title: "Gemini Options",
 			Lines: []string{
 				"  " + runner.Green + "--flash" + runner.Reset + "            Use gemini-3-flash-preview instead of gemini-3.1-pro-preview",
-				fmt.Sprintf("  %s-i%s, %s--image%s <file>  Input image file for editing",
+				fmt.Sprintf("  %s-i%s, %s--image%s <files> Input image file(s) for editing",
 					runner.Green, runner.Reset, runner.Green, runner.Reset),
+				"                     " + runner.Dim + "(comma-separated for multiple: -i a.png,b.png)" + runner.Reset,
 			},
 		},
 		{

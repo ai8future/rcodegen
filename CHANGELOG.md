@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.1.12] - 2026-04-21
+- rgemini: `-i`/`--image` now accepts multiple images, comma-separated: `-i a.png,b.png,c.png`
+- Each image is independently resolved, optionally downscaled, and added as its own `inlineData` part
+- Nano Banana 2 uses all supplied images as reference/editing inputs in a single request
+- Agent: Claude:Sonnet 4.6
+
 ## [4.1.11] - 2026-04-21
 - Auto-downscale oversized input images to 1568px max edge before sending to Gemini image API
 - Fixes `promptFeedback.blockReason: "OTHER"` failures on 4K/large images (e.g. 3840x2160 TV graphics)

@@ -58,23 +58,28 @@ func (t *Tool) RunDirectAPI(cfg *runner.Config, workDir, task string) int {
 	}
 
 	if cfg.ImagePath != "" {
-		imgPath := cfg.ImagePath
-		if !filepath.IsAbs(imgPath) {
-			base := workDir
-			if base == "" {
-				base, _ = os.Getwd()
+		base := workDir
+		if base == "" {
+			base, _ = os.Getwd()
+		}
+		for _, raw := range strings.Split(cfg.ImagePath, ",") {
+			imgPath := strings.TrimSpace(raw)
+			if imgPath == "" {
+				continue
 			}
-			imgPath = filepath.Join(base, imgPath)
-		}
-		imgPart, info, err := imageFileToPart(imgPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to read image %q: %v\n", imgPath, err)
-			return 1
-		}
-		parts = append(parts, imgPart)
-		fmt.Fprintf(out, "%s📎 Including input image: %s%s\n", runner.Dim, imgPath, runner.Reset)
-		if info != "" {
-			fmt.Fprintf(out, "%s   %s%s\n", runner.Dim, info, runner.Reset)
+			if !filepath.IsAbs(imgPath) {
+				imgPath = filepath.Join(base, imgPath)
+			}
+			imgPart, info, err := imageFileToPart(imgPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to read image %q: %v\n", imgPath, err)
+				return 1
+			}
+			parts = append(parts, imgPart)
+			fmt.Fprintf(out, "%s📎 Including input image: %s%s\n", runner.Dim, imgPath, runner.Reset)
+			if info != "" {
+				fmt.Fprintf(out, "%s   %s%s\n", runner.Dim, info, runner.Reset)
+			}
 		}
 	}
 
