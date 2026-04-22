@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.1.13] - 2026-04-22
+- Replace Go flag package's 60+ line usage dump on unknown flags with a concise two-line error + hint
+- Example: `rcodex -b` now prints `rcodex: flag provided but not defined: -b\nRun 'rcodex --help' for usage.`
+- Reason: users typing rclaude muscle memory (`-b` = `--budget`) against rcodex saw a help-page flood that looked like a crash
+- Applies to all tools (rclaude, rcodex, rgemini, rcodegen, rbatch) via `pkg/runner`
+- `-h`/`--help` still prints the full usage page as before
+- Agent: Claude:Sonnet 4.6
+
 ## [4.1.12] - 2026-04-21
 - rgemini: `-i`/`--image` now accepts multiple images, comma-separated: `-i a.png,b.png,c.png`
 - Each image is independently resolved, optionally downscaled, and added as its own `inlineData` part

@@ -1014,6 +1014,11 @@ func (r *Runner) parseArgs() (*Config, error) {
 	cleanedArgs = reorderArgsForFlagParsing(cleanedArgs, flagGroups)
 	os.Args = append([]string{os.Args[0]}, cleanedArgs...)
 
+	// Re-init CommandLine in ContinueOnError mode so we can print a concise
+	// error on unknown flags instead of Go's default 60+ line usage dump.
+	flag.CommandLine.Init(os.Args[0], flag.ContinueOnError)
+	flag.CommandLine.SetOutput(io.Discard)
+
 	// Define common flags
 	var codePath, dirPath string
 	var showTasks, showHelp, showVersion, migrateGrades, migrateGradesAll bool
@@ -1062,8 +1067,15 @@ func (r *Runner) parseArgs() (*Config, error) {
 	// Define tool-specific flags
 	r.defineToolSpecificFlags(cfg)
 
-	flag.Usage = r.printUsage
-	flag.Parse()
+	// Silence flag package's automatic usage dump on parse error — we emit
+	// a concise one-liner instead. `-h`/`--help` is handled via explicit bool
+	// flags below, so printUsage is never lost.
+	flag.Usage = func() {}
+	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", r.Tool.Name(), err)
+		fmt.Fprintf(os.Stderr, "Run '%s --help' for usage.\n", r.Tool.Name())
+		os.Exit(2)
+	}
 
 	// Handle --no-status flag (must be after Parse)
 	if noTrackStatus {
