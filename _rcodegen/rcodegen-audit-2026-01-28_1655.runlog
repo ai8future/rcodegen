@@ -1,9 +1,0 @@
-Tool:      rclaude
-Model:  opus
-Codebase:  rcodegen
-Output:    /Users/cliff/Desktop/_code/rcodegen/_rcodegen
-Command:   rclaude -d /Users/cliff/Desktop/_code --list rcodegen,_crawlers -n audit
-Started:   2026-01-28 16:55:34
-Ended:     2026-01-28 16:55:43
-Duration:  0m 9s
-Exit Code: 0
