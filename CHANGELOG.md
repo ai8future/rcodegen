@@ -1,5 +1,9 @@
 # Changelog
 
+## [4.1.4] - 2026-04-21
+- Add `gemini-3.1-flash-image-preview` (Nano Banana 2) to rgemini valid models list
+- Agent: Claude:Sonnet 4.6
+
 ## [4.1.3] - 2026-04-19
 - Remove interactive first-time setup wizard; auto-detect code_dir from ~/Desktop/_code or ~/_code
 - Binary now proceeds with sensible defaults even if neither directory exists
