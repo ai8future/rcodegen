@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.1.6] - 2026-04-21
+- Save generated images to disk when Gemini returns inlineData content blocks
+- Images land in the task's working directory as `gemini-image-YYYYMMDD-HHMMSS.<ext>`
+- Agent: Claude:Sonnet 4.6
+
 ## [4.1.5] - 2026-04-21
 - Add `banana` as a model alias for `gemini-3.1-flash-image-preview` in rgemini
 - Agent: Claude:Sonnet 4.6

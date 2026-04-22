@@ -3,12 +3,15 @@ package runner
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // StreamEvent represents a parsed stream-json event from Claude or Gemini
@@ -50,10 +53,12 @@ type AssistantMsg struct {
 
 // ContentBlock represents a content block in an assistant message
 type ContentBlock struct {
-	Type  string    `json:"type"`
-	Text  string    `json:"text,omitempty"`
-	Name  string    `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	Name     string          `json:"name,omitempty"`
+	Input    json.RawMessage `json:"input,omitempty"`
+	MimeType string          `json:"mimeType,omitempty"` // image blocks
+	Data     string          `json:"data,omitempty"`     // base64 image data
 }
 
 // StreamCallback is called for each parsed event from the stream.
@@ -66,10 +71,11 @@ type StreamParser struct {
 	lastType     string
 	inToolUse    bool
 	initialized  bool
-	Usage        *TokenUsage // Captured from result event
-	TotalCostUSD float64     // Captured from result event
-	SessionID    string      // Captured from init event
-	logger       *slog.Logger // Structured logger for diagnostics
+	Usage        *TokenUsage    // Captured from result event
+	TotalCostUSD float64        // Captured from result event
+	SessionID    string         // Captured from init event
+	WorkDir      string         // Directory to save generated images
+	logger       *slog.Logger   // Structured logger for diagnostics
 	callback     StreamCallback // Optional callback for each event
 }
 
@@ -161,19 +167,55 @@ func (p *StreamParser) handleAssistant(event StreamEvent) {
 		switch content.Type {
 		case "text":
 			if content.Text != "" {
-				// Add newline before text if we were in a tool use
 				if p.inToolUse {
 					fmt.Fprintln(p.writer)
 					p.inToolUse = false
 				}
-				// Print assistant text with color
 				fmt.Fprintf(p.writer, "%s%s%s\n", White, content.Text, Reset)
 			}
 		case "tool_use":
 			p.handleToolUse(content)
+		case "inlineData", "image":
+			p.handleImageBlock(content)
 		}
 	}
 	p.lastType = "assistant"
+}
+
+// handleImageBlock decodes and saves a base64 image block to disk
+func (p *StreamParser) handleImageBlock(content ContentBlock) {
+	if content.Data == "" {
+		fmt.Fprintf(p.writer, "%s🖼  Image received (no data)%s\n", Yellow, Reset)
+		return
+	}
+
+	ext := ".png"
+	if strings.Contains(content.MimeType, "jpeg") || strings.Contains(content.MimeType, "jpg") {
+		ext = ".jpg"
+	} else if strings.Contains(content.MimeType, "gif") {
+		ext = ".gif"
+	} else if strings.Contains(content.MimeType, "webp") {
+		ext = ".webp"
+	}
+
+	filename := "gemini-image-" + time.Now().Format("20060102-150405") + ext
+	imgBytes, err := base64.StdEncoding.DecodeString(content.Data)
+	if err != nil {
+		fmt.Fprintf(p.writer, "%s🖼  Image decode error: %v%s\n", Yellow, err, Reset)
+		return
+	}
+
+	dir := p.WorkDir
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, imgBytes, 0644); err != nil {
+		fmt.Fprintf(p.writer, "%s🖼  Image save error: %v%s\n", Yellow, err, Reset)
+		return
+	}
+
+	fmt.Fprintf(p.writer, "%s🖼  Image saved:%s %s%s%s\n", Green, Reset, White, path, Reset)
 }
 
 // handleToolUse formats a tool use nicely

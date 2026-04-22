@@ -513,6 +513,7 @@ func (r *Runner) executeWithStreamParser(cfg *Config, cmd *exec.Cmd) int {
 
 	// Parse and format the output
 	parser := NewStreamParser(os.Stdout, cfg.Logger)
+	parser.WorkDir = cmd.Dir
 	if err := parser.ProcessReader(stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "%sWarning:%s Stream parsing error: %v\n", Yellow, Reset, err)
 	}
@@ -627,6 +628,7 @@ func (r *Runner) executeWithStreamParserCtx(ctx context.Context, cfg *Config, cm
 	} else {
 		parser = NewStreamParser(output, cfg.Logger)
 	}
+	parser.WorkDir = cmd.Dir
 
 	if err := parser.ProcessReader(stdout); err != nil {
 		cfg.Logger.Debug("stream parsing error", "error", err)
