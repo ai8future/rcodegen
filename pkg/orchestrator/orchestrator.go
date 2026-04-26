@@ -21,6 +21,7 @@ import (
 	"rcodegen/pkg/tools/claude"
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
+	"rcodegen/pkg/tools/opencode"
 	"rcodegen/pkg/workspace"
 )
 
@@ -85,9 +86,10 @@ func (o *Orchestrator) SetFlashOnly(enabled bool) {
 func New(s *settings.Settings) *Orchestrator {
 	// Build tool registry
 	tools := map[string]runner.Tool{
-		"claude": claude.New(),
-		"codex":  codex.New(),
-		"gemini": gemini.New(),
+		"claude":   claude.New(),
+		"codex":    codex.New(),
+		"gemini":   gemini.New(),
+		"opencode": opencode.New(),
 	}
 
 	var dispatcher StepExecutor
@@ -946,13 +948,13 @@ func extractOpening(path string) string {
 
 // FinalReportJSON is the structure for the machine-readable final report
 type FinalReportJSON struct {
-	Meta    MetaInfo               `json:"meta"`
-	Summary SummaryInfo            `json:"summary"`
-	Costs   CostsInfo              `json:"costs"`
-	Steps   []StepInfo             `json:"steps"`
-	Outputs OutputsInfo            `json:"outputs"`
-	Grade   *GradeInfo             `json:"grade,omitempty"`
-	Inputs  map[string]string      `json:"inputs"`
+	Meta    MetaInfo          `json:"meta"`
+	Summary SummaryInfo       `json:"summary"`
+	Costs   CostsInfo         `json:"costs"`
+	Steps   []StepInfo        `json:"steps"`
+	Outputs OutputsInfo       `json:"outputs"`
+	Grade   *GradeInfo        `json:"grade,omitempty"`
+	Inputs  map[string]string `json:"inputs"`
 }
 
 type MetaInfo struct {
@@ -1011,8 +1013,8 @@ type StepInfo struct {
 }
 
 type OutputsInfo struct {
-	Directory string     `json:"directory"`
-	Files     []FileInfo `json:"files"`
+	Directory string      `json:"directory"`
+	Files     []FileInfo  `json:"files"`
 	Stats     OutputStats `json:"stats"`
 }
 
@@ -1030,16 +1032,16 @@ type OutputStats struct {
 }
 
 type GradeInfo struct {
-	Score          int `json:"score"`
+	Score          int    `json:"score"`
 	Letter         string `json:"letter"`
-	Functionality  int `json:"functionality"`
-	CodeQuality    int `json:"code_quality"`
-	Security       int `json:"security"`
-	UserExperience int `json:"user_experience"`
-	Architecture   int `json:"architecture"`
-	Testing        int `json:"testing"`
-	Innovation     int `json:"innovation"`
-	Documentation  int `json:"documentation"`
+	Functionality  int    `json:"functionality"`
+	CodeQuality    int    `json:"code_quality"`
+	Security       int    `json:"security"`
+	UserExperience int    `json:"user_experience"`
+	Architecture   int    `json:"architecture"`
+	Testing        int    `json:"testing"`
+	Innovation     int    `json:"innovation"`
+	Documentation  int    `json:"documentation"`
 }
 
 // generateFinalReportJSON creates a machine-readable JSON report for build bundles
@@ -1130,7 +1132,7 @@ func generateFinalReportJSON(
 				CacheWriteTokens: totalCacheWrite,
 			},
 		},
-		Steps:   steps,
+		Steps: steps,
 		Outputs: OutputsInfo{
 			Directory: projectDir,
 			Files:     files,
@@ -1314,4 +1316,3 @@ func extractOverviewFromSummary(path string) string {
 	}
 	return overview
 }
-

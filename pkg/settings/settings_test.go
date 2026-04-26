@@ -101,6 +101,22 @@ func TestApplyEnvOverrides_Model(t *testing.T) {
 	if s.Defaults.Gemini.Model != "opus" {
 		t.Errorf("Gemini.Model = %q, want %q", s.Defaults.Gemini.Model, "opus")
 	}
+	if s.Defaults.OpenCode.Model != "opus" {
+		t.Errorf("OpenCode.Model = %q, want %q", s.Defaults.OpenCode.Model, "opus")
+	}
+}
+
+func TestOpenCodeDefaults_AppliedFromLoadFallback(t *testing.T) {
+	s, _, err := LoadWithFallback()
+	if err != nil {
+		t.Fatalf("LoadWithFallback err: %v", err)
+	}
+	if s.Defaults.OpenCode.Model == "" {
+		t.Errorf("expected opencode model default to be filled, got empty")
+	}
+	if s.Defaults.OpenCode.Provider == "" {
+		t.Errorf("expected opencode provider default to be filled, got empty")
+	}
 }
 
 func TestApplyEnvOverrides_Effort(t *testing.T) {

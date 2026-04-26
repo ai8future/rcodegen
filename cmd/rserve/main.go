@@ -1,4 +1,4 @@
-// rserve exposes rclaude, rcodex, rgemini, and bundle orchestration
+// rserve exposes rclaude, rcodex, rgemini, ropencode, and bundle orchestration
 // via gRPC (streaming RPCs) and an OpenAI-compatible HTTP API.
 package main
 
@@ -22,6 +22,7 @@ import (
 	"rcodegen/pkg/tools/claude"
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
+	"rcodegen/pkg/tools/opencode"
 
 	chassis "github.com/ai8future/chassis-go/v11"
 	"github.com/ai8future/chassis-go/v11/grpckit"
@@ -69,9 +70,10 @@ func main() {
 
 	// Tool factories create fresh instances per request to avoid shared mutable state
 	toolFactories := map[string]server.ToolFactory{
-		"claude": func() runner.Tool { return claude.New() },
-		"codex":  func() runner.Tool { return codex.New() },
-		"gemini": func() runner.Tool { return gemini.New() },
+		"claude":   func() runner.Tool { return claude.New() },
+		"codex":    func() runner.Tool { return codex.New() },
+		"gemini":   func() runner.Tool { return gemini.New() },
+		"opencode": func() runner.Tool { return opencode.New() },
 	}
 
 	runRegistry := server.NewRunRegistry(*maxConcurrent)

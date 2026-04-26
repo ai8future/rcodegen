@@ -14,8 +14,10 @@ import (
 )
 
 const (
-	ConfigDirName  = ".rcodegen"
-	ConfigFileName = "settings.json"
+	ConfigDirName           = ".rcodegen"
+	ConfigFileName          = "settings.json"
+	DefaultOpenCodeModel    = "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"
+	DefaultOpenCodeProvider = "deepinfra"
 )
 
 // TaskDef defines a task shortcut with its prompt
@@ -40,11 +42,18 @@ type GeminiDefaults struct {
 	Model string `json:"model,omitempty"` // Default model (gemini-2.5-pro, etc.)
 }
 
+// OpenCodeDefaults holds default settings for ropencode (opencode CLI).
+type OpenCodeDefaults struct {
+	Model    string `json:"model,omitempty"`    // Default model in opencode "provider/model" form
+	Provider string `json:"provider,omitempty"` // Default provider name; model string carries provider selection
+}
+
 // Defaults holds default settings for all tools
 type Defaults struct {
-	Codex  CodexDefaults  `json:"codex"`
-	Claude ClaudeDefaults `json:"claude"`
-	Gemini GeminiDefaults `json:"gemini,omitempty"`
+	Codex    CodexDefaults    `json:"codex"`
+	Claude   ClaudeDefaults   `json:"claude"`
+	Gemini   GeminiDefaults   `json:"gemini,omitempty"`
+	OpenCode OpenCodeDefaults `json:"opencode,omitempty"`
 }
 
 // Settings holds all configuration for rcodegen tools
@@ -83,6 +92,7 @@ func applyEnvOverrides(s *Settings) {
 		s.Defaults.Claude.Model = env.Model
 		s.Defaults.Codex.Model = env.Model
 		s.Defaults.Gemini.Model = env.Model
+		s.Defaults.OpenCode.Model = env.Model
 	}
 	if env.Budget != "" {
 		s.Defaults.Claude.Budget = strings.TrimPrefix(env.Budget, "$")
@@ -218,6 +228,10 @@ func GetDefaultSettings() *Settings {
 			Gemini: GeminiDefaults{
 				Model: "gemini-3",
 			},
+			OpenCode: OpenCodeDefaults{
+				Model:    DefaultOpenCodeModel,
+				Provider: DefaultOpenCodeProvider,
+			},
 		},
 		Tasks: make(map[string]TaskDef),
 	}
@@ -245,6 +259,12 @@ func LoadWithFallback() (*Settings, bool, error) {
 	}
 	if settings.Defaults.Gemini.Model == "" {
 		settings.Defaults.Gemini.Model = "gemini-3"
+	}
+	if settings.Defaults.OpenCode.Model == "" {
+		settings.Defaults.OpenCode.Model = DefaultOpenCodeModel
+	}
+	if settings.Defaults.OpenCode.Provider == "" {
+		settings.Defaults.OpenCode.Provider = DefaultOpenCodeProvider
 	}
 	if settings.DefaultBuildDir == "" {
 		settings.DefaultBuildDir = settings.CodeDir // Default to code_dir if not set
@@ -615,6 +635,10 @@ func RunInteractiveSetup() (*Settings, bool) {
 			Claude: ClaudeDefaults{
 				Model:  claudeModel,
 				Budget: claudeBudget,
+			},
+			OpenCode: OpenCodeDefaults{
+				Model:    DefaultOpenCodeModel,
+				Provider: DefaultOpenCodeProvider,
 			},
 		},
 		// Tasks intentionally omitted - built-in tasks are loaded from GetDefaultTasks()

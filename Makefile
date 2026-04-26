@@ -2,7 +2,7 @@ VERSION := $(shell cat VERSION)
 LDFLAGS := -ldflags="-w -s"
 BINDIR  := bin
 
-BINS := rclaude rcodex rgemini rcodegen rserve rbatch
+BINS := rclaude rcodex rgemini ropencode rcodegen rserve rbatch
 
 .DEFAULT_GOAL := build-all
 

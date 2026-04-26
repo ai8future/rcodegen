@@ -28,15 +28,15 @@ AI API calls are expensive. rcodegen provides per-run cost tracking (token count
 
 ### 5. Serving as an AI-Tool-Agnostic API Gateway
 
-The `rserve` server binary exposes all tools through both a gRPC streaming API and an OpenAI-compatible HTTP API (`/v1/chat/completions`). This means any system that speaks the OpenAI SDK protocol can route requests through rcodegen to any of the three underlying AI engines. This positions rcodegen as a universal gateway and abstraction layer for AI coding tools, enabling dashboards, remote agents, and automated pipelines to leverage whichever AI is best for a given task.
+The `rserve` server binary exposes all tools through both a gRPC streaming API and an OpenAI-compatible HTTP API (`/v1/chat/completions`). This means any system that speaks the OpenAI SDK protocol can route requests through rcodegen to any underlying AI engine registered with the suite. This positions rcodegen as a universal gateway and abstraction layer for AI coding tools, enabling dashboards, remote agents, and automated pipelines to leverage whichever AI is best for a given task.
 
 ---
 
 ## Core Business Logic
 
-### Unattended Single-Tool Execution (rclaude, rcodex, rgemini)
+### Unattended Single-Tool Execution (rclaude, rcodex, rgemini, ropencode)
 
-Each wrapper binary (`rclaude`, `rcodex`, `rgemini`) converts the native interactive CLI of each AI tool into a one-shot, unattended execution engine:
+Each wrapper binary (`rclaude`, `rcodex`, `rgemini`, `ropencode`) converts the native interactive CLI of each AI tool into a one-shot, unattended execution engine:
 
 - **Permission bypass**: Each tool's safety prompts are automatically bypassed (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`) because there is no human to approve them. This is the critical technical enabler that makes unattended operation possible.
 
@@ -49,6 +49,8 @@ Each wrapper binary (`rclaude`, `rcodex`, `rgemini`) converts the native interac
 - **VERSION-based idempotency**: If the target codebase contains a `VERSION` file, each tool+task combination records the last-run VERSION to `_rcodegen/version_state.json`. On subsequent runs, if the VERSION has not changed, the task is automatically skipped with a message. Use the `-f`/`--force` flag to run regardless of VERSION state. This prevents redundant AI calls against unchanged codebases.
 
 - **Grade extraction and persistence**: After each task completes, the system scans the generated report for grade patterns (`TOTAL_SCORE: N/100`), extracts the numerical score, and appends it to a `.grades.json` file with cross-process file locking (both in-process mutex and `syscall.Flock`). This creates an auditable history of AI-assessed code quality.
+
+`ropencode` uses the opencode CLI as a provider-agnostic entry point. Models are passed in opencode's `provider/model` form, so DeepInfra, OpenAI-compatible providers, and other opencode-supported providers can be used without adding a new rcodegen wrapper per provider. The default model is DeepInfra's Qwen3-Coder 480B instruct model.
 
 - **Run logging**: Every execution produces a `.runlog.md` file with metadata (tool, model, codebase, command, start/end times, duration, exit code, token usage, cost). This provides an operational audit trail.
 

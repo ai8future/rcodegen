@@ -40,6 +40,11 @@ func TestLoadManifest(t *testing.T) {
 				"task": "Generate documentation",
 				"tool": "gemini",
 			},
+			{
+				"name": "deepinfra",
+				"task": "Run opencode",
+				"tool": "opencode",
+			},
 		},
 	}
 
@@ -68,8 +73,8 @@ func TestLoadManifest(t *testing.T) {
 		t.Errorf("Budget.MaxWait = %q, want %q", m.Budget.MaxWait, "30m")
 	}
 
-	if len(m.Jobs) != 3 {
-		t.Fatalf("len(Jobs) = %d, want 3", len(m.Jobs))
+	if len(m.Jobs) != 4 {
+		t.Fatalf("len(Jobs) = %d, want 4", len(m.Jobs))
 	}
 
 	// Check first job has all fields
@@ -110,6 +115,10 @@ func TestLoadManifest(t *testing.T) {
 	// Check third job
 	if m.Jobs[2].Tool != "gemini" {
 		t.Errorf("Jobs[2].Tool = %q, want %q", m.Jobs[2].Tool, "gemini")
+	}
+
+	if m.Jobs[3].Tool != "opencode" {
+		t.Errorf("Jobs[3].Tool = %q, want %q", m.Jobs[3].Tool, "opencode")
 	}
 
 	// Verify duration methods

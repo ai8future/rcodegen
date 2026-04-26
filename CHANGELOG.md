@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.1.14] - 2026-04-26
+- Add `ropencode`, an opencode CLI wrapper for provider/model workflows such as DeepInfra Qwen3-Coder
+- Register `opencode` across rserve, rbatch, bundle orchestration, grade extraction, settings defaults, and OpenAI model parsing
+- Add focused tests for the new tool wrapper, settings/env defaults, batch validation, executor placeholders, and orchestrator registration
+- Agent: Codex:gpt-5.4
+
 ## [4.1.13] - 2026-04-22
 - Replace Go flag package's 60+ line usage dump on unknown flags with a concise two-line error + hint
 - Example: `rcodex -b` now prints `rcodex: flag provided but not defined: -b\nRun 'rcodex --help' for usage.`

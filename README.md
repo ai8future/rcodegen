@@ -1,12 +1,12 @@
 # rcodegen
 
-Unified automation framework for AI-powered code analysis, generation, and reporting. Run multiple AI coding assistants (Claude, Codex, Gemini) in unattended, automated workflows against your codebases.
+Unified automation framework for AI-powered code analysis, generation, and reporting. Run multiple AI coding assistants (Claude, Codex, Gemini, opencode) in unattended, automated workflows against your codebases.
 
 ## What It Does
 
 rcodegen provides two layers of automation:
 
-**Single-tool wrappers** (`rclaude`, `rcodex`, `rgemini`) add task shortcuts, automated reporting, cost tracking, file locking, grading, and multi-codebase support on top of each tool's native CLI.
+**Single-tool wrappers** (`rclaude`, `rcodex`, `rgemini`, `ropencode`) add task shortcuts, automated reporting, cost tracking, file locking, grading, and multi-codebase support on top of each tool's native CLI.
 
 **Multi-tool orchestrator** (`rcodegen`) chains multiple AI tools together in defined workflows called "bundles" -- one model builds code, another reviews it, another tests it, with parallel execution, voting, and merging.
 
@@ -17,6 +17,7 @@ rcodegen provides two layers of automation:
 | `rclaude` | Claude Code CLI automation wrapper |
 | `rcodex` | OpenAI Codex CLI automation wrapper |
 | `rgemini` | Google Gemini CLI automation wrapper |
+| `ropencode` | opencode CLI wrapper for OpenAI-compatible providers, defaulting to DeepInfra Qwen3-Coder |
 | `rcodegen` | Multi-tool orchestrator for bundles |
 | `rbatch` | Batch job runner for executing multiple coding agent tasks with concurrency control, session chaining, and checkpoint/resume |
 | `rserve` | gRPC + OpenAI-compatible HTTP server exposing all tools and bundles (default gRPC port 14260, HTTP port 14261) |
@@ -24,19 +25,20 @@ rcodegen provides two layers of automation:
 ## Prerequisites
 
 - Go 1.25.5+
-- One or more AI CLIs installed: `claude`, `codex`, `gemini`
+- One or more AI CLIs installed: `claude`, `codex`, `gemini`, `opencode`
 - Python 3.11+ (optional, for credit tracking via iTerm2)
 
 ## Installation
 
 ```bash
-# Build all 6 binaries into bin/
+# Build all 7 binaries into bin/
 make
 
 # Build individually
 make rclaude
 make rcodex
 make rgemini
+make ropencode
 make rcodegen
 make rbatch
 make rserve
@@ -268,7 +270,11 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
   "defaults": {
     "codex": { "model": "gpt-5.4", "effort": "xhigh" },
     "claude": { "model": "sonnet", "budget": "10.00" },
-    "gemini": { "model": "gemini-3-pro-preview" }
+    "gemini": { "model": "gemini-3-pro-preview" },
+    "opencode": {
+      "model": "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      "provider": "deepinfra"
+    }
   },
   "tasks": {
     "my-custom-task": {
@@ -306,6 +312,9 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
 ### Gemini
 `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` (default: `gemini-3.1-pro-preview`)
 
+### OpenCode
+Any opencode `provider/model` string, for example `deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct` (default). Run `opencode providers login` once per provider before first use.
+
 ## Locking & Concurrency
 
 The `-l` flag queues runs behind other active instances using `syscall.Flock`-based advisory file locking at `~/.rcodegen/locks/`:
@@ -327,21 +336,21 @@ The `rcodegen` orchestrator features an animated TUI with:
 - Braille dot spinner animation at 100ms intervals
 - Real-time elapsed time and cost counters
 - Per-step status with tool/model indicators
-- Color-coded by tool: magenta (Claude), yellow (Gemini), blue (Codex)
+- Color-coded by tool: magenta (Claude), yellow (Gemini), blue (Codex), white (opencode)
 - Live activity feed parsed from stream-json output (e.g., "Reading files...", "Writing code...")
 
 Use `--static` to disable animation.
 
 ## Tool Comparison
 
-| Feature | rclaude | rcodex | rgemini |
-|---------|---------|--------|---------|
-| CLI Command | `claude -p` | `codex exec` | `gemini -p` |
-| Permission Bypass | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--yolo` |
-| Output Format | stream-json | --json | stream-json |
-| Cost Tracking | iTerm2 API | iTerm2 API | iTerm2 API |
-| Budget Control | `--max-budget-usd` | None | None |
-| Default Model | opus | gpt-5.4 | gemini-3.1-pro-preview |
+| Feature | rclaude | rcodex | rgemini | ropencode |
+|---------|---------|--------|---------|-----------|
+| CLI Command | `claude -p` | `codex exec` | `gemini -p` | `opencode run` |
+| Permission Bypass | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--yolo` | `--dangerously-skip-permissions` |
+| Output Format | stream-json | --json | stream-json | json |
+| Cost Tracking | iTerm2 API | iTerm2 API | iTerm2 API | None in v1 |
+| Budget Control | `--max-budget-usd` | None | None | Provider-side |
+| Default Model | opus | gpt-5.4 | gemini-3.1-pro-preview | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct |
 
 ## Project Structure
 
@@ -351,6 +360,7 @@ rcodegen/
 │   ├── rclaude/main.go              # Claude CLI entry point (~15 lines)
 │   ├── rcodex/main.go               # Codex CLI entry point (~15 lines)
 │   ├── rgemini/main.go              # Gemini CLI entry point (~15 lines)
+│   ├── ropencode/main.go            # opencode CLI entry point (~15 lines)
 │   ├── rcodegen/main.go             # Orchestrator entry point
 │   ├── rbatch/main.go               # Batch job runner entry point
 │   └── rserve/main.go               # gRPC + HTTP server entry point (default port 14260)
@@ -370,7 +380,8 @@ rcodegen/
 │   ├── tools/
 │   │   ├── claude/claude.go         # Claude tool implementation
 │   │   ├── codex/codex.go           # Codex tool implementation
-│   │   └── gemini/gemini.go         # Gemini tool implementation
+│   │   ├── gemini/gemini.go         # Gemini tool implementation
+│   │   └── opencode/opencode.go     # opencode tool implementation
 │   ├── orchestrator/                # Multi-step workflow engine
 │   │   ├── orchestrator.go          # Main orchestration loop
 │   │   ├── context.go               # Variable resolution
@@ -590,6 +601,7 @@ All tools disable permission prompts for unattended operation:
 - `rclaude` uses `--dangerously-skip-permissions`
 - `rcodex` uses `--dangerously-bypass-approvals-and-sandbox`
 - `rgemini` uses `--yolo`
+- `ropencode` uses `--dangerously-skip-permissions`
 
 Only use on trusted codebases in controlled environments. Lock files are stored in `~/.rcodegen/locks/` (not `/tmp/`) to prevent symlink attacks. Settings files are created with 0600 permissions.
 

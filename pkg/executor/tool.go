@@ -208,6 +208,10 @@ func extractCostInfo(toolName, stdout, stderr string) UsageInfo {
 				return usage
 			}
 		}
+	case "opencode":
+		// opencode emits JSON events via `--format json`, but rcodegen does
+		// not parse that stream yet. Return zero usage explicitly for v1.
+		return UsageInfo{}
 	}
 	return usage
 }
@@ -239,6 +243,10 @@ func extractSessionID(toolName, stdout, stderr string) string {
 		if matches := re.FindStringSubmatch(stderr); len(matches) > 1 {
 			return matches[1]
 		}
+	case "opencode":
+		// Session IDs are present in opencode JSON events, but parsing is not
+		// implemented yet, so automatic chaining is disabled for v1.
+		return ""
 	}
 	return ""
 }

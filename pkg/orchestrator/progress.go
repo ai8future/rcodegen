@@ -44,11 +44,11 @@ const (
 
 // Status icons
 const (
-	iconPending  = "○"
-	iconRunning  = "●"
-	iconSuccess  = "✓"
-	iconFailure  = "✗"
-	iconSkipped  = "◌"
+	iconPending = "○"
+	iconRunning = "●"
+	iconSuccess = "✓"
+	iconFailure = "✗"
+	iconSkipped = "◌"
 )
 
 // StepState represents the execution state of a step
@@ -130,6 +130,8 @@ func toolColor(tool string) string {
 		return colorYellow
 	case "codex":
 		return colorBlue
+	case "opencode":
+		return colorWhite
 	case "parallel":
 		return colorCyan
 	default:

@@ -12,6 +12,7 @@ import (
 	"rcodegen/pkg/tools/claude"
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
+	"rcodegen/pkg/tools/opencode"
 	"rcodegen/pkg/tracking"
 
 	"github.com/ai8future/chassis-go/v11/logz"
@@ -27,14 +28,15 @@ type LocalExecutor struct {
 }
 
 // NewLocalExecutor creates a LocalExecutor with default factories for
-// claude, codex, and gemini tools.
+// claude, codex, gemini, and opencode tools.
 func NewLocalExecutor(s *settings.Settings) *LocalExecutor {
 	return &LocalExecutor{
 		Settings: s,
 		ToolFactories: map[string]ToolFactory{
-			"claude": func() runner.Tool { return claude.New() },
-			"codex":  func() runner.Tool { return codex.New() },
-			"gemini": func() runner.Tool { return gemini.New() },
+			"claude":   func() runner.Tool { return claude.New() },
+			"codex":    func() runner.Tool { return codex.New() },
+			"gemini":   func() runner.Tool { return gemini.New() },
+			"opencode": func() runner.Tool { return opencode.New() },
 		},
 	}
 }

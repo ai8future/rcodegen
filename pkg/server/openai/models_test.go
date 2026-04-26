@@ -6,8 +6,8 @@ import (
 
 func TestParseModel(t *testing.T) {
 	tests := []struct {
-		input    string
-		wantTool string
+		input     string
+		wantTool  string
 		wantModel string
 	}{
 		{"claude", "claude", ""},
@@ -15,6 +15,7 @@ func TestParseModel(t *testing.T) {
 		{"codex:o3-pro", "codex", "o3-pro"},
 		{"gemini", "gemini", ""},
 		{"gemini:2.5-flash", "gemini", "2.5-flash"},
+		{"opencode:deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct", "opencode", "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"},
 		{"claude:sonnet-4:thinking", "claude", "sonnet-4:thinking"},
 	}
 

@@ -423,6 +423,14 @@ func (d *LiveDisplay) renderStep(index int, step *LiveStep) {
 			modelName = "5.3"
 		case "gpt-5.2-codex":
 			modelName = "5.2"
+		default:
+			if strings.Contains(step.Model, "/") {
+				parts := strings.Split(step.Model, "/")
+				modelName = parts[len(parts)-1]
+				if len(modelName) > 18 {
+					modelName = modelName[:15] + "..."
+				}
+			}
 		}
 		toolDisplay = fmt.Sprintf("%s/%s", toolName, modelName)
 	}
