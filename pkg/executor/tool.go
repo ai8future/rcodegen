@@ -212,6 +212,10 @@ func extractCostInfo(toolName, stdout, stderr string) UsageInfo {
 		// opencode emits JSON events via `--format json`, but rcodegen does
 		// not parse that stream yet. Return zero usage explicitly for v1.
 		return UsageInfo{}
+	case "kilocode":
+		// kilocode emits JSON events via `--format json`, but rcodegen does
+		// not parse that stream yet. Return zero usage explicitly for v1.
+		return UsageInfo{}
 	}
 	return usage
 }
@@ -245,6 +249,10 @@ func extractSessionID(toolName, stdout, stderr string) string {
 		}
 	case "opencode":
 		// Session IDs are present in opencode JSON events, but parsing is not
+		// implemented yet, so automatic chaining is disabled for v1.
+		return ""
+	case "kilocode":
+		// Session IDs are present in kilocode JSON events, but parsing is not
 		// implemented yet, so automatic chaining is disabled for v1.
 		return ""
 	}

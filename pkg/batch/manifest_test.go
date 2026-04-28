@@ -45,6 +45,11 @@ func TestLoadManifest(t *testing.T) {
 				"task": "Run opencode",
 				"tool": "opencode",
 			},
+			{
+				"name": "kilocode",
+				"task": "Run kilocode",
+				"tool": "kilocode",
+			},
 		},
 	}
 
@@ -73,8 +78,8 @@ func TestLoadManifest(t *testing.T) {
 		t.Errorf("Budget.MaxWait = %q, want %q", m.Budget.MaxWait, "30m")
 	}
 
-	if len(m.Jobs) != 4 {
-		t.Fatalf("len(Jobs) = %d, want 4", len(m.Jobs))
+	if len(m.Jobs) != 5 {
+		t.Fatalf("len(Jobs) = %d, want 5", len(m.Jobs))
 	}
 
 	// Check first job has all fields
@@ -121,6 +126,10 @@ func TestLoadManifest(t *testing.T) {
 		t.Errorf("Jobs[3].Tool = %q, want %q", m.Jobs[3].Tool, "opencode")
 	}
 
+	if m.Jobs[4].Tool != "kilocode" {
+		t.Errorf("Jobs[4].Tool = %q, want %q", m.Jobs[4].Tool, "kilocode")
+	}
+
 	// Verify duration methods
 	ci, err := m.Budget.CheckIntervalDuration()
 	if err != nil {
@@ -136,6 +145,29 @@ func TestLoadManifest(t *testing.T) {
 	}
 	if mw != 30*time.Minute {
 		t.Errorf("MaxWaitDuration() = %v, want %v", mw, 30*time.Minute)
+	}
+}
+
+func TestLoadManifest_KilocodeIsValidTool(t *testing.T) {
+	manifest := map[string]any{
+		"name": "smoke",
+		"jobs": []map[string]any{
+			{
+				"name": "j1",
+				"task": "echo",
+				"tool": "kilocode",
+				"dir":  "/tmp",
+			},
+		},
+	}
+
+	path := writeManifestJSON(t, manifest)
+	m, err := LoadManifest(path)
+	if err != nil {
+		t.Fatalf("LoadManifest() error = %v", err)
+	}
+	if m.Jobs[0].Tool != "kilocode" {
+		t.Errorf("Jobs[0].Tool = %q, want %q", m.Jobs[0].Tool, "kilocode")
 	}
 }
 

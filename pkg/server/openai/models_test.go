@@ -16,6 +16,7 @@ func TestParseModel(t *testing.T) {
 		{"gemini", "gemini", ""},
 		{"gemini:2.5-flash", "gemini", "2.5-flash"},
 		{"opencode:deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct", "opencode", "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"},
+		{"kilocode:deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct", "kilocode", "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"},
 		{"claude:sonnet-4:thinking", "claude", "sonnet-4:thinking"},
 	}
 

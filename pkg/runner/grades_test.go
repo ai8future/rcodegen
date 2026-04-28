@@ -150,6 +150,15 @@ func TestParseReportFilename_NewFormat(t *testing.T) {
 			wantMonth:    time.December,
 			wantDay:      31,
 		},
+		{
+			filename:     "myapp-kilocode-audit-2026-04-28_1200.md",
+			wantTool:     "kilocode",
+			wantCodebase: "myapp",
+			wantTask:     "audit",
+			wantYear:     2026,
+			wantMonth:    time.April,
+			wantDay:      28,
+		},
 	}
 
 	for _, tc := range tests {

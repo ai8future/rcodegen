@@ -1,4 +1,4 @@
-// rserve exposes rclaude, rcodex, rgemini, ropencode, and bundle orchestration
+// rserve exposes rclaude, rcodex, rgemini, ropencode, rkilo, and bundle orchestration
 // via gRPC (streaming RPCs) and an OpenAI-compatible HTTP API.
 package main
 
@@ -22,6 +22,7 @@ import (
 	"rcodegen/pkg/tools/claude"
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
+	"rcodegen/pkg/tools/kilocode"
 	"rcodegen/pkg/tools/opencode"
 
 	chassis "github.com/ai8future/chassis-go/v11"
@@ -73,6 +74,7 @@ func main() {
 		"claude":   func() runner.Tool { return claude.New() },
 		"codex":    func() runner.Tool { return codex.New() },
 		"gemini":   func() runner.Tool { return gemini.New() },
+		"kilocode": func() runner.Tool { return kilocode.New() },
 		"opencode": func() runner.Tool { return opencode.New() },
 	}
 

@@ -666,6 +666,6 @@ Examples:
   %s spool /path/to/spool/dir
   %s resume
   %s status
-`, strings.Join([]string{"claude", "codex", "gemini", "opencode"}, ", "),
+`, strings.Join([]string{"claude", "codex", "gemini", "opencode", "kilocode"}, ", "),
 		name, name, name, name, name, name)
 }

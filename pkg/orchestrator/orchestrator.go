@@ -21,6 +21,7 @@ import (
 	"rcodegen/pkg/tools/claude"
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
+	"rcodegen/pkg/tools/kilocode"
 	"rcodegen/pkg/tools/opencode"
 	"rcodegen/pkg/workspace"
 )
@@ -89,6 +90,7 @@ func New(s *settings.Settings) *Orchestrator {
 		"claude":   claude.New(),
 		"codex":    codex.New(),
 		"gemini":   gemini.New(),
+		"kilocode": kilocode.New(),
 		"opencode": opencode.New(),
 	}
 

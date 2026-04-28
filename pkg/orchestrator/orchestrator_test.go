@@ -13,6 +13,13 @@ func TestNew_RegistersOpencodeTool(t *testing.T) {
 	}
 }
 
+func TestNew_RegistersKilocodeTool(t *testing.T) {
+	o := New(&settings.Settings{})
+	if _, ok := o.tools["kilocode"]; !ok {
+		t.Fatalf("expected kilocode in orchestrator tools, got keys: %v", toolKeys(o.tools))
+	}
+}
+
 func toolKeys[T any](m map[string]T) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

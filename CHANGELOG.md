@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.15] - 2026-04-28
+- Add `rkilo`, a kilocode CLI wrapper matching the `ropencode` provider/model workflow
+- Register `kilocode` across rserve, rbatch, bundle orchestration, grade extraction, settings defaults, OpenAI model parsing, and the build matrix
+- Add focused tests for the wrapper command shape, settings/env defaults, batch validation, executor placeholders, orchestrator registration, and report filename parsing
+- Known limitation: v1 does not parse kilocode JSON events for token/cost/session extraction; placeholder zero usage and manual session IDs match the opencode v1 behavior
+- Agent: Codex:gpt-5.4
+
 ## [4.1.14] - 2026-04-26
 - Add `ropencode`, an opencode CLI wrapper for provider/model workflows such as DeepInfra Qwen3-Coder
 - Register `opencode` across rserve, rbatch, bundle orchestration, grade extraction, settings defaults, and OpenAI model parsing

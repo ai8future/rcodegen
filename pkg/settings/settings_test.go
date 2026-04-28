@@ -104,6 +104,9 @@ func TestApplyEnvOverrides_Model(t *testing.T) {
 	if s.Defaults.OpenCode.Model != "opus" {
 		t.Errorf("OpenCode.Model = %q, want %q", s.Defaults.OpenCode.Model, "opus")
 	}
+	if s.Defaults.KiloCode.Model != "opus" {
+		t.Errorf("KiloCode.Model = %q, want %q", s.Defaults.KiloCode.Model, "opus")
+	}
 }
 
 func TestOpenCodeDefaults_AppliedFromLoadFallback(t *testing.T) {
@@ -116,6 +119,19 @@ func TestOpenCodeDefaults_AppliedFromLoadFallback(t *testing.T) {
 	}
 	if s.Defaults.OpenCode.Provider == "" {
 		t.Errorf("expected opencode provider default to be filled, got empty")
+	}
+}
+
+func TestKiloCodeDefaults_AppliedFromLoadFallback(t *testing.T) {
+	s, _, err := LoadWithFallback()
+	if err != nil {
+		t.Fatalf("LoadWithFallback err: %v", err)
+	}
+	if s.Defaults.KiloCode.Model == "" {
+		t.Errorf("expected kilocode model default to be filled, got empty")
+	}
+	if s.Defaults.KiloCode.Provider == "" {
+		t.Errorf("expected kilocode provider default to be filled, got empty")
 	}
 }
 

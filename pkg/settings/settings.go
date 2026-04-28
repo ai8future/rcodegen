@@ -18,6 +18,8 @@ const (
 	ConfigFileName          = "settings.json"
 	DefaultOpenCodeModel    = "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"
 	DefaultOpenCodeProvider = "deepinfra"
+	DefaultKiloCodeModel    = "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"
+	DefaultKiloCodeProvider = "deepinfra"
 )
 
 // TaskDef defines a task shortcut with its prompt
@@ -48,12 +50,19 @@ type OpenCodeDefaults struct {
 	Provider string `json:"provider,omitempty"` // Default provider name; model string carries provider selection
 }
 
+// KiloCodeDefaults holds default settings for rkilo (kilocode CLI).
+type KiloCodeDefaults struct {
+	Model    string `json:"model,omitempty"`    // Default model in kilocode "provider/model" form
+	Provider string `json:"provider,omitempty"` // Default provider name; model string carries provider selection
+}
+
 // Defaults holds default settings for all tools
 type Defaults struct {
 	Codex    CodexDefaults    `json:"codex"`
 	Claude   ClaudeDefaults   `json:"claude"`
 	Gemini   GeminiDefaults   `json:"gemini,omitempty"`
 	OpenCode OpenCodeDefaults `json:"opencode,omitempty"`
+	KiloCode KiloCodeDefaults `json:"kilocode,omitempty"`
 }
 
 // Settings holds all configuration for rcodegen tools
@@ -93,6 +102,7 @@ func applyEnvOverrides(s *Settings) {
 		s.Defaults.Codex.Model = env.Model
 		s.Defaults.Gemini.Model = env.Model
 		s.Defaults.OpenCode.Model = env.Model
+		s.Defaults.KiloCode.Model = env.Model
 	}
 	if env.Budget != "" {
 		s.Defaults.Claude.Budget = strings.TrimPrefix(env.Budget, "$")
@@ -232,6 +242,10 @@ func GetDefaultSettings() *Settings {
 				Model:    DefaultOpenCodeModel,
 				Provider: DefaultOpenCodeProvider,
 			},
+			KiloCode: KiloCodeDefaults{
+				Model:    DefaultKiloCodeModel,
+				Provider: DefaultKiloCodeProvider,
+			},
 		},
 		Tasks: make(map[string]TaskDef),
 	}
@@ -265,6 +279,12 @@ func LoadWithFallback() (*Settings, bool, error) {
 	}
 	if settings.Defaults.OpenCode.Provider == "" {
 		settings.Defaults.OpenCode.Provider = DefaultOpenCodeProvider
+	}
+	if settings.Defaults.KiloCode.Model == "" {
+		settings.Defaults.KiloCode.Model = DefaultKiloCodeModel
+	}
+	if settings.Defaults.KiloCode.Provider == "" {
+		settings.Defaults.KiloCode.Provider = DefaultKiloCodeProvider
 	}
 	if settings.DefaultBuildDir == "" {
 		settings.DefaultBuildDir = settings.CodeDir // Default to code_dir if not set
@@ -639,6 +659,10 @@ func RunInteractiveSetup() (*Settings, bool) {
 			OpenCode: OpenCodeDefaults{
 				Model:    DefaultOpenCodeModel,
 				Provider: DefaultOpenCodeProvider,
+			},
+			KiloCode: KiloCodeDefaults{
+				Model:    DefaultKiloCodeModel,
+				Provider: DefaultKiloCodeProvider,
 			},
 		},
 		// Tasks intentionally omitted - built-in tasks are loaded from GetDefaultTasks()

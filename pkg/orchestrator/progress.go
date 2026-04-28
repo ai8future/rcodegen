@@ -22,6 +22,8 @@ const (
 	colorBlue    = colors.Blue
 	colorMagenta = colors.Magenta
 	colorWhite   = colors.White
+
+	colorBrightMagenta = colors.BrightMagenta
 )
 
 // capitalizeWord returns s with first letter uppercased (replaces deprecated strings.Title)
@@ -132,6 +134,8 @@ func toolColor(tool string) string {
 		return colorBlue
 	case "opencode":
 		return colorWhite
+	case "kilocode":
+		return colorBrightMagenta
 	case "parallel":
 		return colorCyan
 	default:

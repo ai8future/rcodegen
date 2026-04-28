@@ -12,6 +12,7 @@ import (
 	"rcodegen/pkg/tools/claude"
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
+	"rcodegen/pkg/tools/kilocode"
 	"rcodegen/pkg/tools/opencode"
 	"rcodegen/pkg/tracking"
 
@@ -28,7 +29,7 @@ type LocalExecutor struct {
 }
 
 // NewLocalExecutor creates a LocalExecutor with default factories for
-// claude, codex, gemini, and opencode tools.
+// claude, codex, gemini, opencode, and kilocode tools.
 func NewLocalExecutor(s *settings.Settings) *LocalExecutor {
 	return &LocalExecutor{
 		Settings: s,
@@ -36,6 +37,7 @@ func NewLocalExecutor(s *settings.Settings) *LocalExecutor {
 			"claude":   func() runner.Tool { return claude.New() },
 			"codex":    func() runner.Tool { return codex.New() },
 			"gemini":   func() runner.Tool { return gemini.New() },
+			"kilocode": func() runner.Tool { return kilocode.New() },
 			"opencode": func() runner.Tool { return opencode.New() },
 		},
 	}

@@ -15,6 +15,7 @@ var validTools = map[string]bool{
 	"claude":   true,
 	"codex":    true,
 	"gemini":   true,
+	"kilocode": true,
 	"opencode": true,
 }
 
@@ -136,7 +137,7 @@ func validate(m *Manifest) error {
 			return fmt.Errorf("job %d (%s): task is required", i+1, j.Name)
 		}
 		if !validTools[j.Tool] {
-			return fmt.Errorf("job %d (%s): invalid tool %q: must be one of claude, codex, gemini, opencode", i+1, j.Name, j.Tool)
+			return fmt.Errorf("job %d (%s): invalid tool %q: must be one of claude, codex, gemini, opencode, kilocode", i+1, j.Name, j.Tool)
 		}
 	}
 

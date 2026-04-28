@@ -47,6 +47,7 @@ var knownTools = map[string]bool{
 	"claude":   true,
 	"gemini":   true,
 	"codex":    true,
+	"kilocode": true,
 	"opencode": true,
 }
 

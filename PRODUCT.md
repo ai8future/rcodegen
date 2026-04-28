@@ -2,7 +2,7 @@
 
 ## What Is This Product?
 
-rcodegen is a unified automation platform for running AI-powered coding agents (Claude, Codex, Gemini) in fully unattended, hands-off workflows against software codebases. It transforms interactive, human-in-the-loop AI coding assistants into batch-capable, composable automation tools that can audit, test, fix, refactor, grade, build, and write content -- all without a human sitting at the keyboard.
+rcodegen is a unified automation platform for running AI-powered coding agents (Claude, Codex, Gemini, opencode, kilocode) in fully unattended, hands-off workflows against software codebases. It transforms interactive, human-in-the-loop AI coding assistants into batch-capable, composable automation tools that can audit, test, fix, refactor, grade, build, and write content -- all without a human sitting at the keyboard.
 
 The product exists to solve a fundamental bottleneck: each major AI coding assistant (Anthropic's Claude Code, OpenAI's Codex, Google's Gemini CLI) requires a human operator to babysit prompts, approve permissions, and manually review output. rcodegen eliminates that bottleneck by wrapping these tools in a unified framework that handles unattended execution, output capture, cost control, quality grading, and multi-model orchestration.
 
@@ -34,9 +34,9 @@ The `rserve` server binary exposes all tools through both a gRPC streaming API a
 
 ## Core Business Logic
 
-### Unattended Single-Tool Execution (rclaude, rcodex, rgemini, ropencode)
+### Unattended Single-Tool Execution (rclaude, rcodex, rgemini, ropencode, rkilo)
 
-Each wrapper binary (`rclaude`, `rcodex`, `rgemini`, `ropencode`) converts the native interactive CLI of each AI tool into a one-shot, unattended execution engine:
+Each wrapper binary (`rclaude`, `rcodex`, `rgemini`, `ropencode`, `rkilo`) converts the native interactive CLI of each AI tool into a one-shot, unattended execution engine:
 
 - **Permission bypass**: Each tool's safety prompts are automatically bypassed (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`) because there is no human to approve them. This is the critical technical enabler that makes unattended operation possible.
 
@@ -50,7 +50,7 @@ Each wrapper binary (`rclaude`, `rcodex`, `rgemini`, `ropencode`) converts the n
 
 - **Grade extraction and persistence**: After each task completes, the system scans the generated report for grade patterns (`TOTAL_SCORE: N/100`), extracts the numerical score, and appends it to a `.grades.json` file with cross-process file locking (both in-process mutex and `syscall.Flock`). This creates an auditable history of AI-assessed code quality.
 
-`ropencode` uses the opencode CLI as a provider-agnostic entry point. Models are passed in opencode's `provider/model` form, so DeepInfra, OpenAI-compatible providers, and other opencode-supported providers can be used without adding a new rcodegen wrapper per provider. The default model is DeepInfra's Qwen3-Coder 480B instruct model.
+`ropencode` uses the opencode CLI as a provider-agnostic entry point. `rkilo` provides the same unattended wrapper surface for the kilocode CLI. Models are passed in each tool's `provider/model` form, so DeepInfra, OpenAI-compatible providers, and other supported providers can be used without adding a new rcodegen wrapper per provider. The default model for both wrappers is DeepInfra's Qwen3-Coder 480B instruct model.
 
 - **Run logging**: Every execution produces a `.runlog.md` file with metadata (tool, model, codebase, command, start/end times, duration, exit code, token usage, cost). This provides an operational audit trail.
 

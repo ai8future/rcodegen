@@ -1,12 +1,12 @@
 # rcodegen
 
-Unified automation framework for AI-powered code analysis, generation, and reporting. Run multiple AI coding assistants (Claude, Codex, Gemini, opencode) in unattended, automated workflows against your codebases.
+Unified automation framework for AI-powered code analysis, generation, and reporting. Run multiple AI coding assistants (Claude, Codex, Gemini, opencode, kilocode) in unattended, automated workflows against your codebases.
 
 ## What It Does
 
 rcodegen provides two layers of automation:
 
-**Single-tool wrappers** (`rclaude`, `rcodex`, `rgemini`, `ropencode`) add task shortcuts, automated reporting, cost tracking, file locking, grading, and multi-codebase support on top of each tool's native CLI.
+**Single-tool wrappers** (`rclaude`, `rcodex`, `rgemini`, `ropencode`, `rkilo`) add task shortcuts, automated reporting, cost tracking, file locking, grading, and multi-codebase support on top of each tool's native CLI.
 
 **Multi-tool orchestrator** (`rcodegen`) chains multiple AI tools together in defined workflows called "bundles" -- one model builds code, another reviews it, another tests it, with parallel execution, voting, and merging.
 
@@ -18,6 +18,7 @@ rcodegen provides two layers of automation:
 | `rcodex` | OpenAI Codex CLI automation wrapper |
 | `rgemini` | Google Gemini CLI automation wrapper |
 | `ropencode` | opencode CLI wrapper for OpenAI-compatible providers, defaulting to DeepInfra Qwen3-Coder |
+| `rkilo` | kilocode CLI wrapper for OpenAI-compatible providers, defaulting to DeepInfra Qwen3-Coder |
 | `rcodegen` | Multi-tool orchestrator for bundles |
 | `rbatch` | Batch job runner for executing multiple coding agent tasks with concurrency control, session chaining, and checkpoint/resume |
 | `rserve` | gRPC + OpenAI-compatible HTTP server exposing all tools and bundles (default gRPC port 14260, HTTP port 14261) |
@@ -25,13 +26,13 @@ rcodegen provides two layers of automation:
 ## Prerequisites
 
 - Go 1.25.5+
-- One or more AI CLIs installed: `claude`, `codex`, `gemini`, `opencode`
+- One or more AI CLIs installed: `claude`, `codex`, `gemini`, `opencode`, `kilocode`
 - Python 3.11+ (optional, for credit tracking via iTerm2)
 
 ## Installation
 
 ```bash
-# Build all 7 binaries into bin/
+# Build all 8 binaries into bin/
 make
 
 # Build individually
@@ -39,6 +40,7 @@ make rclaude
 make rcodex
 make rgemini
 make ropencode
+make rkilo
 make rcodegen
 make rbatch
 make rserve
@@ -274,6 +276,10 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
     "opencode": {
       "model": "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
       "provider": "deepinfra"
+    },
+    "kilocode": {
+      "model": "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      "provider": "deepinfra"
     }
   },
   "tasks": {
@@ -312,8 +318,8 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
 ### Gemini
 `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` (default: `gemini-3.1-pro-preview`)
 
-### OpenCode
-Any opencode `provider/model` string, for example `deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct` (default). Run `opencode providers login` once per provider before first use.
+### OpenCode / KiloCode
+Any opencode or kilocode `provider/model` string, for example `deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct` (default). Run `opencode providers login` or `kilocode auth login` once per provider before first use.
 
 ## Locking & Concurrency
 
@@ -336,21 +342,21 @@ The `rcodegen` orchestrator features an animated TUI with:
 - Braille dot spinner animation at 100ms intervals
 - Real-time elapsed time and cost counters
 - Per-step status with tool/model indicators
-- Color-coded by tool: magenta (Claude), yellow (Gemini), blue (Codex), white (opencode)
+- Color-coded by tool: magenta (Claude), yellow (Gemini), blue (Codex), white (opencode), bright magenta (kilocode)
 - Live activity feed parsed from stream-json output (e.g., "Reading files...", "Writing code...")
 
 Use `--static` to disable animation.
 
 ## Tool Comparison
 
-| Feature | rclaude | rcodex | rgemini | ropencode |
-|---------|---------|--------|---------|-----------|
-| CLI Command | `claude -p` | `codex exec` | `gemini -p` | `opencode run` |
-| Permission Bypass | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--yolo` | `--dangerously-skip-permissions` |
-| Output Format | stream-json | --json | stream-json | json |
-| Cost Tracking | iTerm2 API | iTerm2 API | iTerm2 API | None in v1 |
-| Budget Control | `--max-budget-usd` | None | None | Provider-side |
-| Default Model | opus | gpt-5.4 | gemini-3.1-pro-preview | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct |
+| Feature | rclaude | rcodex | rgemini | ropencode | rkilo |
+|---------|---------|--------|---------|-----------|-------|
+| CLI Command | `claude -p` | `codex exec` | `gemini -p` | `opencode run` | `kilocode run` |
+| Permission Bypass | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--yolo` | `--dangerously-skip-permissions` | `--dangerously-skip-permissions` |
+| Output Format | stream-json | --json | stream-json | json | json |
+| Cost Tracking | iTerm2 API | iTerm2 API | iTerm2 API | None in v1 | None in v1 |
+| Budget Control | `--max-budget-usd` | None | None | Provider-side | Provider-side |
+| Default Model | opus | gpt-5.4 | gemini-3.1-pro-preview | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct |
 
 ## Project Structure
 
@@ -361,6 +367,7 @@ rcodegen/
 │   ├── rcodex/main.go               # Codex CLI entry point (~15 lines)
 │   ├── rgemini/main.go              # Gemini CLI entry point (~15 lines)
 │   ├── ropencode/main.go            # opencode CLI entry point (~15 lines)
+│   ├── rkilo/main.go                # kilocode CLI entry point (~15 lines)
 │   ├── rcodegen/main.go             # Orchestrator entry point
 │   ├── rbatch/main.go               # Batch job runner entry point
 │   └── rserve/main.go               # gRPC + HTTP server entry point (default port 14260)
@@ -381,7 +388,8 @@ rcodegen/
 │   │   ├── claude/claude.go         # Claude tool implementation
 │   │   ├── codex/codex.go           # Codex tool implementation
 │   │   ├── gemini/gemini.go         # Gemini tool implementation
-│   │   └── opencode/opencode.go     # opencode tool implementation
+│   │   ├── opencode/opencode.go     # opencode tool implementation
+│   │   └── kilocode/kilocode.go     # kilocode tool implementation
 │   ├── orchestrator/                # Multi-step workflow engine
 │   │   ├── orchestrator.go          # Main orchestration loop
 │   │   ├── context.go               # Variable resolution
@@ -469,7 +477,7 @@ rserve -v
 
 | RPC | Description |
 |-----|-------------|
-| `RunTask` | Run a single tool (claude/codex/gemini), stream events |
+| `RunTask` | Run a single tool (claude/codex/gemini/opencode/kilocode), stream events |
 | `RunBundle` | Run a named bundle, stream events |
 | `ListTasks` | List task shortcuts and bundles |
 | `GetStatus` | Server health, active run count, run details |
@@ -529,7 +537,7 @@ curl http://127.0.0.1:14261/v1/chat/completions \
   -d '{"model":"claude","messages":[{"role":"user","content":"now add tests"}],"session_id":"abc123..."}'
 ```
 
-Under the hood, `session_id` maps to the underlying CLI tool's native session resume mechanism (`claude --resume`, `codex` session resume, `gemini --resume`).
+Under the hood, `session_id` maps to the underlying CLI tool's native session resume mechanism (`claude --resume`, `codex` session resume, `gemini --resume`, `opencode --session`, `kilocode --session`).
 
 ### File Uploads
 
@@ -602,6 +610,7 @@ All tools disable permission prompts for unattended operation:
 - `rcodex` uses `--dangerously-bypass-approvals-and-sandbox`
 - `rgemini` uses `--yolo`
 - `ropencode` uses `--dangerously-skip-permissions`
+- `rkilo` uses `--dangerously-skip-permissions`
 
 Only use on trusted codebases in controlled environments. Lock files are stored in `~/.rcodegen/locks/` (not `/tmp/`) to prevent symlink attacks. Settings files are created with 0600 permissions.
 
