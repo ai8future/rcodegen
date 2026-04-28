@@ -122,6 +122,22 @@ func TestOpenCodeDefaults_AppliedFromLoadFallback(t *testing.T) {
 	}
 }
 
+func TestClaudeDefaults_AppliedFromLoadFallback(t *testing.T) {
+	s, _, err := LoadWithFallback()
+	if err != nil {
+		t.Fatalf("LoadWithFallback err: %v", err)
+	}
+	if s.Defaults.Claude.Model == "" {
+		t.Errorf("expected claude model default to be filled, got empty")
+	}
+	if s.Defaults.Claude.Budget == "" {
+		t.Errorf("expected claude budget default to be filled, got empty")
+	}
+	if s.Defaults.Claude.Effort != DefaultClaudeEffort {
+		t.Errorf("Claude.Effort = %q, want %q", s.Defaults.Claude.Effort, DefaultClaudeEffort)
+	}
+}
+
 func TestKiloCodeDefaults_AppliedFromLoadFallback(t *testing.T) {
 	s, _, err := LoadWithFallback()
 	if err != nil {
@@ -145,6 +161,9 @@ func TestApplyEnvOverrides_Effort(t *testing.T) {
 
 	if s.Defaults.Codex.Effort != "low" {
 		t.Errorf("Codex.Effort = %q, want %q", s.Defaults.Codex.Effort, "low")
+	}
+	if s.Defaults.Claude.Effort != "low" {
+		t.Errorf("Claude.Effort = %q, want %q", s.Defaults.Claude.Effort, "low")
 	}
 }
 

@@ -117,6 +117,10 @@ func (t *Tool) BuildCommand(cfg *runner.Config, workDir, task string) *exec.Cmd 
 		}
 	}
 
+	if cfg.Effort != "" {
+		args = append(args, "--effort", cfg.Effort)
+	}
+
 	// Claude CLI requires stream-json output format for non-TTY environments
 	// to show realtime output. Without this, output is buffered until completion.
 	if cfg.OutputJSON {
@@ -268,14 +272,33 @@ func (t *Tool) PrintStatusSummary(before, after interface{}) {
 
 // ToolSpecificFlags returns Claude-specific flag definitions
 func (t *Tool) ToolSpecificFlags() []runner.FlagDef {
+	budgetDefault := settings.DefaultClaudeBudget
+	effortDefault := settings.DefaultClaudeEffort
+	if t.settings != nil {
+		if t.settings.Defaults.Claude.Budget != "" {
+			budgetDefault = t.settings.Defaults.Claude.Budget
+		}
+		if t.settings.Defaults.Claude.Effort != "" {
+			effortDefault = t.settings.Defaults.Claude.Effort
+		}
+	}
+
 	return []runner.FlagDef{
 		{
 			Short:       "-b",
 			Long:        "--budget",
 			Description: "Max budget in USD per run",
 			TakesArg:    true,
-			Default:     "10.00",
+			Default:     budgetDefault,
 			Target:      "MaxBudget",
+		},
+		{
+			Short:       "-e",
+			Long:        "--effort",
+			Description: "Effort level: low, medium, high, xhigh, max",
+			TakesArg:    true,
+			Default:     effortDefault,
+			Target:      "Effort",
 		},
 		{
 			Short:       "-s",
@@ -296,8 +319,8 @@ func (t *Tool) ToolSpecificFlags() []runner.FlagDef {
 
 // ApplyToolDefaults applies Claude-specific defaults from settings
 func (t *Tool) ApplyToolDefaults(cfg *runner.Config) {
-	// Set default budget
-	cfg.MaxBudget = "10.00"
+	cfg.MaxBudget = settings.DefaultClaudeBudget
+	cfg.Effort = settings.DefaultClaudeEffort
 
 	// Apply settings defaults if available
 	if t.settings != nil {
@@ -306,6 +329,9 @@ func (t *Tool) ApplyToolDefaults(cfg *runner.Config) {
 		}
 		if t.settings.Defaults.Claude.Budget != "" {
 			cfg.MaxBudget = t.settings.Defaults.Claude.Budget
+		}
+		if t.settings.Defaults.Claude.Effort != "" {
+			cfg.Effort = t.settings.Defaults.Claude.Effort
 		}
 	}
 
@@ -341,6 +367,11 @@ func (t *Tool) ValidateConfig(cfg *runner.Config) error {
 		return fmt.Errorf("invalid budget '%s': maximum is 1000.00", cfg.MaxBudget)
 	}
 
+	validEfforts := map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
+	if cfg.Effort != "" && !validEfforts[cfg.Effort] {
+		return fmt.Errorf("invalid effort '%s': must be one of low, medium, high, xhigh, max", cfg.Effort)
+	}
+
 	return nil
 }
 
@@ -358,20 +389,22 @@ func (t *Tool) BannerSubtitle() string {
 func (t *Tool) PrintToolSpecificBannerFields(cfg *runner.Config) {
 	// Don't show budget for Claude Max users (subscription-based)
 	// Check NoTrackStatus first to avoid calling IsClaudeMax() which opens iTerm window
-	if !cfg.NoTrackStatus && t.IsClaudeMax() {
-		return
+	isClaudeMax := !cfg.NoTrackStatus && t.IsClaudeMax()
+	if !isClaudeMax {
+		fmt.Printf("  %s%sBudget:%s        %s$%s%s per run\n", runner.Bold, runner.Green, runner.Reset, runner.Yellow, cfg.MaxBudget, runner.Reset)
 	}
-	fmt.Printf("  %s%sBudget:%s        %s$%s%s per run\n", runner.Bold, runner.Green, runner.Reset, runner.Yellow, cfg.MaxBudget, runner.Reset)
+	fmt.Printf("  %s%sEffort:%s        %s%s%s\n", runner.Bold, runner.Green, runner.Reset, runner.Yellow, cfg.Effort, runner.Reset)
 }
 
 // PrintToolSpecificSummaryFields prints Claude-specific fields in the summary
 func (t *Tool) PrintToolSpecificSummaryFields(cfg *runner.Config) {
 	// Don't show budget for Claude Max users (subscription-based)
 	// Check NoTrackStatus first to avoid calling IsClaudeMax() which opens iTerm window
-	if !cfg.NoTrackStatus && t.IsClaudeMax() {
-		return
+	isClaudeMax := !cfg.NoTrackStatus && t.IsClaudeMax()
+	if !isClaudeMax {
+		fmt.Printf("  %sMax budget:%s   $%s\n", runner.Dim, runner.Reset, cfg.MaxBudget)
 	}
-	fmt.Printf("  %sMax budget:%s   $%s\n", runner.Dim, runner.Reset, cfg.MaxBudget)
+	fmt.Printf("  %sEffort:%s       %s\n", runner.Dim, runner.Reset, cfg.Effort)
 }
 
 // SecurityWarning returns the security warning text
@@ -389,8 +422,10 @@ func (t *Tool) ToolSpecificHelpSections() []runner.HelpSection {
 		{
 			Title: "Claude Options",
 			Lines: []string{
-				fmt.Sprintf("  %s-b%s, %s--budget%s %s<usd>%s    Max budget in USD per run %s(default: 10.00)%s",
-					runner.Green, runner.Reset, runner.Green, runner.Reset, runner.Yellow, runner.Reset, runner.Dim, runner.Reset),
+				fmt.Sprintf("  %s-b%s, %s--budget%s %s<usd>%s    Max budget in USD per run %s(default: %s)%s",
+					runner.Green, runner.Reset, runner.Green, runner.Reset, runner.Yellow, runner.Reset, runner.Dim, settings.DefaultClaudeBudget, runner.Reset),
+				fmt.Sprintf("  %s-e%s, %s--effort%s %s<level>%s  Effort level: low, medium, high, xhigh, max %s(default: %s)%s",
+					runner.Green, runner.Reset, runner.Green, runner.Reset, runner.Yellow, runner.Reset, runner.Dim, settings.DefaultClaudeEffort, runner.Reset),
 			},
 		},
 		{
@@ -409,6 +444,7 @@ func (t *Tool) ToolSpecificHelpSections() []runner.HelpSection {
 func (t *Tool) StatsJSONFields(cfg *runner.Config) map[string]interface{} {
 	return map[string]interface{}{
 		"max_budget": cfg.MaxBudget,
+		"effort":     cfg.Effort,
 	}
 }
 
@@ -421,6 +457,7 @@ func (t *Tool) UsesStreamOutput() bool {
 func (t *Tool) RunLogFields(cfg *runner.Config) []string {
 	fields := []string{
 		"Model:  " + cfg.Model,
+		"Effort: " + cfg.Effort,
 	}
 	// Only include budget for non-Claude Max users
 	// Check NoTrackStatus first to avoid calling IsClaudeMax() which opens iTerm window

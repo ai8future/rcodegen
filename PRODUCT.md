@@ -48,6 +48,8 @@ Each wrapper binary (`rclaude`, `rcodex`, `rgemini`, `ropencode`, `rkilo`) conve
 
 - **VERSION-based idempotency**: If the target codebase contains a `VERSION` file, each tool+task combination records the last-run VERSION to `_rcodegen/version_state.json`. On subsequent runs, if the VERSION has not changed, the task is automatically skipped with a message. Use the `-f`/`--force` flag to run regardless of VERSION state. This prevents redundant AI calls against unchanged codebases.
 
+- **Reasoning effort controls**: rclaude and rcodex expose `-e/--effort` so operators can tune latency/cost versus depth per run or through defaults in `~/.rcodegen/settings.json`. rclaude defaults to `xhigh`.
+
 - **Grade extraction and persistence**: After each task completes, the system scans the generated report for grade patterns (`TOTAL_SCORE: N/100`), extracts the numerical score, and appends it to a `.grades.json` file with cross-process file locking (both in-process mutex and `syscall.Flock`). This creates an auditable history of AI-assessed code quality.
 
 `ropencode` uses the opencode CLI as a provider-agnostic entry point. `rkilo` provides the same unattended wrapper surface for the kilocode CLI. Models are passed in each tool's `provider/model` form, so DeepInfra, OpenAI-compatible providers, and other supported providers can be used without adding a new rcodegen wrapper per provider. The default model for both wrappers is DeepInfra's Qwen3-Coder 480B instruct model.

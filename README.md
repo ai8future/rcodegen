@@ -172,6 +172,7 @@ Custom tasks can be added in `~/.rcodegen/settings.json`. Built-in task names ar
 **rclaude:**
 ```
 -b, --budget <usd>      Max budget in USD per run (default: 10.00, max: 1000.00)
+-e, --effort <level>    Effort level: low, medium, high, xhigh, max (default: xhigh)
 -s, --status            Track credit usage before/after task
 -S, --no-status         Disable credit usage tracking
 ```
@@ -271,7 +272,7 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
   "default_build_dir": "",
   "defaults": {
     "codex": { "model": "gpt-5.4", "effort": "xhigh" },
-    "claude": { "model": "sonnet", "budget": "10.00" },
+    "claude": { "model": "sonnet", "budget": "10.00", "effort": "xhigh" },
     "gemini": { "model": "gemini-3-pro-preview" },
     "opencode": {
       "model": "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
@@ -294,7 +295,7 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
 
 1. Hardcoded defaults
 2. `~/.rcodegen/settings.json`
-3. Environment variables (`RCODEGEN_CODE_DIR`, `RCODEGEN_OUTPUT_DIR`, `RCODEGEN_MODEL`, `RCODEGEN_BUDGET`, `RCODEGEN_EFFORT`, `RCODEGEN_LOG_LEVEL`)
+3. Environment variables (`RCODEGEN_CODE_DIR`, `RCODEGEN_OUTPUT_DIR`, `RCODEGEN_MODEL`, `RCODEGEN_BUDGET`, `RCODEGEN_EFFORT`, `RCODEGEN_LOG_LEVEL`; `RCODEGEN_EFFORT` applies to Claude and Codex, but `max` is Claude-only)
 4. CLI flags (highest priority)
 
 ### Task Template Variables
@@ -310,7 +311,7 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
 ## Supported Models
 
 ### Claude
-`sonnet`, `opus`, `haiku` (default: `opus`)
+`sonnet`, `opus`, `haiku` (settings default: `sonnet`). Effort levels: `low`, `medium`, `high`, `xhigh`, `max` (default: `xhigh`).
 
 ### Codex
 `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex` (default: `gpt-5.4`)

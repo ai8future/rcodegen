@@ -55,16 +55,16 @@ type Config struct {
 	DirAll        string // Comma-separated directories: run all git repos within (--dir-all)
 
 	// Tool-specific fields (only some tools use these)
-	MaxBudget   string // Claude: max budget in USD
-	Effort      string // Codex: reasoning effort level
-	TrackStatus   bool // Codex: track credit usage before/after
-	NoTrackStatus bool // User explicitly disabled status tracking via -S flag
-	SessionID   string // Session ID for resuming previous session
-	Flash       bool   // Gemini: use flash model variant
-	ImagePath   string // Gemini: input image file to include in request
+	MaxBudget     string // Claude: max budget in USD
+	Effort        string // Claude/Codex: reasoning effort level
+	TrackStatus   bool   // Codex: track credit usage before/after
+	NoTrackStatus bool   // User explicitly disabled status tracking via -S flag
+	SessionID     string // Session ID for resuming previous session
+	Flash         bool   // Gemini: use flash model variant
+	ImagePath     string // Gemini: input image file to include in request
 
 	// Logging
-	Verbose bool        // Enable verbose/debug logging
+	Verbose bool         // Enable verbose/debug logging
 	Logger  *slog.Logger // Structured logger (nil-safe: callers should check before use)
 
 	// Execution control

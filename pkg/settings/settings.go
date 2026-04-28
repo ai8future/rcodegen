@@ -16,6 +16,8 @@ import (
 const (
 	ConfigDirName           = ".rcodegen"
 	ConfigFileName          = "settings.json"
+	DefaultClaudeBudget     = "10.00"
+	DefaultClaudeEffort     = "xhigh"
 	DefaultOpenCodeModel    = "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"
 	DefaultOpenCodeProvider = "deepinfra"
 	DefaultKiloCodeModel    = "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"
@@ -37,6 +39,7 @@ type CodexDefaults struct {
 type ClaudeDefaults struct {
 	Model  string `json:"model"`  // Default model (sonnet, opus, haiku)
 	Budget string `json:"budget"` // Default max budget in USD
+	Effort string `json:"effort"` // Default effort level (low, medium, high, xhigh, max)
 }
 
 // GeminiDefaults holds default settings for rgemini
@@ -108,6 +111,7 @@ func applyEnvOverrides(s *Settings) {
 		s.Defaults.Claude.Budget = strings.TrimPrefix(env.Budget, "$")
 	}
 	if env.Effort != "" {
+		s.Defaults.Claude.Effort = env.Effort
 		s.Defaults.Codex.Effort = env.Effort
 	}
 }
@@ -233,7 +237,8 @@ func GetDefaultSettings() *Settings {
 			},
 			Claude: ClaudeDefaults{
 				Model:  "sonnet",
-				Budget: "10.00",
+				Budget: DefaultClaudeBudget,
+				Effort: DefaultClaudeEffort,
 			},
 			Gemini: GeminiDefaults{
 				Model: "gemini-3",
@@ -269,7 +274,10 @@ func LoadWithFallback() (*Settings, bool, error) {
 		settings.Defaults.Claude.Model = "sonnet"
 	}
 	if settings.Defaults.Claude.Budget == "" {
-		settings.Defaults.Claude.Budget = "10.00"
+		settings.Defaults.Claude.Budget = DefaultClaudeBudget
+	}
+	if settings.Defaults.Claude.Effort == "" {
+		settings.Defaults.Claude.Effort = DefaultClaudeEffort
 	}
 	if settings.Defaults.Gemini.Model == "" {
 		settings.Defaults.Gemini.Model = "gemini-3"
@@ -655,6 +663,7 @@ func RunInteractiveSetup() (*Settings, bool) {
 			Claude: ClaudeDefaults{
 				Model:  claudeModel,
 				Budget: claudeBudget,
+				Effort: DefaultClaudeEffort,
 			},
 			OpenCode: OpenCodeDefaults{
 				Model:    DefaultOpenCodeModel,
@@ -695,7 +704,8 @@ func RunInteractiveSetup() (*Settings, bool) {
 	fmt.Printf("  %sCode directory:%s     %s%s%s\n\n", dim, reset, magenta, codeDir, reset)
 	fmt.Printf("  %s%srclaude defaults:%s\n", bold, cyan, reset)
 	fmt.Printf("    %sModel:%s   %s%s%s\n", dim, reset, magenta, claudeModel, reset)
-	fmt.Printf("    %sBudget:%s  %s$%s%s\n\n", dim, reset, magenta, claudeBudget, reset)
+	fmt.Printf("    %sBudget:%s  %s$%s%s\n", dim, reset, magenta, claudeBudget, reset)
+	fmt.Printf("    %sEffort:%s  %s%s%s\n\n", dim, reset, magenta, DefaultClaudeEffort, reset)
 	fmt.Printf("  %s%srcodex defaults:%s\n", bold, cyan, reset)
 	fmt.Printf("    %sModel:%s   %s%s%s\n", dim, reset, magenta, codexModel, reset)
 	fmt.Printf("    %sEffort:%s  %s%s%s\n", dim, reset, magenta, codexEffort, reset)

@@ -8,7 +8,8 @@
     },
     "claude": {
       "model": "sonnet",
-      "budget": "10.00"
+      "budget": "10.00",
+      "effort": "xhigh"
     },
     "gemini": {
       "model": "gemini-3-pro-preview"

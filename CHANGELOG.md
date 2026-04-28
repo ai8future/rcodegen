@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.1.16] - 2026-04-28
+- Add `effort` defaults for `rclaude`, defaulting Claude runs to `xhigh`
+- Wire `rclaude -e/--effort` through command construction, validation, help, banners, run logs, stats JSON, settings, and `RCODEGEN_EFFORT`
+- Document Claude effort settings in README, PRODUCT, and `settings.json.example`
+- Agent: Codex:gpt-5.4
+
 ## [4.1.15] - 2026-04-28
 - Add `rkilo`, a kilocode CLI wrapper matching the `ropencode` provider/model workflow
 - Register `kilocode` across rserve, rbatch, bundle orchestration, grade extraction, settings defaults, OpenAI model parsing, and the build matrix
