@@ -48,7 +48,7 @@ rpc RunTask(RunTaskRequest) returns (stream RunEvent);
 |-------|------|----------|-------------|
 | `tool` | string | yes | `"claude"`, `"codex"`, or `"gemini"` |
 | `task` | string | yes | Task text or shortcut name (`audit`, `test`, `fix`, `refactor`, `quick`, `grade`, `study`) |
-| `model` | string | no | Model override (e.g., `"opus"`, `"gpt-5.4"`) |
+| `model` | string | no | Model override (e.g., `"opus"`, `"gpt-5.5"`) |
 | `max_budget` | string | no | USD budget string (e.g., `"10.00"`) |
 | `work_dirs` | []string | yes | Target directories |
 | `variables` | map[string]string | no | Template variables for task prompts |
@@ -170,7 +170,7 @@ Chat completion endpoint. Supports both streaming (SSE) and non-streaming modes.
 }
 ```
 
-**Model format:** `{tool}` or `{tool}:{model}` -- e.g., `claude`, `claude:opus`, `codex:gpt-5.4`, `gemini`, `gemini:gemini-3-flash-preview`.
+**Model format:** `{tool}` or `{tool}:{model}` -- e.g., `claude`, `claude:opus`, `codex:gpt-5.5`, `gemini`, `gemini:gemini-3-flash-preview`.
 
 **Request headers:**
 
@@ -393,7 +393,7 @@ Wraps the `codex` CLI via `codex exec`.
 | `-s, --status` | Track credit usage before/after task | |
 | `-S, --no-status` | Disable credit usage tracking | |
 
-**Valid models:** `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex`
+**Valid models:** `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex`
 
 ```bash
 rcodex -c myproject audit
@@ -512,7 +512,7 @@ Jobs sharing a `session` identifier are executed sequentially with session IDs c
   "output_dir": "",
   "default_build_dir": "",
   "defaults": {
-    "codex": { "model": "gpt-5.4", "effort": "xhigh" },
+    "codex": { "model": "gpt-5.5", "effort": "xhigh" },
     "claude": { "model": "sonnet", "budget": "10.00" },
     "gemini": { "model": "gemini-3-pro-preview" }
   },

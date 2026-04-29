@@ -49,12 +49,12 @@ func (t *Tool) ReportPrefix() string {
 
 // ValidModels returns the list of valid model names
 func (t *Tool) ValidModels() []string {
-	return []string{"gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1-codex", "gpt-4o-codex"}
+	return []string{"gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1-codex", "gpt-4o-codex"}
 }
 
 // DefaultModel returns the default model name
 func (t *Tool) DefaultModel() string {
-	return "gpt-5.4"
+	return "gpt-5.5"
 }
 
 // DefaultModelSetting returns the default model from settings

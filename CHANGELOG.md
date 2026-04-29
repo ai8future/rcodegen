@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.2.0] - 2026-04-29
+- **Default rcodex model bumped from `gpt-5.4` to `gpt-5.5`**
+- Added `gpt-5.5` to the valid models list (kept `gpt-5.4` for backward compatibility)
+- Updated settings defaults, settings fallback, setup wizard prompt, live display short-name mapping, `settings.json.example`, README, and API docs
+- Bumped to 4.2.0 since the 4.1.x revision series reached the 15-revision cap
+- Agent: Claude:Opus 4.7 (1M context)
+
 ## [4.1.16] - 2026-04-28
 - Add `effort` defaults for `rclaude`, defaulting Claude runs to `xhigh`
 - Wire `rclaude -e/--effort` through command construction, validation, help, banners, run logs, stats JSON, settings, and `RCODEGEN_EFFORT`

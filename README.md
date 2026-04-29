@@ -271,7 +271,7 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
   "output_dir": "",
   "default_build_dir": "",
   "defaults": {
-    "codex": { "model": "gpt-5.4", "effort": "xhigh" },
+    "codex": { "model": "gpt-5.5", "effort": "xhigh" },
     "claude": { "model": "sonnet", "budget": "10.00", "effort": "xhigh" },
     "gemini": { "model": "gemini-3-pro-preview" },
     "opencode": {
@@ -314,7 +314,7 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
 `sonnet`, `opus`, `haiku` (settings default: `sonnet`). Effort levels: `low`, `medium`, `high`, `xhigh`, `max` (default: `xhigh`).
 
 ### Codex
-`gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex` (default: `gpt-5.4`)
+`gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex` (default: `gpt-5.5`)
 
 ### Gemini
 `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` (default: `gemini-3.1-pro-preview`)
@@ -357,7 +357,7 @@ Use `--static` to disable animation.
 | Output Format | stream-json | --json | stream-json | json | json |
 | Cost Tracking | iTerm2 API | iTerm2 API | iTerm2 API | None in v1 | None in v1 |
 | Budget Control | `--max-budget-usd` | None | None | Provider-side | Provider-side |
-| Default Model | opus | gpt-5.4 | gemini-3.1-pro-preview | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct |
+| Default Model | opus | gpt-5.5 | gemini-3.1-pro-preview | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct |
 
 ## Project Structure
 

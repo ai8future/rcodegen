@@ -3,7 +3,7 @@
   "output_dir": "",
   "defaults": {
     "codex": {
-      "model": "gpt-5.4",
+      "model": "gpt-5.5",
       "effort": "xhigh"
     },
     "claude": {

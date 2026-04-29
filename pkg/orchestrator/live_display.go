@@ -417,6 +417,8 @@ func (d *LiveDisplay) renderStep(index int, step *LiveStep) {
 			modelName = "3-flash"
 		case "gemini-2":
 			modelName = "2"
+		case "gpt-5.5":
+			modelName = "5.5"
 		case "gpt-5.4":
 			modelName = "5.4"
 		case "gpt-5.3-codex":
