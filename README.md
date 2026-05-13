@@ -25,7 +25,7 @@ rcodegen provides two layers of automation:
 
 ## Prerequisites
 
-- Go 1.25.5+
+- Go 1.26.2+
 - One or more AI CLIs installed: `claude`, `codex`, `gemini`, `opencode`, `kilocode`
 - Python 3.11+ (optional, for credit tracking via iTerm2)
 

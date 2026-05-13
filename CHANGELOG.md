@@ -1,5 +1,8 @@
 # Changelog
 
+## 4.2.1 — 2026-05-13
+- Update dependencies and config
+
 ## [4.2.0] - 2026-04-29
 - **Default rcodex model bumped from `gpt-5.4` to `gpt-5.5`**
 - Added `gpt-5.5` to the valid models list (kept `gpt-5.4` for backward compatibility)
