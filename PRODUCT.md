@@ -1,162 +1,142 @@
 # rcodegen -- Product Overview
 
-## What Is This Product?
+## What Is rcodegen?
 
-rcodegen is a unified automation platform for running AI-powered coding agents (Claude, Codex, Gemini, opencode, kilocode) in fully unattended, hands-off workflows against software codebases. It transforms interactive, human-in-the-loop AI coding assistants into batch-capable, composable automation tools that can audit, test, fix, refactor, grade, build, and write content -- all without a human sitting at the keyboard.
+rcodegen is a unified automation platform that runs AI-powered coding agents (Claude Code, OpenAI Codex, Google Gemini, opencode, kilocode) in fully unattended, hands-off workflows against software codebases. It transforms interactive, human-in-the-loop AI coding assistants into batch-capable, composable automation that can audit, test, fix, refactor, grade, build, generate images, and write content -- all without a human sitting at the keyboard.
 
-The product exists to solve a fundamental bottleneck: each major AI coding assistant (Anthropic's Claude Code, OpenAI's Codex, Google's Gemini CLI) requires a human operator to babysit prompts, approve permissions, and manually review output. rcodegen eliminates that bottleneck by wrapping these tools in a unified framework that handles unattended execution, output capture, cost control, quality grading, and multi-model orchestration.
+It is a Go monorepo that ships **eight binaries** in three layers: single-tool wrappers (`rclaude`, `rcodex`, `rgemini`, `ropencode`, `rkilo`) that make each vendor CLI run unattended; a multi-tool orchestrator (`rcodegen`) that chains models into adversarial/collaborative "bundles"; and operational surfaces (`rbatch` for large-scale batch jobs, `rserve` for a network service). Within the broader suite it is the **AI-coding-execution layer** -- the component everything else calls when it needs an AI model to do work against a repository, and (via `rserve`) the OpenAI/gRPC-compatible gateway that fronts every supported model.
 
----
+## Why Does It Exist?
 
-## Business Goals
+Each major AI coding assistant requires a human operator to babysit prompts, approve permission dialogs, and manually review output one codebase at a time. That human-in-the-loop requirement is the bottleneck. rcodegen removes it by wrapping these tools in a unified framework that handles unattended execution, permission bypass, output capture, cost control, quality grading, idempotency, and multi-model orchestration.
 
-### 1. Maximize Developer Leverage Through AI Automation
+The business case: one engineer (or a CI pipeline) can dispatch dozens or hundreds of AI coding tasks overnight across an entire portfolio of repositories and wake up to graded, actionable, reviewable reports -- instead of manually prompting one model on one repo at a time. It also hedges vendor risk: by abstracting Claude, Codex, Gemini, and any OpenAI-compatible provider behind one interface (and orchestrating them against each other), no single AI vendor is a hard dependency.
 
-The core value proposition is letting a single developer (or a CI pipeline) dispatch dozens or hundreds of AI coding tasks overnight, across many codebases, and wake up to graded, actionable reports. Instead of one engineer manually prompting one AI assistant on one codebase at a time, rcodegen allows one engineer to kick off audits, tests, and fixes across an entire portfolio of projects simultaneously.
+## Who Does It Serve?
 
-### 2. Multi-Model Hedging and Quality Assurance
-
-Rather than betting on a single AI vendor, rcodegen orchestrates multiple AI models in adversarial and collaborative workflows. The "ensemble" bundle has three models vote on an approach. The "compete" bundle has two models implement the same task and cross-grade each other. The "red-team" bundle has one model attack another's code. This multi-model approach produces higher-quality output than any single model alone and reduces vendor lock-in.
-
-### 3. Standardized Code Quality Measurement
-
-Every report type (audit, test, fix, refactor, quick) produces a numerical 0-100 grade extracted from the AI's output. Grades are persisted to a cross-process-safe `.grades.json` file per codebase with date, tool, and task metadata. This creates a longitudinal record of code health over time -- effectively an automated, AI-generated code quality scorecard that can be tracked across releases, teams, and projects.
-
-### 4. Cost Visibility and Budget Control
-
-AI API calls are expensive. rcodegen provides per-run cost tracking (token counts, USD costs), per-step cost breakdowns in orchestrated workflows, budget caps per run (Claude's `--max-budget-usd`), and credit status monitoring via iTerm2 integration. The batch runner includes budget-aware execution that can stop, wait, or pause when spending thresholds are reached. This makes AI-powered code analysis financially predictable.
-
-### 5. Serving as an AI-Tool-Agnostic API Gateway
-
-The `rserve` server binary exposes all tools through both a gRPC streaming API and an OpenAI-compatible HTTP API (`/v1/chat/completions`). This means any system that speaks the OpenAI SDK protocol can route requests through rcodegen to any underlying AI engine registered with the suite. This positions rcodegen as a universal gateway and abstraction layer for AI coding tools, enabling dashboards, remote agents, and automated pipelines to leverage whichever AI is best for a given task.
+1. **Individual developers** automating recurring code-quality checks across their projects -- overnight audits, security scans, and test proposals with zero manual effort.
+2. **Engineering teams** wanting standardized, AI-generated code-quality scorecards across a repo portfolio, with historical grade tracking per codebase.
+3. **Security teams** running automated, multi-model adversarial security reviews (`red-team`, `security-review` bundles).
+4. **DevOps / CI pipelines and remote agents** that need programmable access to AI coding tools via gRPC or the OpenAI-compatible HTTP API exposed by `rserve`.
+5. **Content creators** wanting multi-model article generation with style emulation and editorial QA, plus Gemini-based image generation.
+6. **Other services in the suite** that consume `rserve` as the AI-execution backend rather than shelling out to vendor CLIs themselves.
 
 ---
 
-## Core Business Logic
+## Business Capabilities
 
-### Unattended Single-Tool Execution (rclaude, rcodex, rgemini, ropencode, rkilo)
+### 1. Unattended single-tool execution (`rclaude`, `rcodex`, `rgemini`, `ropencode`, `rkilo`)
 
-Each wrapper binary (`rclaude`, `rcodex`, `rgemini`, `ropencode`, `rkilo`) converts the native interactive CLI of each AI tool into a one-shot, unattended execution engine:
+Each wrapper converts a native interactive CLI into a one-shot, unattended execution engine. The critical enabler is **permission bypass** (`--dangerously-skip-permissions` for Claude/opencode/kilocode, `--dangerously-bypass-approvals-and-sandbox` for Codex, `--yolo` for Gemini), because no human is present to approve prompts. Each wrapper adds task shortcuts, automated report generation, grade extraction, run logging, cost/credit tracking, file locking, and multi-codebase fan-out on top of the underlying CLI.
 
-- **Permission bypass**: Each tool's safety prompts are automatically bypassed (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`) because there is no human to approve them. This is the critical technical enabler that makes unattended operation possible.
+**Business value:** Turns every supported AI assistant into a scriptable, headless worker, so a single command can do real work against real repositories with no operator attention.
 
-- **Task shortcuts**: Eight built-in task types (`audit`, `test`, `fix`, `refactor`, `quick`, `grade`, `generate`, `study`) plus a `suite` meta-task that runs the five standard report types (`audit`, `test`, `fix`, `refactor`, `quick`) sequentially. The remaining three (`grade`, `generate`, `study`) are standalone shortcuts not included in `suite`. Each shortcut is a carefully engineered prompt that instructs the AI to analyze the codebase, produce a structured report with patch-ready diffs, assign a numerical grade, save the report with a specific filename pattern, and explicitly avoid editing the source code.
+### 2. Built-in task shortcuts and the `suite` meta-task
 
-- **Multi-codebase execution**: A single command can target multiple codebases (via comma-separated paths, recursive git repo discovery, or directory listing). Each codebase gets its own individually-named report. This enables portfolio-wide analysis in a single invocation.
+Six standard report tasks plus standalone shortcuts: `audit`, `test`, `fix`, `refactor`, `quick` (the five that compose `suite`), and `grade`, `generate`, `study` (standalone, not part of `suite`). Each shortcut is an engineered prompt that instructs the model to analyze the codebase, produce a structured report with patch-ready diffs, assign a 0-100 grade, save to a strict filename pattern, and **not** edit source code. Users can define custom task prompts in settings; built-in task names are reserved and cannot be overridden.
 
-- **Report lifecycle management**: Reports follow a strict naming convention (`{codebase}-{tool}-{task}-YYYY-MM-DD_HHMM.md`) with automatic creation timestamps, a review workflow (reports get a `Date Created:` field; humans add a `Date Modified:` field after review), and automatic cleanup of old reports via the `-D` flag. The `-R` flag prevents re-running tasks whose previous reports have not been reviewed by a human.
+**Business value:** Standardized, repeatable analyses mean output is comparable across models, codebases, and time -- not freeform one-off prompts.
 
-- **VERSION-based idempotency**: If the target codebase contains a `VERSION` file, each tool+task combination records the last-run VERSION to `_rcodegen/version_state.json`. On subsequent runs, if the VERSION has not changed, the task is automatically skipped with a message. Use the `-f`/`--force` flag to run regardless of VERSION state. This prevents redundant AI calls against unchanged codebases.
+### 3. Multi-codebase and portfolio-scale fan-out
 
-- **Reasoning effort controls**: rclaude and rcodex expose `-e/--effort` so operators can tune latency/cost versus depth per run or through defaults in `~/.rcodegen/settings.json`. rclaude defaults to `xhigh`.
+A single invocation can target many codebases via comma-separated paths (`-c`/`-d`), recursive git-repo discovery (`-r --levels N`, max depth 10), run-all-repos-in-a-directory (`-A`), or an explicit `--list`. Each codebase gets its own individually named report.
 
-- **Grade extraction and persistence**: After each task completes, the system scans the generated report for grade patterns (`TOTAL_SCORE: N/100`), extracts the numerical score, and appends it to a `.grades.json` file with cross-process file locking (both in-process mutex and `syscall.Flock`). This creates an auditable history of AI-assessed code quality.
+**Business value:** Portfolio-wide audits/tests in one command, instead of one repo at a time.
 
-`ropencode` uses the opencode CLI as a provider-agnostic entry point. `rkilo` provides the same unattended wrapper surface for the kilocode CLI. Models are passed in each tool's `provider/model` form, so DeepInfra, OpenAI-compatible providers, and other supported providers can be used without adding a new rcodegen wrapper per provider. The default model for both wrappers is DeepInfra's Qwen3-Coder 480B instruct model.
+### 4. Gemini image generation (Nano Banana)
 
-- **Run logging**: Every execution produces a `.runlog.md` file with metadata (tool, model, codebase, command, start/end times, duration, exit code, token usage, cost). This provides an operational audit trail.
+`rgemini` is not limited to code analysis: it drives Gemini's image models. Passing model `banana` (alias for `gemini-3.1-flash-image-preview`) selects image generation, and `-i`/`--image` supplies one or more input images (comma-separated) for editing/reference. `--flash` selects `gemini-3-flash-preview` for fast text work. Oversized inputs are auto-downscaled before sending to avoid API block errors.
 
-### Multi-Tool Orchestration (rcodegen)
+**Business value:** The same unattended/batch/report/server machinery extends to image creation and editing, not just code.
 
-The orchestrator executes "bundles" -- JSON workflow definitions that chain multiple AI tools in sequence or parallel with variable passing, conditional branching, voting, and merging:
+### 5. Multi-tool orchestration via bundles (`rcodegen`)
 
-- **build-review-audit**: The flagship workflow. Claude builds code, Gemini reviews it, Claude implements improvements, Gemini tests it, and Claude (Opus model) performs a final audit with a structured rubric (Functionality 20, Code Quality 20, User Experience 20, Security 10, Architecture 10, Testing 10, Innovation 5, Documentation 5). This is a full software development lifecycle in one command.
+The orchestrator runs **bundles** -- JSON workflow definitions that chain multiple AI tools in sequence or parallel with variable passing, conditional branching, voting, and merging. Nine bundles ship embedded in the binary (`pkg/bundle/builtin/`): `build-review-audit` (flagship full-lifecycle: Claude builds, Gemini reviews, Claude improves, Gemini tests, Claude/Opus audits with a structured rubric), `ensemble` (3 models propose in parallel, majority vote), `compete` (2 models implement, cross-grade), `tdd`, `red-team`, `security-review`, `article`, `article-parallel`, and `summary`. Each run emits a live animated TUI plus a `final-report.json` with per-model cost/token breakdowns, extracted grades, file stats, and a copy of the bundle for reproducibility.
 
-- **ensemble**: Three models (Claude, Gemini, Codex) independently propose approaches in parallel, then a majority vote determines which approach wins. This leverages diverse AI perspectives for decision-making.
+**Business value:** Adversarial and collaborative multi-model workflows produce higher-quality, cross-checked output than any single model -- something no individual vendor CLI can do.
 
-- **compete**: Two models implement the same task in parallel, then cross-grade each other's work. This produces competitive quality pressure between models.
+### 6. Batch execution and scheduling (`rbatch`)
 
-- **tdd**: Test-driven development -- Claude writes comprehensive failing tests, Gemini implements the code to pass them, Claude reviews the result. This enforces test-first methodology.
+A batch runner for large-scale, long-running AI task execution. Subcommands: `run` (execute a JSON manifest), `spool` (process a directory of manifests as a queue, moving each through pending/running/done/failed), `watch`, `resume` (continue a stopped/failed batch from a `state.json` checkpoint, carrying forward accumulated cost), and `status`. It supports configurable concurrency, **session chaining** (jobs sharing a session ID run sequentially with the session carried forward for multi-turn context), **budget-aware execution** (stop / wait / ask policies when spend thresholds are hit), checkpoint/resume, and both **local** (spawn processes directly) and **remote** (`rserve` gRPC) executors.
 
-- **red-team**: Claude implements code, Gemini acts as a security researcher finding vulnerabilities and writing exploits, Claude then hardens the code against the found attacks. This is automated adversarial security testing.
+**Business value:** Makes hundreds of AI tasks survivable and cost-bounded -- resumable after failure, throttled by budget, distributable across machines.
 
-- **security-review**: Claude and Gemini independently audit for security vulnerabilities in parallel, then Claude synthesizes both audits into a prioritized report. This provides multi-perspective security analysis.
+### 7. Network service and API gateway (`rserve`)
 
-- **article / article-parallel**: Content creation workflows where Gemini researches the writing style of Seth Levine (author of The New Builders), Codex drafts an article, and Gemini edits for authenticity. The parallel variant produces two competing articles (Codex and Gemini) for comparison. Note: these bundles are currently hardcoded to emulate Seth Levine's style; they require modification for other authors.
+`rserve` exposes every tool and bundle over two network APIs simultaneously: a **streaming gRPC API** (default port `14260`; RPCs `RunTask`, `RunBundle`, `ListTasks`, `GetStatus`, `CancelRun`; reflection enabled) and an **OpenAI-compatible HTTP API** (default port `14261` = gRPC+1; `/v1/chat/completions` streaming + non-streaming, `/v1/models`, `/v1/files` upload/download, `/health`). Model names use `{tool}` or `{tool}:{model}` form (e.g. `claude:opus`). It supports multi-turn sessions (client `session_id` mapped to each CLI's native resume mechanism, 30-minute inactivity TTL) and file uploads (50MB cap, stored in `/tmp/rserve-files/`, purged after 24h). A run registry caps concurrency (default 3) and provides cancellable run IDs.
 
-- **summary**: Claude summarizes content, Gemini verifies the summary's accuracy. A simple two-step verification workflow.
+`rserve` is a first-class **chassis-go v11 service**: it wires coordinated lifecycle/shutdown (SIGTERM/SIGINT), gRPC health checks, a port registry, optional OpenTelemetry OTLP tracing (enabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is set), and an optional Kafka event publisher (enabled when `KAFKAKIT_BOOTSTRAP_SERVERS` is set; tenant defaults to `ai8`).
 
-Each orchestrated run produces:
-- Real-time animated TUI with per-step status, cost counters, and activity feeds
-- A final-report.json with complete cost breakdowns by model, token counts, grade extraction, and file statistics
-- A copy of the bundle used, for reproducibility
+**Business value:** Any OpenAI-SDK client, dashboard, or remote agent can use rcodegen as a drop-in backend for whichever AI engine is best for a task -- making it the suite's universal AI-coding gateway.
 
-### Batch Execution (rbatch)
+### 8. Standardized quality measurement and grading
 
-The batch runner enables large-scale, long-running AI task execution:
+Every report task extracts a 0-100 grade from the model's output (e.g. `TOTAL_SCORE: N/100`) and appends it to a per-codebase `_rcodegen/.grades.json` with date/tool/task metadata, guarded by both an in-process mutex and a cross-process `syscall.Flock`. The `build-review-audit` rubric is weighted: Functionality 20, Code Quality 20, User Experience 20, Security 10, Architecture 10, Testing 10, Innovation 5, Documentation 5.
 
-- **Manifest-driven**: Jobs are defined in JSON manifests specifying tool, task, model, working directory, and session grouping. Multiple jobs are executed with configurable concurrency.
+**Business value:** A longitudinal, machine-generated code-health scorecard trackable across releases and teams.
 
-- **Session chaining**: Jobs sharing a session identifier are executed sequentially within a group, with the session ID carried forward between jobs. This enables multi-turn AI conversations where context builds across tasks.
+### 9. Cost visibility and budget control
 
-- **Budget awareness**: The batch runner checks remaining budget between job groups and can automatically stop, wait (polling at intervals with a max wait timeout), or ask for confirmation when spending thresholds are reached. This prevents runaway costs during large batch operations.
+Per-run and per-step cost/token tracking, Claude budget caps (`--max-budget-usd`), credit-status monitoring via iTerm2 Python API integration, and batch-level budget policies (stop/wait/ask).
 
-- **Checkpoint and resume**: After every batch run, a checkpoint (state.json) is saved with the current queue snapshot -- completed jobs, failed jobs, and pending jobs. The `rbatch resume` command can pick up where a stopped or failed batch left off, carrying forward accumulated costs.
+**Business value:** Makes AI-powered analysis financially predictable instead of open-ended.
 
-- **Spool processing**: The `rbatch spool` command processes a directory of manifest files, executing each in turn, with manifests moving through pending/running/done/failed states. This enables a simple queue-based workflow.
+### 10. Reporting dashboard (`dashboard/`)
 
-- **Local and remote execution**: Jobs can be executed locally (spawning AI tool processes directly) or remotely via an `rserve` gRPC connection, enabling distributed execution.
+A Next.js (React 19) web dashboard that browses `_rcodegen` reports and `.grades.json` across repos, renders report markdown, and manages **schedules** (cron expressions persisted to `~/.rcodegen/schedules.json`) for recurring runs.
 
-### Server Mode (rserve)
-
-The server binary exposes all capabilities via two network APIs:
-
-- **gRPC API** (default port 14260): Streaming RPCs for RunTask, RunBundle, ListTasks, GetStatus, and CancelRun. Each run streams real-time events (text output, tool use, step progress, results) back to the client. gRPC reflection is enabled for schema discovery.
-
-- **OpenAI-compatible HTTP API** (default port 14261): Full `/v1/chat/completions` compatibility (both streaming SSE and non-streaming), `/v1/models` listing, `/v1/files` upload/download, and `/health` endpoint. Model names use `{tool}:{model}` format (e.g., `claude:opus`). This allows any OpenAI SDK client to use rcodegen as a backend.
-
-- **Concurrency control**: A run registry limits simultaneous executions (default 3 concurrent runs) and provides run IDs for cancellation.
-
-- **Multi-turn sessions**: Session IDs map client-facing IDs to underlying tool-native session resume mechanisms (`--resume` for Claude and Gemini; a PTY wrapper script for Codex session continuation), with TTL-based expiry (30 minutes of inactivity). This enables conversational workflows over the API.
-
-- **File uploads**: Files up to 50MB can be uploaded and referenced in subsequent prompts, with automatic 24-hour cleanup.
-
-### Configuration and Setup
-
-- **First-run wizard**: If no settings file exists, an interactive terminal wizard guides the user through configuring their code directory, preferred models, and budget defaults. This lowers the barrier to entry.
-
-- **Layered configuration**: Settings are merged in priority order: hardcoded defaults < `~/.rcodegen/settings.json` < environment variables (`RCODEGEN_*`) < CLI flags. This supports both personal configuration and CI/CD pipeline parameterization.
-
-- **Custom tasks**: Users can define custom task shortcuts in their settings file with prompt templates using variable substitution (`{report_dir}`, `{report_file}`, `{codebase}`, `{timestamp}`, and user-defined variables via `-x`). Built-in task names are reserved and cannot be overridden, protecting core workflow integrity.
-
-- **Custom bundles**: User-defined workflow bundles can be placed in `~/.rcodegen/bundles/` alongside the 9 built-in bundles.
-
-### Concurrency and Safety
-
-- **File-based locking**: The `-l` flag enables `syscall.Flock`-based advisory locking stored in `~/.rcodegen/locks/` (not `/tmp/`, to prevent symlink attacks). This prevents multiple rcodegen instances from running simultaneously on the same machine when desired, with a 5-minute timeout and 5-second polling.
-
-- **Cross-process grade file safety**: The `.grades.json` file uses both an in-process mutex and a cross-process file lock to prevent corruption from concurrent writers.
-
-- **Graceful cancellation**: Signal-aware contexts propagate Ctrl+C through all execution layers, cleanly stopping multi-codebase runs, suite runs, and orchestrated workflows with partial-result reporting.
-
-- **Security**: Settings files are created with 0600 permissions. Lock directories use 0700 permissions. The system warns about world-writable settings files. All of this reflects awareness that AI tools operating with bypassed permissions are a security-sensitive operation.
+**Business value:** A human-facing view over the report corpus and a place to schedule recurring portfolio analyses.
 
 ---
 
-## Who Is This For?
+## Business Logic and Rules / Key Design Decisions
 
-1. **Individual developers** who want to automate recurring code quality checks across their projects -- running overnight audits, security scans, and test proposals without manual effort.
+- **VERSION-based idempotency.** If a target codebase has a `VERSION` file, each tool+task combination records the last-run VERSION to `_rcodegen/version_state.json`. On a later run, an unchanged VERSION causes the task to skip; `-f`/`--force` overrides. Suite mode records each sub-task individually so partial re-runs work. Codebases without a `VERSION` file always run. **Why this matters:** prevents paying for redundant AI calls against unchanged code -- central to running cheaply at portfolio scale.
 
-2. **Engineering teams** who want standardized, AI-generated code quality scorecards across a portfolio of repositories, with historical grade tracking.
+- **Report lifecycle and review gating.** Reports follow `{codebase}-{tool}-{task}-YYYY-MM-DD_HHMM.md`, carry a `Date Created:` header, and gain a `Date Modified:` header once a human reviews them. `-R`/`--require-review` skips tasks whose prior report is unreviewed; `-D`/`--delete-old` keeps only the newest report per task type. **Why this matters:** enforces a human review loop and keeps the report directory from accumulating stale noise.
 
-3. **Security teams** who want automated, multi-model adversarial security reviews of codebases.
+- **Layered configuration priority.** Hardcoded defaults < `~/.rcodegen/settings.json` < `RCODEGEN_*` environment variables < CLI flags. `RCODEGEN_EFFORT` applies to Claude and Codex, but the `max` effort level is Claude-only. **Why this matters:** supports both personal config and CI parameterization without code changes.
 
-4. **DevOps / CI pipelines** that need programmable access to AI coding tools via gRPC or the OpenAI-compatible HTTP API.
+- **Default models (source of truth = each tool's `ValidModels`/`DefaultModel`).** Claude: `sonnet`/`opus`/`haiku`, code default `opus`; Codex: `gpt-5.5` (default), `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex`; Gemini: default `gemini-3.1-pro-preview` (also `gemini-3-flash-preview`, `gemini-3.1-flash-image-preview`/`banana`, `gemini-2.5-*`); opencode/kilocode: dynamic `provider/model` namespace (no fixed list), default `deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct`. **Why this matters:** model lists are validated per tool; the setup-wizard prompts and `settings.json` may show different (sometimes shorthand, e.g. `gemini-3`) values than a tool's compiled default, so the code is authoritative.
 
-5. **Content creators** who want multi-model article generation with style emulation and editorial quality control.
+- **Reasoning effort controls.** `rclaude` and `rcodex` expose `-e/--effort`; rclaude defaults to `xhigh` (valid: low/medium/high/xhigh/max), rcodex to `xhigh` (valid: low/medium/high/xhigh). **Why this matters:** lets operators trade latency/cost against depth per run or via defaults.
+
+- **Cross-process safety everywhere shared state is touched.** Grades file uses mutex + flock; the `-l` lock uses `syscall.Flock` advisory locks in `~/.rcodegen/locks/` (deliberately **not** `/tmp/`, to avoid symlink attacks; 5-minute timeout, 5-second polling). Settings files are written 0600, lock dirs 0700, world-writable settings trigger a warning. **Why this matters:** multiple agents/instances run concurrently on one machine; unguarded writes would corrupt grades and state, and bypassed-permission tooling is security-sensitive.
+
+- **Permission bypass is intentional and load-bearing.** It is what makes unattended operation possible, and it is why the docs are explicit that these tools should only run on trusted codebases in controlled environments. **Why this matters:** this is the single most security-relevant decision in the product; changes here have real blast radius.
+
+- **Graceful cancellation.** Signal-aware contexts propagate Ctrl+C through every execution layer (multi-codebase, suite, orchestrated bundles, server runs) with partial-result reporting. **Why this matters:** long unattended runs must stop cleanly without losing completed work.
+
+- **Concise error on unknown flags.** Unknown flags print a two-line error + hint rather than Go's full usage dump (e.g. `rcodex -b` -- borrowed from rclaude muscle memory); `-h`/`--help` still prints full usage. **Why this matters:** a UX fix so a typo doesn't look like a crash.
+
+- **`@file` reference expansion.** `@path/to/file` tokens in a prompt are replaced with the file's contents before reaching the AI (all tools and bundle inputs). **Why this matters:** lets prompts pull in real file content without manual copy/paste.
 
 ---
 
-## What Makes This Different From Using AI Coding Tools Directly?
+## How to Think About Code Changes
 
-1. **Unattended operation**: Direct use of Claude Code, Codex, or Gemini CLI requires a human at the keyboard. rcodegen runs headless.
+- **This repo owns AI-coding execution and orchestration only.** Wrappers normalize vendor CLIs into the shared `runner.Tool` interface; the orchestrator/executor/bundle packages compose them; `rbatch`/`rserve` are operational surfaces. Anything model-vendor-specific (command shape, permission flag, output parsing, session resume) belongs inside that tool's `pkg/tools/<tool>` package, never leaking into shared code.
 
-2. **Multi-model orchestration**: No single AI tool can build code with one model, have another model attack it, and then have the first model harden it. rcodegen chains tools together in adversarial and collaborative workflows.
+- **Adding a new tool = implement `runner.Tool` + a tiny `cmd/<r-name>/main.go` + a Makefile/build-matrix entry**, then register it across `rserve`, `rbatch`, bundle orchestration, grade extraction, settings defaults, and OpenAI model parsing. Adding a new vendor that is OpenAI-compatible usually does **not** warrant a new wrapper -- prefer `ropencode`/`rkilo` with a `provider/model` string.
 
-3. **Portfolio scale**: Direct tools operate on one codebase at a time. rcodegen can recursively discover and process every git repository in a directory tree.
+- **Version is embedded, not read at runtime from a path.** `appversion.go` at the module root (package `rcodegen`) uses `//go:embed VERSION` into `AppVersion`; the Makefile bakes it via ldflags. Always build with `make` (never bare `go build`, or `-v` reports `unknown`). Callers use `rcodegen.AppVersion` directly.
 
-4. **Quality measurement**: Direct tools produce freeform output. rcodegen extracts structured grades, persists them with locking, and creates a historical quality record.
+- **chassis-go v11 is a hard dependency of `rserve`** (`chassis.RequireMajor(11)`, lifecycle/health/otel/kafkakit/registry). It is wired via a local `replace` directive to `../../chassis_suite/chassis-go`, so changes to chassis affect the build. The README's "Adding a New Tool" snippet still shows a v10 import; treat the actual `go.mod`/`cmd` imports (v11) as authoritative.
 
-5. **Cost management**: Direct tools spend whatever they spend. rcodegen tracks costs per-run and per-step, enforces budget caps, and provides batch-level budget controls with stop/wait/ask policies.
+- **Don't break the report/grade contract.** Filename pattern, `.grades.json` shape and locking, `version_state.json`, and the `Date Created`/`Date Modified` review fields are consumed by the dashboard and by `-R`/`-D` logic. Changing any of them is a cross-component change.
 
-6. **API gateway**: Direct tools are CLI-only. rcodegen exposes them via industry-standard APIs (gRPC and OpenAI-compatible HTTP) that any dashboard, agent, or SDK client can consume.
+- **Bundles are data, not code.** Built-in bundles live as embedded JSON; prefer adding/adjusting JSON over hardcoding workflow logic. Note the `article`/`article-parallel` bundles are currently hardcoded to emulate a specific author's writing style and require editing for other authors.
+
+---
+
+## Deployment Model / Scale
+
+- **CLIs (`rclaude`/`rcodex`/`rgemini`/`ropencode`/`rkilo`/`rcodegen`/`rbatch`)** run locally or in CI as one-shot processes; concurrency is operator-managed via `-l` locking and batch concurrency limits. State and config live under `~/.rcodegen/` (settings, locks, bundles, schedules) and per-repo `_rcodegen/` (reports, grades, version_state).
+- **`rserve`** is a long-running localhost service by default (`-bind 127.0.0.1`), opt-in to all interfaces via `-bind 0.0.0.0`, with `-port` and `-max-concurrent` tunable. As a chassis service it participates in coordinated shutdown, exposes health, and -- when the relevant env vars are set -- emits OTLP traces and Kafka events. Built for single-host or small-fleet operation, not high-fanout multitenancy.
+- **Build matrix:** the Makefile cross-compiles all eight binaries for Linux amd64 and Darwin arm64 (`CGO_ENABLED=0`) plus launcher scripts.
+
+## Current State / Status
+
+- **Version: 4.2.1** (embedded from the `VERSION` file; see `CHANGELOG.md`).
+- **Built and working:** all eight binaries; the five single-tool wrappers with task shortcuts, grading, run logs, `@file` expansion, effort controls, and iTerm2 credit tracking; Gemini image generation (Nano Banana, multi-image input, auto-downscale); the nine built-in bundles with the live TUI and `final-report.json`; `rbatch` run/spool/watch/resume/status with session chaining, budget policies, checkpoint/resume, and local+remote executors; `rserve` gRPC + OpenAI HTTP APIs with sessions, file uploads, concurrency registry, health, OTLP, and chassis lifecycle; the Next.js dashboard with report browsing and cron schedules.
+- **Scaffolded / planned (built vs. not-yet-wired):** the Kafka `ai8.codegen.run.completed` run-completed event publisher is implemented in `cmd/rserve/main.go` (`publishRunCompleted`) and the publisher is initialized when configured, but the function is **not yet invoked from the run path** -- event emission per run is wiring still to be connected. opencode/kilocode wrappers are v1: they do **not** parse JSON events for token/cost/session extraction (placeholder zero usage, manual session IDs), matching each other's behavior.
