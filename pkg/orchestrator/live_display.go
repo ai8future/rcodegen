@@ -405,6 +405,8 @@ func (d *LiveDisplay) renderStep(index int, step *LiveStep) {
 		modelName := capitalizeWord(step.Model)
 		// Shorten common model names
 		switch step.Model {
+		case "fable":
+			modelName = "Fable"
 		case "sonnet":
 			modelName = "Sonnet"
 		case "opus":

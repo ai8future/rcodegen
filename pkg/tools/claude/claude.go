@@ -75,7 +75,7 @@ func (t *Tool) ReportPrefix() string {
 
 // ValidModels returns the list of valid model names
 func (t *Tool) ValidModels() []string {
-	return []string{"sonnet", "opus", "haiku"}
+	return []string{"fable", "sonnet", "opus", "haiku"}
 }
 
 // DefaultModel returns the default model name

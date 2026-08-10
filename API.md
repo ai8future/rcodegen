@@ -375,7 +375,7 @@ Wraps the `claude` CLI. Supports streaming JSON output via `claude --output-form
 | `-s, --status` | Track credit usage before/after task | |
 | `-S, --no-status` | Disable credit usage tracking | |
 
-**Valid models:** `sonnet`, `opus`, `haiku`
+**Valid models:** `fable`, `sonnet`, `opus`, `haiku`
 
 ```bash
 rclaude -c myproject audit

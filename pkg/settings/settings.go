@@ -37,7 +37,7 @@ type CodexDefaults struct {
 
 // ClaudeDefaults holds default settings for rclaude
 type ClaudeDefaults struct {
-	Model  string `json:"model"`  // Default model (sonnet, opus, haiku)
+	Model  string `json:"model"`  // Default model (fable, sonnet, opus, haiku)
 	Budget string `json:"budget"` // Default max budget in USD
 	Effort string `json:"effort"` // Default effort level (low, medium, high, xhigh, max)
 }
@@ -571,10 +571,11 @@ func RunInteractiveSetup() (*Settings, bool) {
 	fmt.Printf("\n%s%s── rclaude (Claude Code) Defaults ──%s\n\n", bold, cyan, reset)
 
 	fmt.Printf("%s%sDefault model for rclaude?%s\n", bold, green, reset)
-	fmt.Printf("%sOpus is the most capable. Sonnet balances cost and capability. Haiku is fastest.%s\n\n", dim, reset)
-	fmt.Printf("  %s1.%s %sopus%s %s(recommended - most capable)%s\n", dim, reset, magenta, reset, dim, reset)
+	fmt.Printf("%sFable is the most powerful. Opus is highly capable. Sonnet balances cost and capability. Haiku is fastest.%s\n\n", dim, reset)
+	fmt.Printf("  %s1.%s %sopus%s %s(recommended - highly capable)%s\n", dim, reset, magenta, reset, dim, reset)
 	fmt.Printf("  %s2.%s %ssonnet%s %s(balanced)%s\n", dim, reset, magenta, reset, dim, reset)
-	fmt.Printf("  %s3.%s %shaiku%s %s(fastest, least capable)%s\n\n", dim, reset, magenta, reset, dim, reset)
+	fmt.Printf("  %s3.%s %shaiku%s %s(fastest, least capable)%s\n", dim, reset, magenta, reset, dim, reset)
+	fmt.Printf("  %s4.%s %sfable%s %s(most powerful, highest cost)%s\n\n", dim, reset, magenta, reset, dim, reset)
 
 	fmt.Printf("%sClaude model%s [%s1%s]: ", bold, reset, yellow, reset)
 	claudeModelInput, _ := reader.ReadString('\n')
@@ -588,9 +589,11 @@ func RunInteractiveSetup() (*Settings, bool) {
 		claudeModel = "sonnet"
 	case "3", "haiku":
 		claudeModel = "haiku"
+	case "4", "fable":
+		claudeModel = "fable"
 	default:
 		// Accept direct input if it's a valid model name
-		if claudeModelInput == "sonnet" || claudeModelInput == "opus" || claudeModelInput == "haiku" {
+		if claudeModelInput == "sonnet" || claudeModelInput == "opus" || claudeModelInput == "haiku" || claudeModelInput == "fable" {
 			claudeModel = claudeModelInput
 		}
 	}

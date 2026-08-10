@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.2.2 — 2026-07-04
+- Added `fable` (Claude Fable 5) to the valid `rclaude` models list, making it selectable via `-m/--model fable`
+- rclaude passes the alias through to `claude --model fable`; previously any model outside `sonnet/opus/haiku` was rejected by validation before the CLI was invoked
+- Updated setup wizard prompt (option 4), live-display short-name mapping, `ClaudeDefaults` comment, README, API, and PRODUCT docs
+- Agent: Claude:Opus 4.8 (1M context)
+
 ## 4.2.1 — 2026-05-13
 - Update dependencies and config
 
