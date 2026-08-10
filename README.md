@@ -311,7 +311,7 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
 ## Supported Models
 
 ### Claude
-`sonnet`, `opus`, `haiku` (settings default: `sonnet`). Effort levels: `low`, `medium`, `high`, `xhigh`, `max` (default: `xhigh`).
+`fable`, `sonnet`, `opus`, `haiku` (settings default: `sonnet`). Effort levels: `low`, `medium`, `high`, `xhigh`, `max` (default: `xhigh`).
 
 ### Codex
 `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex` (default: `gpt-5.5`)
@@ -566,15 +566,15 @@ curl http://127.0.0.1:14261/v1/chat/completions \
        "fmt"
        "os"
 
-       chassis "github.com/ai8future/chassis-go/v10"
-       "github.com/ai8future/chassis-go/v10/logz"
-       "github.com/ai8future/chassis-go/v10/registry"
+       chassis "github.com/ai8future/chassis-go/v11"
+       "github.com/ai8future/chassis-go/v11/logz"
+       "github.com/ai8future/chassis-go/v11/registry"
        "rcodegen/pkg/runner"
        "rcodegen/pkg/tools/newtool"
    )
 
    func main() {
-       chassis.RequireMajor(10)
+       chassis.RequireMajor(11)
        logger := logz.New("info")
        if err := registry.InitCLI(chassis.Version); err != nil {
            logger.Error("registry init failed", "error", err)
@@ -617,6 +617,6 @@ Only use on trusted codebases in controlled environments. Lock files are stored 
 
 ## Version
 
-Current version: **4.0.14**
+Current version: **4.2.2**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
