@@ -11,6 +11,7 @@ package openai
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -25,15 +26,26 @@ import (
 	"rcodegen/pkg/settings"
 )
 
+// bundleRunOpts carries per-run execution options and the step event callback
+// into the bundle runner.
+type bundleRunOpts struct {
+	opusOnly  bool
+	flashOnly bool
+	onStep    func(orchestrator.StepEvent)
+}
+
 // bundleRunFunc executes a loaded bundle with resolved inputs. It is a field on
 // Handler so tests can substitute a fake without spawning real AI tools.
-type bundleRunFunc func(b *bundle.Bundle, inputs map[string]string) (*envelope.Envelope, error)
+type bundleRunFunc func(b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error)
 
 // defaultBundleRun returns the production bundleRunFunc backed by the orchestrator.
 func defaultBundleRun(s *settings.Settings) bundleRunFunc {
-	return func(b *bundle.Bundle, inputs map[string]string) (*envelope.Envelope, error) {
+	return func(b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
 		orch := orchestrator.New(s)
 		orch.SetLiveMode(false) // no animated display for HTTP
+		orch.SetOpusOnly(opts.opusOnly)
+		orch.SetFlashOnly(opts.flashOnly)
+		orch.SetStepCallback(opts.onStep)
 		return orch.Run(b, inputs)
 	}
 }
@@ -59,12 +71,50 @@ type BundleListResponse struct {
 	Bundles []BundleInfo `json:"bundles"`
 }
 
+// BundleDetailResponse is the GET /v1/bundles/{name} response body: the full
+// step DAG (parallel groups, vote/merge nodes, conditionals) for introspection
+// and rendering by external UIs.
+type BundleDetailResponse struct {
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	StepCount   int           `json:"step_count"`
+	Inputs      []BundleInput `json:"inputs,omitempty"`
+	Steps       []bundle.Step `json:"steps"`
+}
+
+// BundleRunOptions are per-run execution options (parity with gRPC RunBundle).
+type BundleRunOptions struct {
+	OpusOnly  bool `json:"opus_only,omitempty"`
+	FlashOnly bool `json:"flash_only,omitempty"`
+}
+
 // BundleRunRequest is the POST /v1/bundles/{name} request body.
 // If work_dir is set it is created if missing, used as the artifact scan root,
 // and injected as the "output_dir" bundle input unless one was given explicitly.
+// With stream=true the response is Server-Sent Events: step_started,
+// step_completed, and step_skipped events during execution, then a final
+// bundle_completed event carrying the full BundleRunResponse.
 type BundleRunRequest struct {
 	Inputs  map[string]string `json:"inputs,omitempty"`
 	WorkDir string            `json:"work_dir,omitempty"`
+	Stream  bool              `json:"stream,omitempty"`
+	Options *BundleRunOptions `json:"options,omitempty"`
+}
+
+// BundleStepResult is the per-step outcome included in run responses and
+// streamed as step event payloads.
+type BundleStepResult struct {
+	Index           int     `json:"index"`
+	Name            string  `json:"name"`
+	Tool            string  `json:"tool,omitempty"`
+	Model           string  `json:"model,omitempty"`
+	Status          string  `json:"status"` // running, success, failure, partial, skipped
+	CostUSD         float64 `json:"cost_usd,omitempty"`
+	InputTokens     int     `json:"input_tokens,omitempty"`
+	OutputTokens    int     `json:"output_tokens,omitempty"`
+	DurationMs      int64   `json:"duration_ms,omitempty"`
+	Output          string  `json:"output,omitempty"`
+	OutputTruncated bool    `json:"output_truncated,omitempty"`
 }
 
 // BundleArtifact is a text file created or modified under work_dir during the run,
@@ -77,6 +127,8 @@ type BundleArtifact struct {
 }
 
 // BundleRunResponse is the POST /v1/bundles/{name} response body.
+// Output is the stdout of the last successful step — the natural place for a
+// bundle's final answer or verdict, so callers need not dig through steps.
 type BundleRunResponse struct {
 	RunID         string              `json:"run_id"`
 	CorrelationID string              `json:"correlation_id,omitempty"`
@@ -86,7 +138,9 @@ type BundleRunResponse struct {
 	TotalCostUSD  float64             `json:"total_cost_usd"`
 	Usage         *Usage              `json:"usage,omitempty"`
 	DurationMs    int64               `json:"duration_ms"`
+	Output        string              `json:"output,omitempty"`
 	Error         *envelope.ErrorInfo `json:"error,omitempty"`
+	Steps         []BundleStepResult  `json:"steps,omitempty"`
 	Artifacts     []BundleArtifact    `json:"artifacts,omitempty"`
 }
 
@@ -131,15 +185,9 @@ func (h *Handler) handleBundles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleBundleByName serves POST /v1/bundles/{name}.
+// handleBundleByName routes /v1/bundles/{name}: GET returns the bundle's step
+// DAG, POST runs the bundle.
 func (h *Handler) handleBundleByName(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse(
-			"method not allowed", "invalid_request_error", "method_not_allowed",
-		))
-		return
-	}
-
 	name := strings.TrimPrefix(r.URL.Path, "/v1/bundles/")
 	if name == "" || strings.Contains(name, "/") {
 		writeJSON(w, http.StatusNotFound, NewErrorResponse(
@@ -148,6 +196,47 @@ func (h *Handler) handleBundleByName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	switch r.Method {
+	case http.MethodGet:
+		h.handleBundleDetail(w, name)
+	case http.MethodPost:
+		h.handleBundleRun(w, r, name)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse(
+			"method not allowed", "invalid_request_error", "method_not_allowed",
+		))
+	}
+}
+
+// handleBundleDetail serves GET /v1/bundles/{name}.
+func (h *Handler) handleBundleDetail(w http.ResponseWriter, name string) {
+	b, err := bundle.Load(name)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, NewErrorResponse(
+			"bundle not found: "+err.Error(), "invalid_request_error", "unknown_bundle",
+		))
+		return
+	}
+
+	resp := BundleDetailResponse{
+		Name:        b.Name,
+		Description: b.Description,
+		StepCount:   len(b.Steps),
+		Steps:       b.Steps,
+	}
+	for _, in := range b.Inputs {
+		resp.Inputs = append(resp.Inputs, BundleInput{
+			Name:        in.Name,
+			Required:    in.Required,
+			Description: in.Description,
+			Default:     in.Default,
+		})
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleBundleRun serves POST /v1/bundles/{name}.
+func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name string) {
 	// Limit request body to 1MB — bundle inputs are small.
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req BundleRunRequest
@@ -208,14 +297,44 @@ func (h *Handler) handleBundleByName(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	defer h.registry.Release(runID)
 
+	opts := bundleRunOpts{}
+	if req.Options != nil {
+		opts.opusOnly = req.Options.OpusOnly
+		opts.flashOnly = req.Options.FlashOnly
+	}
+	collector := newStepCollector()
+	opts.onStep = collector.observe
+
+	// In streaming mode headers go out before execution: set correlation now,
+	// and every outcome (including errors) rides the event stream.
+	var sse *sseEventWriter
+	if req.Stream {
+		if corrID != "" {
+			w.Header().Set("X-Correlation-ID", corrID)
+		}
+		sse = newSSEEventWriter(w)
+		opts.onStep = func(ev orchestrator.StepEvent) {
+			collector.observe(ev)
+			sse.send(stepEventName(ev.Type), collector.get(ev.Index))
+		}
+	}
+
 	before := snapshotWorkDir(workDir)
 	start := time.Now()
-	env, runErr := h.runBundleFn(b, inputs)
+	env, runErr := h.runBundleFn(b, inputs, opts)
 
 	if env == nil {
 		msg := "bundle execution failed"
 		if runErr != nil {
 			msg = runErr.Error()
+		}
+		if sse != nil {
+			sse.send("bundle_completed", BundleRunResponse{
+				RunID: runID, CorrelationID: corrID, Bundle: b.Name,
+				Status: string(envelope.StatusFailure),
+				Error:  &envelope.ErrorInfo{Code: "bundle_failed", Message: msg},
+			})
+			return
 		}
 		writeJSON(w, http.StatusInternalServerError, NewErrorResponse(
 			msg, "server_error", "bundle_failed",
@@ -223,8 +342,9 @@ func (h *Handler) handleBundleByName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Missing required input is a caller error, not a run failure.
-	if env.Error != nil && env.Error.Code == "MISSING_INPUT" {
+	// Missing required input is a caller error, not a run failure (non-streaming
+	// only — in streaming mode headers are already sent).
+	if env.Error != nil && env.Error.Code == "MISSING_INPUT" && sse == nil {
 		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
 			env.Error.Message, "invalid_request_error", "missing_input",
 		))
@@ -237,6 +357,8 @@ func (h *Handler) handleBundleByName(w http.ResponseWriter, r *http.Request) {
 		Bundle:        b.Name,
 		Status:        string(env.Status),
 		Error:         env.Error,
+		Steps:         collector.results(),
+		Output:        collector.finalOutput(),
 		Artifacts:     collectBundleArtifacts(workDir, before),
 	}
 	if jobID, ok := env.Result["job_id"].(string); ok {
@@ -260,10 +382,152 @@ func (h *Handler) handleBundleByName(w http.ResponseWriter, r *http.Request) {
 		resp.DurationMs = time.Since(start).Milliseconds()
 	}
 
+	if sse != nil {
+		sse.send("bundle_completed", resp)
+		return
+	}
 	if corrID != "" {
 		w.Header().Set("X-Correlation-ID", corrID)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// stepOutputCap limits per-step output included in responses and step events.
+const stepOutputCap = 64 << 10
+
+// stepEventName maps orchestrator event types to SSE event names.
+func stepEventName(t orchestrator.StepEventType) string {
+	switch t {
+	case orchestrator.StepEventStarted:
+		return "step_started"
+	case orchestrator.StepEventSkipped:
+		return "step_skipped"
+	default:
+		return "step_completed"
+	}
+}
+
+// stepCollector accumulates BundleStepResults from orchestrator step events.
+// Events arrive synchronously on the run goroutine, so no locking is needed.
+type stepCollector struct {
+	byIndex map[int]*BundleStepResult
+}
+
+func newStepCollector() *stepCollector {
+	return &stepCollector{byIndex: make(map[int]*BundleStepResult)}
+}
+
+func (c *stepCollector) get(index int) *BundleStepResult {
+	if r, ok := c.byIndex[index]; ok {
+		return r
+	}
+	r := &BundleStepResult{Index: index}
+	c.byIndex[index] = r
+	return r
+}
+
+func (c *stepCollector) observe(ev orchestrator.StepEvent) {
+	r := c.get(ev.Index)
+	if ev.Name != "" {
+		r.Name = ev.Name
+	}
+	if ev.Tool != "" {
+		r.Tool = ev.Tool
+	}
+	if ev.Model != "" {
+		r.Model = ev.Model
+	}
+	switch ev.Type {
+	case orchestrator.StepEventStarted:
+		r.Status = "running"
+	case orchestrator.StepEventSkipped:
+		r.Status = "skipped"
+	case orchestrator.StepEventCompleted:
+		r.Status = ev.Status
+		r.CostUSD = ev.CostUSD
+		r.InputTokens = ev.InputTokens
+		r.OutputTokens = ev.OutputTokens
+		r.DurationMs = ev.DurationMs
+		if ev.Envelope != nil {
+			if stdout, ok := ev.Envelope.Result["stdout"].(string); ok && stdout != "" {
+				if len(stdout) > stepOutputCap {
+					r.Output = stdout[:stepOutputCap]
+					r.OutputTruncated = true
+				} else {
+					r.Output = stdout
+				}
+			}
+		}
+	}
+}
+
+// results returns collected step results ordered by index.
+func (c *stepCollector) results() []BundleStepResult {
+	if len(c.byIndex) == 0 {
+		return nil
+	}
+	indexes := make([]int, 0, len(c.byIndex))
+	for i := range c.byIndex {
+		indexes = append(indexes, i)
+	}
+	sort.Ints(indexes)
+	out := make([]BundleStepResult, 0, len(indexes))
+	for _, i := range indexes {
+		out = append(out, *c.byIndex[i])
+	}
+	return out
+}
+
+// finalOutput returns the output of the last successful (or partial) step —
+// the bundle's effective final answer.
+func (c *stepCollector) finalOutput() string {
+	out := ""
+	for _, r := range c.results() {
+		if (r.Status == string(envelope.StatusSuccess) || r.Status == string(envelope.StatusPartial)) && r.Output != "" {
+			out = r.Output
+		}
+	}
+	return out
+}
+
+// sseEventWriter writes named Server-Sent Events, flushing after each one.
+// After a write error (client gone) subsequent events are dropped; the bundle
+// run itself continues server-side (orchestrator cancellation is future work).
+type sseEventWriter struct {
+	w      http.ResponseWriter
+	f      http.Flusher
+	failed bool
+}
+
+func newSSEEventWriter(w http.ResponseWriter) *sseEventWriter {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	f, _ := w.(http.Flusher)
+	if f != nil {
+		f.Flush()
+	}
+	return &sseEventWriter{w: w, f: f}
+}
+
+func (s *sseEventWriter) send(event string, v interface{}) {
+	if s.failed {
+		return
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		s.failed = true
+		return
+	}
+	if _, err := fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", event, data); err != nil {
+		s.failed = true
+		return
+	}
+	if s.f != nil {
+		s.f.Flush()
+	}
 }
 
 // sanitizeCorrelationID keeps [A-Za-z0-9._-] and caps length at 128 so external

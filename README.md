@@ -501,7 +501,8 @@ The HTTP API on port+1 is compatible with any OpenAI SDK. Model names follow the
 | `/v1/chat/completions` | POST | Chat completion (streaming and non-streaming) |
 | `/v1/models` | GET | List available tool/model combinations |
 | `/v1/bundles` | GET | List available bundles with their inputs |
-| `/v1/bundles/{name}` | POST | Run a bundle, return results + inline artifacts |
+| `/v1/bundles/{name}` | GET | Bundle detail: full step DAG (parallel groups, vote/merge, conditionals) |
+| `/v1/bundles/{name}` | POST | Run a bundle, return per-step results + inline artifacts (SSE streaming optional) |
 | `/v1/files` | POST | Upload a file (multipart, 50MB limit) |
 | `/v1/files` | GET | List uploaded files |
 | `/v1/files/{id}` | GET | Download a file |
@@ -558,9 +559,13 @@ curl -X POST http://127.0.0.1:14261/v1/bundles/ensemble \
 ```
 
 - `work_dir` (optional, absolute path): created if missing, and injected as the `output_dir` bundle input unless one is set explicitly.
+- **Per-step results:** the response includes a `steps` array (name, tool, model, status, cost, tokens, duration, and per-step output up to 64KB) plus a top-level `output` field carrying the last successful step's output — the natural place for a bundle's final answer or verdict.
+- **Streaming:** set `"stream": true` for Server-Sent Events — `step_started`, `step_completed`, and `step_skipped` events during execution, then a final `bundle_completed` event carrying the full response. Lets callers (e.g. Windmill) show live per-step progress on long runs.
+- **Options:** `"options": {"opus_only": true, "flash_only": true}` forces Claude steps to Opus / Gemini steps to flash (parity with gRPC `RunBundle`).
 - **Inline artifacts:** text files (`.md`, `.txt`, `.json`, `.csv`, `.html`, `.xml`, `.yaml`, `.log`) created or modified under `work_dir` during the run are returned inline in the response (512KB/file, 2MB/response caps), so remote callers can review and publish reports without filesystem access to this host.
 - **`X-Correlation-ID`:** pass an external run identifier (e.g. a Windmill job UUID); it is echoed in the response body and header, and attached to the run registry entry so `GetStatus` shows which external run owns each slot.
-- Status mapping: missing required input → 400, unknown bundle → 404, concurrency full → 503, bundle-logic failure → 200 with `"status": "failure"`.
+- **`GET /v1/bundles/{name}`** returns the bundle's full step DAG (parallel groups, vote/merge nodes, `if/then/else`) for introspection or rendering by external UIs.
+- Status mapping: missing required input → 400, unknown bundle → 404, concurrency full → 503, bundle-logic failure → 200 with `"status": "failure"`. In streaming mode all post-start outcomes (including errors) arrive as the `bundle_completed` event.
 
 ### Authentication
 
@@ -643,6 +648,6 @@ Only use on trusted codebases in controlled environments. Lock files are stored 
 
 ## Version
 
-Current version: **4.2.3**
+Current version: **4.2.4**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.

@@ -60,13 +60,42 @@ type Display interface {
 // This is set by the executor package to break the circular dependency.
 var DispatcherFactory func(tools map[string]runner.Tool) StepExecutor
 
+// StepEventType identifies the lifecycle moment a StepEvent describes.
+type StepEventType string
+
+const (
+	StepEventStarted   StepEventType = "started"
+	StepEventCompleted StepEventType = "completed"
+	StepEventSkipped   StepEventType = "skipped"
+)
+
+// StepEvent is a top-level step lifecycle notification, delivered synchronously
+// during Run via the callback registered with SetStepCallback. Completed events
+// carry the step's result envelope (including Result["stdout"]) plus cost and
+// token stats, enabling callers (e.g. rserve) to stream per-step progress and
+// surface per-step results.
+type StepEvent struct {
+	Type         StepEventType
+	Index        int
+	Name         string
+	Tool         string
+	Model        string
+	Status       string // completed events: success, failure, partial
+	CostUSD      float64
+	InputTokens  int
+	OutputTokens int
+	DurationMs   int64
+	Envelope     *envelope.Envelope // completed events only
+}
+
 type Orchestrator struct {
-	settings   *settings.Settings
-	dispatcher StepExecutor
-	tools      map[string]runner.Tool
-	liveMode   bool
-	opusOnly   bool
-	flashOnly  bool
+	settings     *settings.Settings
+	dispatcher   StepExecutor
+	tools        map[string]runner.Tool
+	liveMode     bool
+	opusOnly     bool
+	flashOnly    bool
+	stepCallback func(StepEvent)
 }
 
 // SetLiveMode enables or disables the animated live display
@@ -82,6 +111,38 @@ func (o *Orchestrator) SetOpusOnly(enabled bool) {
 // SetFlashOnly forces all Gemini steps to use flash preview model
 func (o *Orchestrator) SetFlashOnly(enabled bool) {
 	o.flashOnly = enabled
+}
+
+// SetStepCallback registers a callback invoked synchronously for each top-level
+// step lifecycle event during Run. Pass nil to disable.
+func (o *Orchestrator) SetStepCallback(cb func(StepEvent)) {
+	o.stepCallback = cb
+}
+
+// emitStep delivers a StepEvent to the registered callback, if any.
+func (o *Orchestrator) emitStep(ev StepEvent) {
+	if o.stepCallback != nil {
+		o.stepCallback(ev)
+	}
+}
+
+// stepCompletedEvent builds a completed StepEvent for branches that do not
+// extract per-step stats (conditional steps, dispatcher errors).
+func stepCompletedEvent(i int, step bundle.Step, env *envelope.Envelope, d time.Duration) StepEvent {
+	ev := StepEvent{
+		Type:       StepEventCompleted,
+		Index:      i,
+		Name:       step.Name,
+		Tool:       step.Tool,
+		DurationMs: d.Milliseconds(),
+		Envelope:   env,
+	}
+	if env != nil {
+		ev.Status = string(env.Status)
+	} else {
+		ev.Status = string(envelope.StatusFailure)
+	}
+	return ev
 }
 
 func New(s *settings.Settings) *Orchestrator {
@@ -233,11 +294,19 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 		display.SetStepRunning(i)
 		// Set model immediately so it shows while running
 		display.SetStepModel(i, o.getStepModel(step.Tool, step.Model))
+		o.emitStep(StepEvent{
+			Type:  StepEventStarted,
+			Index: i,
+			Name:  step.Name,
+			Tool:  step.Tool,
+			Model: o.getStepModel(step.Tool, step.Model),
+		})
 
 		// Check condition
 		if step.If != "" && !EvaluateCondition(step.If, ctx) {
 			display.SetStepSkipped(i)
 			ctx.SetResult(step.Name, &envelope.Envelope{Status: envelope.StatusSkipped})
+			o.emitStep(StepEvent{Type: StepEventSkipped, Index: i, Name: step.Name})
 			continue
 		}
 
@@ -246,15 +315,19 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 			if EvaluateCondition(step.If, ctx) {
 				env, err := o.dispatcher.Execute(step.Then, ctx, ws)
 				ctx.SetResult(step.Name, env)
+				o.emitStep(stepCompletedEvent(i, step, env, time.Since(stepStart)))
 				if err != nil {
 					return env, err
 				}
 			} else if step.Else != nil {
 				env, err := o.dispatcher.Execute(step.Else, ctx, ws)
 				ctx.SetResult(step.Name, env)
+				o.emitStep(stepCompletedEvent(i, step, env, time.Since(stepStart)))
 				if err != nil {
 					return env, err
 				}
+			} else {
+				o.emitStep(StepEvent{Type: StepEventSkipped, Index: i, Name: step.Name})
 			}
 			continue
 		}
@@ -277,6 +350,7 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 		// Execute step
 		env, err := o.dispatcher.Execute(execStep, ctx, ws)
 		if err != nil {
+			o.emitStep(stepCompletedEvent(i, step, env, time.Since(stepStart)))
 			return env, err
 		}
 
@@ -322,6 +396,20 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 			InputTokens:  stepIn,
 			OutputTokens: stepOut,
 			Duration:     stepDuration,
+		})
+
+		o.emitStep(StepEvent{
+			Type:         StepEventCompleted,
+			Index:        i,
+			Name:         step.Name,
+			Tool:         step.Tool,
+			Model:        stepModel,
+			Status:       string(env.Status),
+			CostUSD:      stepCost,
+			InputTokens:  stepIn,
+			OutputTokens: stepOut,
+			DurationMs:   stepDuration.Milliseconds(),
+			Envelope:     env,
 		})
 
 		// Update display

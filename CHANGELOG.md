@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.2.4 — 2026-08-17
+- **Orchestrator step events**: new `SetStepCallback` on the orchestrator delivers `StepEvent`s (started/completed/skipped with cost, tokens, duration, model, and the step's result envelope) synchronously during `Run` — per-step results were previously lost internally
+- **Per-step results in bundle HTTP responses**: `POST /v1/bundles/{name}` now returns a `steps` array (per-step status/cost/tokens/output, 64KB cap) plus a top-level `output` field carrying the last successful step's stdout — the natural verdict/answer channel for external callers
+- **SSE streaming for bundle runs**: `"stream": true` emits `step_started` / `step_completed` / `step_skipped` events live, then `bundle_completed` with the full response; enables live per-step progress in orchestration layers (e.g. Windmill run pages)
+- **New `GET /v1/bundles/{name}` detail endpoint**: returns the full step DAG (parallel groups, vote/merge nodes, if/then/else) for introspection and UI rendering
+- **HTTP run options parity with gRPC**: `"options": {"opus_only", "flash_only"}` on bundle runs
+- 6 new tests (orchestrator event emission incl. skip conditions; HTTP detail, options forwarding, step results, streaming); full suite green; detail + SSE error path smoke-tested live
+- Agent: Claude:Opus 4.8
+
 ## 4.2.3 — 2026-08-17
 - **New HTTP bundle execution API on rserve**: `GET /v1/bundles` lists bundles with their declared inputs; `POST /v1/bundles/{name}` runs a bundle over plain HTTP (previously gRPC-only via `RunBundle`), making bundles callable from any orchestration layer (e.g. Windmill flow steps)
 - **Inline artifacts**: text files created or modified under the request's `work_dir` during the run are returned inline in the response (512KB/file, 2MB/response caps) so remote callers can review/publish reports without filesystem access to the host; `work_dir` is auto-created and injected as the `output_dir` bundle input
