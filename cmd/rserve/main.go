@@ -46,7 +46,13 @@ func main() {
 	bind := flag.String("bind", "127.0.0.1", "bind address (use 0.0.0.0 for all interfaces)")
 	maxConcurrent := flag.Int("max-concurrent", 3, "max simultaneous runs")
 	sessionTTL := flag.Int("session-ttl", 30, "session TTL in minutes (0 = no expiry)")
+	showVersion := flag.Bool("v", false, "show version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("rserve version %s\n", rcodegenpkg.AppVersion)
+		os.Exit(0)
+	}
 
 	logger := logz.New("info")
 

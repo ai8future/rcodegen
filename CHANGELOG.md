@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.2.5 — 2026-08-17
+- Self-review fixes from a verification pass over 4.2.3/4.2.4:
+- **Added missing `rserve -v` flag** — README documented `-v | Show version and exit` but the binary never had the flag (pre-existing doc-code mismatch, discovered during smoke testing); now prints the embedded version and exits, consistent with the other binaries
+- **UTF-8-safe truncation at byte caps** — per-step output (64KB cap) and inline artifact content (512KB cap) could split a multi-byte character at the boundary, yielding U+FFFD replacement garbage in JSON; new `trimPartialRune` drops at most 3 trailing bytes of an incomplete sequence at the cut point
+- 1 new test (trim cases: 2/3/4-byte splits, invalid bytes, no-op paths); full suite green
+- Agent: Claude:Opus 4.8
+
 ## 4.2.4 — 2026-08-17
 - **Orchestrator step events**: new `SetStepCallback` on the orchestrator delivers `StepEvent`s (started/completed/skipped with cost, tokens, duration, model, and the step's result envelope) synchronously during `Run` — per-step results were previously lost internally
 - **Per-step results in bundle HTTP responses**: `POST /v1/bundles/{name}` now returns a `steps` array (per-step status/cost/tokens/output, 64KB cap) plus a top-level `output` field carrying the last successful step's stdout — the natural verdict/answer channel for external callers

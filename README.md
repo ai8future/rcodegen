@@ -648,6 +648,6 @@ Only use on trusted codebases in controlled environments. Lock files are stored 
 
 ## Version
 
-Current version: **4.2.4**
+Current version: **4.2.5**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.

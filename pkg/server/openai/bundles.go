@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"rcodegen/pkg/bundle"
 	"rcodegen/pkg/envelope"
@@ -451,7 +452,7 @@ func (c *stepCollector) observe(ev orchestrator.StepEvent) {
 		if ev.Envelope != nil {
 			if stdout, ok := ev.Envelope.Result["stdout"].(string); ok && stdout != "" {
 				if len(stdout) > stepOutputCap {
-					r.Output = stdout[:stepOutputCap]
+					r.Output = trimPartialRune(stdout[:stepOutputCap])
 					r.OutputTruncated = true
 				} else {
 					r.Output = stdout
@@ -655,7 +656,9 @@ func collectBundleArtifacts(root string, before map[string]artifactMeta) []Bundl
 	return artifacts
 }
 
-// readFileCapped reads at most max bytes of a file.
+// readFileCapped reads at most max bytes of a file. A read that hits the cap
+// may end mid-rune; the trailing partial rune is trimmed so JSON output stays
+// valid UTF-8.
 func readFileCapped(path string, max int) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -666,5 +669,23 @@ func readFileCapped(path string, max int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+	s := string(data)
+	if len(s) == max {
+		s = trimPartialRune(s)
+	}
+	return s, nil
+}
+
+// trimPartialRune removes a trailing incomplete UTF-8 sequence left by a
+// byte-boundary cut. At most utf8.UTFMax-1 bytes are dropped, so genuinely
+// invalid content is left untouched beyond the boundary.
+func trimPartialRune(s string) string {
+	for i := 0; i < utf8.UTFMax-1 && len(s) > 0; i++ {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if r != utf8.RuneError || size != 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s
 }

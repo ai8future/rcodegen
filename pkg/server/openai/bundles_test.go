@@ -417,6 +417,23 @@ func TestRunBundle_Streaming(t *testing.T) {
 	}
 }
 
+func TestTrimPartialRune(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"ascii untouched", "hello", "hello"},
+		{"complete rune untouched", "café", "café"},
+		{"split 2-byte rune", "ab\xc3", "ab"},          // é cut after first byte
+		{"split 3-byte rune", "ab\xe2\x82", "ab"},      // € cut after two bytes
+		{"split 4-byte rune", "ab\xf0\x9f\x98", "ab"},  // emoji cut after three bytes
+		{"lone invalid byte trimmed", "ab\xff", "ab"},  // indistinguishable from a split start byte
+		{"empty", "", ""},
+	}
+	for _, c := range cases {
+		if got := trimPartialRune(c.in); got != c.want {
+			t.Errorf("%s: trimPartialRune(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
 func TestSanitizeCorrelationID(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"wm-job-123", "wm-job-123"},
