@@ -500,6 +500,8 @@ The HTTP API on port+1 is compatible with any OpenAI SDK. Model names follow the
 |----------|--------|-------------|
 | `/v1/chat/completions` | POST | Chat completion (streaming and non-streaming) |
 | `/v1/models` | GET | List available tool/model combinations |
+| `/v1/bundles` | GET | List available bundles with their inputs |
+| `/v1/bundles/{name}` | POST | Run a bundle, return results + inline artifacts |
 | `/v1/files` | POST | Upload a file (multipart, 50MB limit) |
 | `/v1/files` | GET | List uploaded files |
 | `/v1/files/{id}` | GET | Download a file |
@@ -539,6 +541,30 @@ curl http://127.0.0.1:14261/v1/chat/completions \
 ```
 
 Under the hood, `session_id` maps to the underlying CLI tool's native session resume mechanism (`claude --resume`, `codex` session resume, `gemini --resume`, `opencode --session`, `kilocode --session`).
+
+### Bundle Execution API
+
+Bundles can be run over plain HTTP (in addition to gRPC `RunBundle`), making them callable from any orchestration layer (e.g. a Windmill flow step):
+
+```bash
+# List bundles with their inputs
+curl http://127.0.0.1:14261/v1/bundles
+
+# Run a bundle
+curl -X POST http://127.0.0.1:14261/v1/bundles/ensemble \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: windmill-job-42" \
+  -d '{"inputs":{"task":"Design a rate limiter"},"work_dir":"/tmp/ensemble-run"}'
+```
+
+- `work_dir` (optional, absolute path): created if missing, and injected as the `output_dir` bundle input unless one is set explicitly.
+- **Inline artifacts:** text files (`.md`, `.txt`, `.json`, `.csv`, `.html`, `.xml`, `.yaml`, `.log`) created or modified under `work_dir` during the run are returned inline in the response (512KB/file, 2MB/response caps), so remote callers can review and publish reports without filesystem access to this host.
+- **`X-Correlation-ID`:** pass an external run identifier (e.g. a Windmill job UUID); it is echoed in the response body and header, and attached to the run registry entry so `GetStatus` shows which external run owns each slot.
+- Status mapping: missing required input → 400, unknown bundle → 404, concurrency full → 503, bundle-logic failure → 200 with `"status": "failure"`.
+
+### Authentication
+
+Set the `RSERVE_TOKEN` environment variable before starting `rserve` to require `Authorization: Bearer <token>` on all HTTP endpoints except `/health` (left open for monitoring). Unset means no auth — fine for localhost, required hardening before binding to a LAN with `-bind 0.0.0.0`.
 
 ### File Uploads
 
@@ -617,6 +643,6 @@ Only use on trusted codebases in controlled environments. Lock files are stored 
 
 ## Version
 
-Current version: **4.2.2**
+Current version: **4.2.3**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.

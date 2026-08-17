@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.2.3 — 2026-08-17
+- **New HTTP bundle execution API on rserve**: `GET /v1/bundles` lists bundles with their declared inputs; `POST /v1/bundles/{name}` runs a bundle over plain HTTP (previously gRPC-only via `RunBundle`), making bundles callable from any orchestration layer (e.g. Windmill flow steps)
+- **Inline artifacts**: text files created or modified under the request's `work_dir` during the run are returned inline in the response (512KB/file, 2MB/response caps) so remote callers can review/publish reports without filesystem access to the host; `work_dir` is auto-created and injected as the `output_dir` bundle input
+- **Correlation IDs**: `X-Correlation-ID` request header (e.g. an external job UUID) is sanitized, echoed in the response body and header, and attached to the run registry entry so `GetStatus` shows which external run owns each slot
+- **Optional bearer-token auth**: setting `RSERVE_TOKEN` requires `Authorization: Bearer <token>` on all HTTP endpoints except `/health`; unset preserves prior no-auth behavior
+- Status mapping: missing required input → 400, unknown bundle → 404, concurrency full → 503, bundle-logic failure → 200 with `status: "failure"`
+- 9 new tests covering list, run/artifacts/correlation, snapshot-diff exclusions, auth, and error mapping; verified live against the built binary
+- Agent: Claude:Opus 4.8
+
 ## 4.2.2 — 2026-07-04
 - Added `fable` (Claude Fable 5) to the valid `rclaude` models list, making it selectable via `-m/--model fable`
 - rclaude passes the alias through to `claude --model fable`; previously any model outside `sonnet/opus/haiku` was rejected by validation before the CLI was invoked

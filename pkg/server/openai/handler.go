@@ -3,10 +3,12 @@ package openai
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sync"
 
 	"rcodegen/pkg/runner"
@@ -25,6 +27,8 @@ type Handler struct {
 	availableTools []string
 	fileStore      *FileStore
 	sessions       *server.SessionStore
+	authToken      string        // optional bearer token from RSERVE_TOKEN; empty = no auth
+	runBundleFn    bundleRunFunc // bundle execution, replaceable in tests
 }
 
 // NewHandler creates a new Handler and registers routes on its internal mux.
@@ -38,9 +42,13 @@ func NewHandler(s *settings.Settings, toolFactories map[string]server.ToolFactor
 		availableTools: availableTools,
 		fileStore:      fileStore,
 		sessions:       sessions,
+		authToken:      os.Getenv("RSERVE_TOKEN"),
+		runBundleFn:    defaultBundleRun(s),
 	}
 	h.mux.HandleFunc("/v1/chat/completions", h.handleChatCompletions)
 	h.mux.HandleFunc("/v1/models", h.handleModels)
+	h.mux.HandleFunc("/v1/bundles", h.handleBundles)
+	h.mux.HandleFunc("/v1/bundles/", h.handleBundleByName)
 	h.mux.HandleFunc("/health", h.handleHealth)
 	if fileStore != nil {
 		h.mux.HandleFunc("/v1/files", h.handleFiles)
@@ -63,8 +71,20 @@ func (h *Handler) handleFiles(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ServeHTTP delegates to the internal mux.
+// ServeHTTP enforces optional bearer-token auth, then delegates to the internal mux.
+// Auth is enabled by setting the RSERVE_TOKEN environment variable; /health stays
+// open so monitoring keeps working.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.authToken != "" && r.URL.Path != "/health" {
+		want := "Bearer " + h.authToken
+		got := r.Header.Get("Authorization")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+			writeJSON(w, http.StatusUnauthorized, NewErrorResponse(
+				"invalid or missing bearer token", "invalid_request_error", "unauthorized",
+			))
+			return
+		}
+	}
 	h.mux.ServeHTTP(w, r)
 }
 
