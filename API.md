@@ -179,9 +179,9 @@ Chat completion endpoint. Supports both streaming (SSE) and non-streaming modes.
 | Rule | Rejected with | Why |
 |------|---------------|-----|
 | No absolute symlinks anywhere in the tree, and no relative symlink whose target resolves outside the source root | `400 unsafe_symlink` | The copy preserves symlinks as symlinks, so an escaping link still points at the original tree and a write through it lands outside the scratch root |
-| The source root's `.git` must not be a regular file | `400 unsupported_git_worktree` | A `.git` file is a linked worktree's gitdir pointer; the copy keeps using the original repository, so staging inside the clone mutates the caller's repository |
+| No regular file named `.git` anywhere in the tree, at any depth | `400 unsupported_git_worktree` | A `.git` file is a gitdir pointer -- a linked worktree at the root, a submodule checkout further down. The copy keeps using the original repository, so work inside the "isolated" clone mutates the caller's repository |
 
-Both messages name the offending path relative to the source root. Relative symlinks that stay inside the source are fine and keep working inside the clone, where they resolve to the clone's own copies. A `.git` directory is self-contained and clones normally; for a linked worktree, point `work_dirs` at the main worktree instead. A symlinked source root is itself fine -- it is resolved before anything else is checked. Sources are re-checked once the run slot is held; a source that disappears in between fails the run with `500 clone_failed`.
+Both messages name the offending path relative to the source root. Relative symlinks that stay inside the source are fine and keep working inside the clone, where they resolve to the clone's own copies. A `.git` **directory** is self-contained and clones normally at any depth, so a vendored repository is fine; only the pointer file is refused. For a linked worktree, point `work_dirs` at the main worktree; for a tree with submodule checkouts, there is no copy-based isolation -- let git create the working copy instead. A symlinked source root is itself fine -- it is resolved before anything else is checked. Sources are re-checked once the run slot is held; a source that disappears in between fails the run with `500 clone_failed`.
 
 **Model format:** `{tool}` or `{tool}:{model}` -- e.g., `claude`, `claude:opus`, `codex:gpt-5.6-sol`, `gemini`, `gemini:gemini-3-flash-preview`. Claude and Codex also accept a supported `-{effort}` suffix, such as `claude:opus-max`, `codex:gpt-5.6-luna-max`, or bare `codex-ultra` for the configured default model. OpenCode and KiloCode accept dynamic `provider/model` identifiers.
 
@@ -190,6 +190,7 @@ Both messages name the offending path relative to the source root. Relative syml
 | Header | Description |
 |--------|-------------|
 | `X-Show-Tool-Use: true` | Include tool-use summaries in streaming text output |
+| `X-Correlation-ID` | An external run identifier (e.g. a Windmill job UUID). Sanitized to `[A-Za-z0-9._-]`, capped at 128 characters, echoed as the `X-Correlation-ID` response header and the `"correlation_id"` body field, and attached to the run registry entry so `GetStatus` shows which external job owns each slot |
 
 **Non-streaming response:**
 
@@ -210,9 +211,12 @@ Both messages name the offending path relative to the source root. Relative syml
     "total_tokens": 4700
   },
   "session_id": "abc123",
-  "cloned_work_dirs": 1
+  "cloned_work_dirs": 1,
+  "correlation_id": "windmill-job-42"
 }
 ```
+
+`correlation_id` is present only when the request carried `X-Correlation-ID`.
 
 **Streaming response** (`"stream": true`):
 
@@ -220,15 +224,24 @@ Server-Sent Events format. Each event is `data: {json chunk}\n\n`. Final message
 
 Response headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`.
 
+`session_id`, `cloned_work_dirs`, and `correlation_id` ride the final chunk (the one carrying `finish_reason`), not the content chunks.
+
 **Error responses:**
 
 ```json
-{"error": {"message": "unknown tool: foo", "type": "invalid_request_error", "code": "unknown_tool"}}
+{"error": {"message": "unknown tool: foo", "type": "invalid_request_error", "code": "unknown_tool", "retryable": false}}
 ```
+
+`retryable` is on every error response from every endpoint, and is always present -- `false` is a verdict, not a missing field. It answers one question: does sending the same request again stand a chance? Automatic retry policies (Windmill's per-step `retry`, for one) should branch on it rather than on the HTTP status, which cannot distinguish a transient `500` from a permanent one.
+
+| `retryable` | Codes | Why |
+|-------------|-------|-----|
+| `false` | `method_not_allowed`, `unauthorized`, `invalid_json`, `unknown_tool`, `empty_task`, `invalid_model`, `invalid_effort`, `invalid_work_dir`, `unsafe_symlink`, `unsupported_git_worktree`, `unknown_bundle`, `missing_input`, `invalid_upload`, `missing_file`, `invalid_id`, `not_found`, `no_file_store` | The request is malformed, names something that does not exist, or is refused on policy grounds. It will be refused identically every time until the caller changes it |
+| `true` | `concurrency_limit`, `clone_failed`, `work_dir_failed`, `bundle_failed`, `bundle_list_failed`, `save_failed` | Transient: an interrupted slot wait, a filesystem failure, or a CLI/provider failure (crash, unexpected exit, timeout, rate limit). The same request can succeed later |
 
 | HTTP Status | Meaning |
 |-------------|---------|
-| `400` | Bad request, unknown tool, invalid fixed model, unsupported model/effort combination, or a `work_dirs` entry that is missing, not a directory, holds an escaping symlink (`unsafe_symlink`), or is a linked git worktree (`unsupported_git_worktree`) |
+| `400` | Bad request, unknown tool, invalid fixed model, unsupported model/effort combination, or a `work_dirs` entry that is missing, not a directory, holds an escaping symlink (`unsafe_symlink`), or holds a git pointer file (`unsupported_git_worktree`) |
 | `405` | Method not allowed |
 | `500` | Work-directory clone failed, including a source that changed after validation |
 | `503` | Request cancelled or disconnected while queued for a run slot |
@@ -255,7 +268,7 @@ List available tools (only those whose CLI binary is found on PATH), configured 
 - `GET /v1/bundles` lists bundle names and required inputs.
 - `GET /v1/bundles/{name}` returns the complete step DAG.
 - `POST /v1/bundles/{name}` runs a bundle with optional `inputs`, absolute `work_dir`, `options`, and SSE `stream`. Responses include per-step results, final output, usage, correlation ID, and bounded inline text artifacts.
-- `X-Correlation-ID` is sanitized, echoed, and attached to the run registry entry. `RSERVE_WORK_ROOT` can confine `work_dir` values and must be absolute.
+- `X-Correlation-ID` is sanitized, echoed, and attached to the run registry entry — the same handling chat completions get. `RSERVE_WORK_ROOT` can confine `work_dir` values and must be absolute.
 
 ### GET /health
 

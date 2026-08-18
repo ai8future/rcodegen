@@ -38,6 +38,9 @@ type ChatCompletionResponse struct {
 	Usage          *Usage   `json:"usage,omitempty"`
 	SessionID      string   `json:"session_id,omitempty"`
 	ClonedWorkDirs int      `json:"cloned_work_dirs,omitempty"`
+	// CorrelationID echoes the request's X-Correlation-ID, mirroring bundle
+	// runs, so a caller can tie a completion back to its own job.
+	CorrelationID string `json:"correlation_id,omitempty"`
 }
 
 // Choice represents a single completion choice.
@@ -68,6 +71,9 @@ type ChatCompletionChunk struct {
 	Usage          *Usage         `json:"usage,omitempty"`
 	SessionID      string         `json:"session_id,omitempty"`
 	ClonedWorkDirs int            `json:"cloned_work_dirs,omitempty"`
+	// CorrelationID rides the final chunk only, alongside session_id and
+	// cloned_work_dirs.
+	CorrelationID string `json:"correlation_id,omitempty"`
 }
 
 // StreamChoice represents a single choice within a streaming chunk.
@@ -153,20 +159,23 @@ type ErrorResponse struct {
 	Error ErrorDetail `json:"error"`
 }
 
-// ErrorDetail contains the error information.
+// ErrorDetail contains the error information. Retryable is derived from Code
+// by the classification in errorcodes.go, never set by hand at a call site.
 type ErrorDetail struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-	Code    string `json:"code"`
+	Message   string    `json:"message"`
+	Type      string    `json:"type"`
+	Code      ErrorCode `json:"code"`
+	Retryable bool      `json:"retryable"`
 }
 
 // NewErrorResponse constructs an ErrorResponse with the given details.
-func NewErrorResponse(msg, errType, code string) ErrorResponse {
+func NewErrorResponse(msg, errType string, code ErrorCode) ErrorResponse {
 	return ErrorResponse{
 		Error: ErrorDetail{
-			Message: msg,
-			Type:    errType,
-			Code:    code,
+			Message:   msg,
+			Type:      errType,
+			Code:      code,
+			Retryable: retryableForCode(code),
 		},
 	}
 }

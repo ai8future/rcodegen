@@ -350,6 +350,48 @@ func TestHandleChatCompletions_CloneWorkDirsRejectsLinkedWorktree(t *testing.T) 
 	}
 }
 
+// The same refusal applies to a pointer file anywhere in the tree, which is
+// what a submodule checkout looks like.
+func TestHandleChatCompletions_CloneWorkDirsRejectsNestedGitPointer(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "unused")
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	src := t.TempDir()
+	nested := filepath.Join(src, "vendor", "lib")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, ".git"), []byte("gitdir: /elsewhere/.git/modules/lib\n"), 0o644); err != nil {
+		t.Fatalf("write nested .git file: %v", err)
+	}
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}],` +
+		`"work_dirs":["` + src + `"],"clone_work_dirs":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var errResp ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if errResp.Error.Code != codeUnsupportedGitWorktree {
+		t.Errorf("code = %q, want %s", errResp.Error.Code, codeUnsupportedGitWorktree)
+	}
+	if errResp.Error.Retryable {
+		t.Error("unsupported_git_worktree reported as retryable")
+	}
+	if !strings.Contains(errResp.Error.Message, filepath.Join("vendor", "lib", ".git")) {
+		t.Errorf("message %q does not name the offending path", errResp.Error.Message)
+	}
+}
+
 // A request that can never run must not wait for the run slot it will never
 // use: Acquire blocks, so validating after it would hold the 400 behind
 // whatever is already running.
@@ -531,6 +573,189 @@ func extractClonePath(t *testing.T, args string) string {
 	}
 	t.Fatalf("no rserve-clone path in CLI args: %s", args)
 	return ""
+}
+
+func TestHandleChatCompletions_EchoesCorrelationIDOnSuccess(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "correlated output")
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Correlation-ID", "wm-job-77")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Correlation-ID"); got != "wm-job-77" {
+		t.Errorf("X-Correlation-ID header = %q, want wm-job-77", got)
+	}
+	var resp ChatCompletionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.CorrelationID != "wm-job-77" {
+		t.Errorf("correlation_id = %q, want wm-job-77", resp.CorrelationID)
+	}
+}
+
+// Without a correlation header nothing is invented: no echo header, no body
+// field.
+func TestHandleChatCompletions_OmitsCorrelationIDWhenUnset(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "uncorrelated output")
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("X-Correlation-ID"); got != "" {
+		t.Errorf("X-Correlation-ID header = %q, want none", got)
+	}
+	if strings.Contains(rec.Body.String(), "correlation_id") {
+		t.Errorf("correlation_id present without a request header: %s", rec.Body.String())
+	}
+}
+
+// The errors are what a caller most needs to tie back to its own job, so the
+// echo has to survive the failure paths — and carry the retry verdict.
+func TestHandleChatCompletions_EchoesCorrelationIDOnError(t *testing.T) {
+	chassis.RequireMajor(11)
+	h := NewHandler(nil, map[string]server.ToolFactory{}, server.NewRunRegistry(1), nil, nil, nil)
+
+	body := `{"model":"nosuchtool","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Correlation-ID", "wm-job-err")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Correlation-ID"); got != "wm-job-err" {
+		t.Errorf("X-Correlation-ID header = %q, want wm-job-err", got)
+	}
+	var errResp ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if errResp.Error.Code != codeUnknownTool {
+		t.Errorf("code = %q, want %s", errResp.Error.Code, codeUnknownTool)
+	}
+	if errResp.Error.Retryable {
+		t.Error("unknown_tool reported as retryable")
+	}
+}
+
+// Externally supplied identifiers are sanitized before they are echoed or
+// logged, so a caller cannot inject control characters into either.
+func TestHandleChatCompletions_SanitizesEchoedCorrelationID(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "sanitized")
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Correlation-ID", "wm job\t42!")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("X-Correlation-ID"); got != "wmjob42" {
+		t.Errorf("X-Correlation-ID header = %q, want wmjob42", got)
+	}
+	var resp ChatCompletionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.CorrelationID != "wmjob42" {
+		t.Errorf("correlation_id = %q, want wmjob42", resp.CorrelationID)
+	}
+}
+
+func TestHandleChatCompletions_StreamingEchoesCorrelationIDOnFinalChunk(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "streamed correlated output")
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Correlation-ID", "wm-stream-9")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Correlation-ID"); got != "wm-stream-9" {
+		t.Errorf("X-Correlation-ID header = %q, want wm-stream-9", got)
+	}
+	chunks := parseSSEChunks(t, rec.Body.String())
+	final := chunks[len(chunks)-1]
+	if final.CorrelationID != "wm-stream-9" {
+		t.Errorf("final chunk correlation_id = %q, want wm-stream-9", final.CorrelationID)
+	}
+	for i, c := range chunks[:len(chunks)-1] {
+		if c.CorrelationID != "" {
+			t.Errorf("chunk %d carries correlation_id before the final chunk", i)
+		}
+	}
+}
+
+// Chat runs join bundle runs in the registry: a caller's identifier is on the
+// entry, so status output can say which external job owns each slot.
+func TestHandleChatCompletions_RecordsCorrelationIDInRunRegistry(t *testing.T) {
+	chassis.RequireMajor(11)
+	tool := &blockingDirectAPITool{Tool: opencode.New(), started: make(chan string, 1)}
+	reg := server.NewRunRegistry(1)
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return tool },
+	}, reg, []string{"opencode"}, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)).WithContext(ctx)
+	req.Header.Set("X-Correlation-ID", "wm-registry-5")
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(rec, req)
+	}()
+
+	select {
+	case <-tool.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run never started")
+	}
+
+	runs := reg.List()
+	if len(runs) != 1 {
+		t.Fatalf("active runs = %d, want 1", len(runs))
+	}
+	if runs[0].CorrelationID != "wm-registry-5" {
+		t.Errorf("registry correlation_id = %q, want wm-registry-5", runs[0].CorrelationID)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run outlived its cancelled request")
+	}
 }
 
 func TestHandleChatCompletions_NonStreamToolWritesSSE(t *testing.T) {

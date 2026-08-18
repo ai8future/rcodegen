@@ -680,7 +680,7 @@ curl http://127.0.0.1:14261/v1/chat/completions \
 
 Chat requests accept `"clone_work_dirs": true`, which copies every `work_dirs` entry into a private scratch root under `$TMPDIR` (`rserve-clone-{run_id}-*`, mode 0700) and runs the tool against the copy. Agent state such as `.omc/` therefore lands in the throwaway tree instead of the shared source, which is what keeps concurrent workers pointed at the same repo from colliding. The scratch root is deleted when the run ends — success, failure, or client disconnect — and a cleanup failure is logged rather than failing the run. On macOS the copy is an APFS copy-on-write clone (`cp -Rc`): near-instant, no extra disk until something is written, dotfiles included; filesystems that reject it fall back to a real recursive copy, and the choice is logged per directory as `method=cow` or `method=copy`. The flag defaults to `false` (unchanged behaviour: the tool runs in the caller's directories) and is a no-op when `work_dirs` is absent. When cloning happens the response carries `"cloned_work_dirs": {n}` — on the completion object, or on the final chunk when streaming. Bundle `work_dir` semantics are unchanged.
 
-Sources are validated before the request queues for a run slot, so an unusable directory comes back right away instead of waiting behind other work. A missing or non-directory source is rejected with `400 invalid_work_dir`, and two shapes are refused because copying cannot isolate them. A tree containing an absolute symlink, or a relative symlink resolving above its root, is rejected with `400 unsafe_symlink`: the copy preserves symlinks, so the link would still aim at the original tree and a write through it would escape the scratch root. A source whose `.git` is a regular file is rejected with `400 unsupported_git_worktree`: that file is a linked worktree's gitdir pointer, so the clone would keep using the original repository and staging inside it would mutate the caller's — point `work_dirs` at the main worktree instead. Symlinks that stay inside the source are fine and keep working inside the clone, a `.git` directory clones normally, and a symlinked source root is resolved before any of this is checked.
+Sources are validated before the request queues for a run slot, so an unusable directory comes back right away instead of waiting behind other work. A missing or non-directory source is rejected with `400 invalid_work_dir`, and two shapes are refused because copying cannot isolate them. A tree containing an absolute symlink, or a relative symlink resolving above its root, is rejected with `400 unsafe_symlink`: the copy preserves symlinks, so the link would still aim at the original tree and a write through it would escape the scratch root. A source containing a regular file named `.git` — at the root or at any depth — is rejected with `400 unsupported_git_worktree`: that file is a gitdir pointer (a linked worktree at the root, a submodule checkout below it), so the clone would keep using the original repository and work inside it would mutate the caller's. Point `work_dirs` at a main worktree with no submodule checkouts, or let git create the working copy instead of copying one. Symlinks that stay inside the source are fine and keep working inside the clone, a `.git` **directory** clones normally at any depth (a vendored repository is fine), and a symlinked source root is resolved before any of this is checked.
 
 ```json
 {
@@ -692,6 +692,24 @@ Sources are validated before the request queues for a run slot, so an unusable d
 ```
 
 For streaming requests, `X-Show-Tool-Use: true` includes Claude/Gemini tool-use summaries as text chunks. Claude and Gemini expose structured streaming events; Codex, OpenCode, and KiloCode stdout is forwarded as raw content chunks.
+
+Chat requests also accept `X-Correlation-ID` — an external run identifier such as a Windmill job UUID. It is sanitized to `[A-Za-z0-9._-]` and capped at 128 characters, echoed back as the `X-Correlation-ID` response header and as `"correlation_id"` in the body (on the completion object, or the final chunk when streaming), and attached to the run registry entry so `GetStatus` shows which external job owns each slot. This is the same handling bundle runs have always had; the header echo now happens for every endpoint, including error responses.
+
+### Error retryability
+
+Every error response carries `"retryable"` alongside `message`, `type`, and `code`:
+
+```json
+{"error": {"message": "unknown tool: foo", "type": "invalid_request_error", "code": "unknown_tool", "retryable": false}}
+```
+
+It exists so an automatic retry policy — Windmill's per-step `retry`, for one — can tell "try again" from "doomed" without pattern-matching messages or guessing from the HTTP status, which cannot distinguish a transient 500 from a permanent one. The field is always present; `false` is a verdict, not a missing field.
+
+`retryable: false` covers the malformed, the non-existent, and the refused-on-policy: `method_not_allowed`, `unauthorized`, `invalid_json`, `unknown_tool`, `empty_task`, `invalid_model`, `invalid_effort`, `invalid_work_dir`, `unsafe_symlink`, `unsupported_git_worktree`, `unknown_bundle`, `missing_input`, `invalid_upload`, `missing_file`, `invalid_id`, `not_found`, `no_file_store`.
+
+`retryable: true` covers the transient: `concurrency_limit` (a slot wait interrupted before the work started), `clone_failed` and `work_dir_failed` (filesystem failures that are not policy rejections), `bundle_failed` (a CLI that crashed, exited unexpectedly, timed out, or hit a provider limit), `bundle_list_failed`, and `save_failed`.
+
+The classification lives in one map in `pkg/server/openai/errorcodes.go`, and the tests parse the package to assert that every code it can emit is classified there — an unclassified code fails the build rather than defaulting quietly.
 
 ### Multi-Turn Sessions
 
@@ -730,7 +748,7 @@ curl -X POST http://127.0.0.1:14261/v1/bundles/ensemble \
 - **Streaming:** set `"stream": true` for Server-Sent Events — `step_started`, `step_completed`, and `step_skipped` events during execution, then a final `bundle_completed` event carrying the full response. Lets callers (e.g. Windmill) show live per-step progress on long runs.
 - **Options:** `"options": {"opus_only": true, "flash_only": true}` forces Claude steps to Opus / Gemini steps to flash (parity with gRPC `RunBundle`).
 - **Inline artifacts:** text files (`.md`, `.txt`, `.json`, `.csv`, `.html`, `.htm`, `.xml`, `.yaml`, `.yml`, `.log`) created or modified under `work_dir` during the run are returned inline in the response (512KB/file, 2MB/response, and 100-artifact caps), so remote callers can review and publish reports without filesystem access to this host.
-- **`X-Correlation-ID`:** pass an external run identifier (e.g. a Windmill job UUID); it is echoed in the response body and header, and attached to the run registry entry so `GetStatus` shows which external run owns each slot.
+- **`X-Correlation-ID`:** pass an external run identifier (e.g. a Windmill job UUID); it is echoed in the response body and header, and attached to the run registry entry so `GetStatus` shows which external run owns each slot. Chat completions accept and echo it the same way.
 - **`GET /v1/bundles/{name}`** returns the bundle's full step DAG (parallel groups, vote/merge nodes, `if/then/else`) for introspection or rendering by external UIs.
 - **Cancellation:** disconnecting the HTTP request (or calling gRPC `CancelRun`) cancels the run — the orchestrator stops between steps and the in-flight step's CLI process is killed. Processes spawned *by* that CLI may survive.
 - **Bounds and confinement:** the artifact scan inspects at most 10,000 directory entries. Set `RSERVE_WORK_ROOT` to an absolute directory to require every `work_dir` to live beneath it. Rooted filesystem operations prevent pre-existing symlink components from escaping that directory, and symlinks, FIFOs, and other non-regular files are never collected.

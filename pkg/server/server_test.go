@@ -150,3 +150,45 @@ func TestRunBundle_CancelRunCancelsExecutionContext(t *testing.T) {
 		t.Fatal("RunBundle did not return after cancellation")
 	}
 }
+
+// A caller's own identifier is recorded on the run entry. The proto has no
+// field for it, so GetStatus renders it into the task string — the form
+// operators have always seen for bundle runs.
+func TestGetStatus_RendersCorrelationIDIntoTheTaskString(t *testing.T) {
+	reg := NewRunRegistry(2)
+	s := NewServer(nil, nil, reg, nil)
+
+	correlated, err := reg.AcquireWith(context.Background(), "bundle", "research-report",
+		AcquireOptions{CorrelationID: "wm-job-1"})
+	if err != nil {
+		t.Fatalf("AcquireWith: %v", err)
+	}
+	defer func() {
+		correlated.Cancel()
+		reg.Release(correlated.RunID)
+	}()
+
+	plainID, _, plainCancel, err := reg.Acquire(context.Background(), "claude", "audit this")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer func() {
+		plainCancel()
+		reg.Release(plainID)
+	}()
+
+	resp, err := s.GetStatus(context.Background(), &pb.GetStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	tasks := make(map[string]string, len(resp.Runs))
+	for _, run := range resp.Runs {
+		tasks[run.RunId] = run.Task
+	}
+	if got := tasks[correlated.RunID]; got != "research-report corr=wm-job-1" {
+		t.Errorf("correlated task = %q, want %q", got, "research-report corr=wm-job-1")
+	}
+	if got := tasks[plainID]; got != "audit this" {
+		t.Errorf("uncorrelated task = %q, want %q", got, "audit this")
+	}
+}

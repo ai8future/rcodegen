@@ -72,26 +72,40 @@ func (h *Handler) handleFiles(w http.ResponseWriter, r *http.Request) {
 		h.handleListFiles(w, r)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse(
-			"method not allowed", "invalid_request_error", "method_not_allowed",
+			"method not allowed", "invalid_request_error", codeMethodNotAllowed,
 		))
 	}
 }
 
-// ServeHTTP enforces optional bearer-token auth, then delegates to the internal mux.
-// Auth is enabled by setting the RSERVE_TOKEN environment variable; /health stays
-// open so monitoring keeps working.
+// ServeHTTP echoes the caller's correlation ID, enforces optional bearer-token
+// auth, then delegates to the internal mux. Auth is enabled by setting the
+// RSERVE_TOKEN environment variable; /health stays open so monitoring keeps
+// working.
+//
+// The echo happens here, before routing, so every response on every endpoint
+// carries X-Correlation-ID back — including the errors a caller most wants to
+// tie to its own job.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if corrID := correlationID(r); corrID != "" {
+		w.Header().Set("X-Correlation-ID", corrID)
+	}
 	if h.authToken != "" && r.URL.Path != "/health" {
 		want := "Bearer " + h.authToken
 		got := r.Header.Get("Authorization")
 		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 			writeJSON(w, http.StatusUnauthorized, NewErrorResponse(
-				"invalid or missing bearer token", "invalid_request_error", "unauthorized",
+				"invalid or missing bearer token", "invalid_request_error", codeUnauthorized,
 			))
 			return
 		}
 	}
 	h.mux.ServeHTTP(w, r)
+}
+
+// correlationID returns the request's sanitized X-Correlation-ID, empty when
+// the caller sent none.
+func correlationID(r *http.Request) string {
+	return sanitizeCorrelationID(r.Header.Get("X-Correlation-ID"))
 }
 
 // handleModels returns the list of available tools and every valid
@@ -134,7 +148,7 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse(
-			"method not allowed", "invalid_request_error", "method_not_allowed",
+			"method not allowed", "invalid_request_error", codeMethodNotAllowed,
 		))
 		return
 	}
@@ -146,7 +160,7 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	var req ChatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-			"invalid JSON: "+err.Error(), "invalid_request_error", "invalid_json",
+			"invalid JSON: "+err.Error(), "invalid_request_error", codeInvalidJSON,
 		))
 		return
 	}
@@ -162,7 +176,7 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			factory = h.toolFactories[toolName]
 		} else {
 			writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-				fmt.Sprintf("unknown tool: %s", toolName), "invalid_request_error", "unknown_tool",
+				fmt.Sprintf("unknown tool: %s", toolName), "invalid_request_error", codeUnknownTool,
 			))
 			return
 		}
@@ -171,7 +185,7 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	task := ExtractTaskPrompt(req.Messages)
 	if task == "" {
 		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-			"no user message found", "invalid_request_error", "empty_task",
+			"no user message found", "invalid_request_error", codeEmptyTask,
 		))
 		return
 	}
@@ -198,7 +212,7 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	if modelOverride != "" {
 		if err := runner.ValidateModel(tool, modelOverride); err != nil {
 			writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-				err.Error(), "invalid_request_error", "invalid_model",
+				err.Error(), "invalid_request_error", codeInvalidModel,
 			))
 			return
 		}
@@ -235,13 +249,13 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := runner.ValidateModel(tool, cfg.Model); err != nil {
 		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-			err.Error(), "invalid_request_error", "invalid_model",
+			err.Error(), "invalid_request_error", codeInvalidModel,
 		))
 		return
 	}
 	if err := runner.ValidateEffort(tool, cfg.Model, cfg.Effort); err != nil {
 		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-			err.Error(), "invalid_request_error", "invalid_effort",
+			err.Error(), "invalid_request_error", codeInvalidEffort,
 		))
 		return
 	}
@@ -259,13 +273,17 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	runID, runCtx, cancel, err := h.registry.Acquire(r.Context(), toolName, task)
+	corrID := correlationID(r)
+	run, err := h.registry.AcquireWith(r.Context(), toolName, task, server.AcquireOptions{
+		CorrelationID: corrID,
+	})
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, NewErrorResponse(
-			"failed to acquire run slot: "+err.Error(), "server_error", "concurrency_limit",
+			"failed to acquire run slot: "+err.Error(), "server_error", codeConcurrencyLimit,
 		))
 		return
 	}
+	runID, runCtx, cancel := run.RunID, run.Ctx, run.Cancel
 	defer cancel()
 	defer h.registry.Release(runID)
 
@@ -281,7 +299,7 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			// failure here is a source that changed underneath the wait or a copy
 			// that broke — a server-side failure, not a bad request.
 			writeJSON(w, http.StatusInternalServerError, NewErrorResponse(
-				err.Error(), "server_error", "clone_failed",
+				err.Error(), "server_error", codeCloneFailed,
 			))
 			return
 		}
@@ -289,17 +307,34 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		cfg.WorkDirs = clone.dirs
 	}
 
-	oaiModel := req.Model // echo back the original model string
+	meta := completionMeta{
+		runID:          runID,
+		model:          req.Model, // echo back the original model string
+		toolName:       toolName,
+		correlationID:  corrID,
+		clonedWorkDirs: clone.count(),
+	}
 
 	if req.Stream {
-		h.handleStreaming(w, runCtx, runID, oaiModel, toolName, tool, cfg, showToolUse, cancel, clone.count())
+		h.handleStreaming(w, runCtx, tool, cfg, meta, showToolUse, cancel)
 	} else {
-		h.handleNonStreaming(w, runCtx, tool, cfg, oaiModel, toolName, runID, clone.count())
+		h.handleNonStreaming(w, runCtx, tool, cfg, meta)
 	}
 }
 
+// completionMeta carries the per-run values that ride on a completion response
+// beside the model's own output.
+type completionMeta struct {
+	runID          string
+	model          string // the model string the caller sent
+	toolName       string
+	correlationID  string
+	clonedWorkDirs int
+}
+
 // handleStreaming handles a streaming chat completion request.
-func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, runID, model, toolName string, tool runner.Tool, cfg *runner.Config, showToolUse bool, cancel context.CancelFunc, clonedWorkDirs int) {
+func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, tool runner.Tool, cfg *runner.Config, meta completionMeta, showToolUse bool, cancel context.CancelFunc) {
+	runID, model := meta.runID, meta.model
 	sse := NewSSEWriter(w)
 	sse.SetHeaders()
 
@@ -378,7 +413,7 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, ru
 	sessionID := ""
 	if result.SessionID != "" && h.sessions != nil {
 		sessionID = runID
-		h.sessions.Store(sessionID, toolName, result.SessionID)
+		h.sessions.Store(sessionID, meta.toolName, result.SessionID)
 	}
 
 	// Send final chunk with finish_reason and optional usage
@@ -388,7 +423,8 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, ru
 		Created:        nowUnix(),
 		Model:          model,
 		SessionID:      sessionID,
-		ClonedWorkDirs: clonedWorkDirs,
+		ClonedWorkDirs: meta.clonedWorkDirs,
+		CorrelationID:  meta.correlationID,
 		Choices: []StreamChoice{
 			{
 				Index:        0,
@@ -412,7 +448,7 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, ru
 }
 
 // handleNonStreaming handles a non-streaming chat completion request.
-func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context, tool runner.Tool, cfg *runner.Config, model, toolName, runID string, clonedWorkDirs int) {
+func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context, tool runner.Tool, cfg *runner.Config, meta completionMeta) {
 	var buf bytes.Buffer
 	if !tool.UsesStreamOutput() {
 		cfg.Output = &buf
@@ -437,17 +473,18 @@ func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context,
 	// Store session for multi-turn (use toolName, NOT cfg.Model)
 	sessionID := ""
 	if result.SessionID != "" && h.sessions != nil {
-		sessionID = runID
-		h.sessions.Store(sessionID, toolName, result.SessionID)
+		sessionID = meta.runID
+		h.sessions.Store(sessionID, meta.toolName, result.SessionID)
 	}
 
 	resp := ChatCompletionResponse{
-		ID:             "chatcmpl-" + runID,
+		ID:             "chatcmpl-" + meta.runID,
 		Object:         "chat.completion",
 		Created:        nowUnix(),
-		Model:          model,
+		Model:          meta.model,
 		SessionID:      sessionID,
-		ClonedWorkDirs: clonedWorkDirs,
+		ClonedWorkDirs: meta.clonedWorkDirs,
+		CorrelationID:  meta.correlationID,
 		Choices: []Choice{
 			{
 				Index:        0,
@@ -468,14 +505,14 @@ func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context,
 }
 
 // workDirErrorCode maps a work_dirs validation failure to its API error code.
-func workDirErrorCode(err error) string {
+func workDirErrorCode(err error) ErrorCode {
 	switch {
 	case errors.Is(err, errUnsafeSymlink):
-		return "unsafe_symlink"
+		return codeUnsafeSymlink
 	case errors.Is(err, errGitWorktree):
-		return "unsupported_git_worktree"
+		return codeUnsupportedGitWorktree
 	default:
-		return "invalid_work_dir"
+		return codeInvalidWorkDir
 	}
 }
 

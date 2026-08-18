@@ -248,13 +248,13 @@ func (m *fileMeta) toFileObject() FileObject {
 func (h *Handler) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse(
-			"method not allowed", "invalid_request_error", "method_not_allowed",
+			"method not allowed", "invalid_request_error", codeMethodNotAllowed,
 		))
 		return
 	}
 	if h.fileStore == nil {
 		writeJSON(w, http.StatusServiceUnavailable, NewErrorResponse(
-			"file storage not configured", "server_error", "no_file_store",
+			"file storage not configured", "server_error", codeNoFileStore,
 		))
 		return
 	}
@@ -264,7 +264,7 @@ func (h *Handler) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
 		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
 			"file too large or invalid multipart form: "+err.Error(),
-			"invalid_request_error", "invalid_upload",
+			"invalid_request_error", codeInvalidUpload,
 		))
 		return
 	}
@@ -274,7 +274,7 @@ func (h *Handler) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
 			"missing 'file' field: "+err.Error(),
-			"invalid_request_error", "missing_file",
+			"invalid_request_error", codeMissingFile,
 		))
 		return
 	}
@@ -288,7 +288,7 @@ func (h *Handler) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	meta, err := h.fileStore.Save(header.Filename, purpose, file)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, NewErrorResponse(
-			"failed to save file: "+err.Error(), "server_error", "save_failed",
+			"failed to save file: "+err.Error(), "server_error", codeSaveFailed,
 		))
 		return
 	}
@@ -300,7 +300,7 @@ func (h *Handler) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse(
-			"method not allowed", "invalid_request_error", "method_not_allowed",
+			"method not allowed", "invalid_request_error", codeMethodNotAllowed,
 		))
 		return
 	}
@@ -318,7 +318,7 @@ func (h *Handler) handleFileByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/files/")
 	if id == "" || strings.Contains(id, "/") {
 		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-			"invalid file id", "invalid_request_error", "invalid_id",
+			"invalid file id", "invalid_request_error", codeInvalidID,
 		))
 		return
 	}
@@ -328,7 +328,7 @@ func (h *Handler) handleFileByID(w http.ResponseWriter, r *http.Request) {
 		meta, ok := h.fileStore.Get(id)
 		if !ok {
 			writeJSON(w, http.StatusNotFound, NewErrorResponse(
-				"file not found", "invalid_request_error", "not_found",
+				"file not found", "invalid_request_error", codeNotFound,
 			))
 			return
 		}
@@ -341,13 +341,13 @@ func (h *Handler) handleFileByID(w http.ResponseWriter, r *http.Request) {
 			})
 		} else {
 			writeJSON(w, http.StatusNotFound, NewErrorResponse(
-				"file not found", "invalid_request_error", "not_found",
+				"file not found", "invalid_request_error", codeNotFound,
 			))
 		}
 
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse(
-			"method not allowed", "invalid_request_error", "method_not_allowed",
+			"method not allowed", "invalid_request_error", codeMethodNotAllowed,
 		))
 	}
 }

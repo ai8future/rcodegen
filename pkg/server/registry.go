@@ -25,6 +25,25 @@ type ActiveRun struct {
 	Task      string
 	StartedAt time.Time
 	Cancel    context.CancelFunc
+	// CorrelationID is the caller's own identifier for this run (a Windmill
+	// job UUID, say), recorded so status output can name the external run that
+	// owns each slot. Empty when the caller supplied none.
+	CorrelationID string
+}
+
+// AcquireOptions carries the optional per-run metadata Acquire does not need.
+type AcquireOptions struct {
+	// CorrelationID is stored on the run entry as-is; callers sanitize
+	// externally supplied values before passing them.
+	CorrelationID string
+}
+
+// Acquisition is a held run slot: the run's ID, its cancellable context, and
+// the cancel func. The caller must Release the ID when the run ends.
+type Acquisition struct {
+	RunID  string
+	Ctx    context.Context
+	Cancel context.CancelFunc
 }
 
 // NewRunRegistry creates a registry that allows up to max concurrent runs.
@@ -39,12 +58,21 @@ func NewRunRegistry(max int) *RunRegistry {
 // Acquire blocks until a concurrency slot is available (or ctx is cancelled).
 // Returns a unique run ID and a cancel function for the run's context.
 func (rr *RunRegistry) Acquire(ctx context.Context, tool, task string) (string, context.Context, context.CancelFunc, error) {
+	a, err := rr.AcquireWith(ctx, tool, task, AcquireOptions{})
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return a.RunID, a.Ctx, a.Cancel, nil
+}
+
+// AcquireWith is Acquire with per-run metadata attached to the registry entry.
+func (rr *RunRegistry) AcquireWith(ctx context.Context, tool, task string, opts AcquireOptions) (*Acquisition, error) {
 	// Block until a slot opens up
 	select {
 	case rr.semaphore <- struct{}{}:
 		// got a slot
 	case <-ctx.Done():
-		return "", nil, nil, ctx.Err()
+		return nil, ctx.Err()
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -52,15 +80,16 @@ func (rr *RunRegistry) Acquire(ctx context.Context, tool, task string) (string, 
 
 	rr.mu.Lock()
 	rr.runs[runID] = &ActiveRun{
-		ID:        runID,
-		Tool:      tool,
-		Task:      task,
-		StartedAt: time.Now(),
-		Cancel:    cancel,
+		ID:            runID,
+		Tool:          tool,
+		Task:          task,
+		StartedAt:     time.Now(),
+		Cancel:        cancel,
+		CorrelationID: opts.CorrelationID,
 	}
 	rr.mu.Unlock()
 
-	return runID, runCtx, cancel, nil
+	return &Acquisition{RunID: runID, Ctx: runCtx, Cancel: cancel}, nil
 }
 
 // Release frees the concurrency slot for a completed run.

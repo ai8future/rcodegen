@@ -4,8 +4,9 @@
 //	POST /v1/bundles/{name} — run a bundle and return results + inline artifacts
 //
 // Callers may pass an X-Correlation-ID header (e.g. a Windmill job UUID); it is
-// echoed in the response body and header, and attached to the run registry entry
-// so GetStatus shows which external run owns each slot.
+// echoed in the response body and attached to the run registry entry so
+// GetStatus shows which external run owns each slot. The response header is
+// echoed centrally for every endpoint in Handler.ServeHTTP.
 package openai
 
 import (
@@ -25,6 +26,7 @@ import (
 	"rcodegen/pkg/bundle"
 	"rcodegen/pkg/envelope"
 	"rcodegen/pkg/orchestrator"
+	"rcodegen/pkg/server"
 	"rcodegen/pkg/settings"
 )
 
@@ -152,7 +154,7 @@ type BundleRunResponse struct {
 func (h *Handler) handleBundles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse(
-			"method not allowed", "invalid_request_error", "method_not_allowed",
+			"method not allowed", "invalid_request_error", codeMethodNotAllowed,
 		))
 		return
 	}
@@ -160,7 +162,7 @@ func (h *Handler) handleBundles(w http.ResponseWriter, r *http.Request) {
 	names, err := bundle.List()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, NewErrorResponse(
-			"failed to list bundles: "+err.Error(), "server_error", "bundle_list_failed",
+			"failed to list bundles: "+err.Error(), "server_error", codeBundleListFailed,
 		))
 		return
 	}
@@ -195,7 +197,7 @@ func (h *Handler) handleBundleByName(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/v1/bundles/")
 	if name == "" || strings.Contains(name, "/") {
 		writeJSON(w, http.StatusNotFound, NewErrorResponse(
-			"bundle not found", "invalid_request_error", "unknown_bundle",
+			"bundle not found", "invalid_request_error", codeUnknownBundle,
 		))
 		return
 	}
@@ -207,7 +209,7 @@ func (h *Handler) handleBundleByName(w http.ResponseWriter, r *http.Request) {
 		h.handleBundleRun(w, r, name)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse(
-			"method not allowed", "invalid_request_error", "method_not_allowed",
+			"method not allowed", "invalid_request_error", codeMethodNotAllowed,
 		))
 	}
 }
@@ -217,7 +219,7 @@ func (h *Handler) handleBundleDetail(w http.ResponseWriter, name string) {
 	b, err := bundle.Load(name)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, NewErrorResponse(
-			"bundle not found: "+err.Error(), "invalid_request_error", "unknown_bundle",
+			"bundle not found: "+err.Error(), "invalid_request_error", codeUnknownBundle,
 		))
 		return
 	}
@@ -246,7 +248,7 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 	var req BundleRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-			"invalid JSON: "+err.Error(), "invalid_request_error", "invalid_json",
+			"invalid JSON: "+err.Error(), "invalid_request_error", codeInvalidJSON,
 		))
 		return
 	}
@@ -254,7 +256,7 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 	b, err := bundle.Load(name)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, NewErrorResponse(
-			"bundle not found: "+err.Error(), "invalid_request_error", "unknown_bundle",
+			"bundle not found: "+err.Error(), "invalid_request_error", codeUnknownBundle,
 		))
 		return
 	}
@@ -270,7 +272,7 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 	if req.WorkDir != "" {
 		if !filepath.IsAbs(req.WorkDir) {
 			writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-				"work_dir must be an absolute path", "invalid_request_error", "invalid_work_dir",
+				"work_dir must be an absolute path", "invalid_request_error", codeInvalidWorkDir,
 			))
 			return
 		}
@@ -280,12 +282,12 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 		if err != nil {
 			if errors.Is(err, errUnsafeWorkDir) {
 				writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-					err.Error(), "invalid_request_error", "invalid_work_dir",
+					err.Error(), "invalid_request_error", codeInvalidWorkDir,
 				))
 				return
 			}
 			writeJSON(w, http.StatusInternalServerError, NewErrorResponse(
-				"failed to prepare work_dir: "+err.Error(), "server_error", "work_dir_failed",
+				"failed to prepare work_dir: "+err.Error(), "server_error", codeWorkDirFailed,
 			))
 			return
 		}
@@ -295,19 +297,17 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 		}
 	}
 
-	corrID := sanitizeCorrelationID(r.Header.Get("X-Correlation-ID"))
-	task := b.Name
-	if corrID != "" {
-		task = b.Name + " corr=" + corrID
-	}
-
-	runID, runCtx, cancel, err := h.registry.Acquire(r.Context(), "bundle", task)
+	corrID := correlationID(r)
+	run, err := h.registry.AcquireWith(r.Context(), "bundle", b.Name, server.AcquireOptions{
+		CorrelationID: corrID,
+	})
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, NewErrorResponse(
-			"failed to acquire run slot: "+err.Error(), "server_error", "concurrency_limit",
+			"failed to acquire run slot: "+err.Error(), "server_error", codeConcurrencyLimit,
 		))
 		return
 	}
+	runID, runCtx, cancel := run.RunID, run.Ctx, run.Cancel
 	defer cancel()
 	defer h.registry.Release(runID)
 
@@ -319,13 +319,10 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 	collector := newStepCollector()
 	opts.onStep = collector.observe
 
-	// In streaming mode headers go out before execution: set correlation now,
-	// and every outcome (including errors) rides the event stream.
+	// In streaming mode headers go out before execution, so every outcome
+	// (including errors) rides the event stream.
 	var sse *sseEventWriter
 	if req.Stream {
-		if corrID != "" {
-			w.Header().Set("X-Correlation-ID", corrID)
-		}
 		sse = newSSEEventWriter(w)
 		opts.onStep = func(ev orchestrator.StepEvent) {
 			collector.observe(ev)
@@ -351,7 +348,7 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, NewErrorResponse(
-			msg, "server_error", "bundle_failed",
+			msg, "server_error", codeBundleFailed,
 		))
 		return
 	}
@@ -360,7 +357,7 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 	// only — in streaming mode headers are already sent).
 	if env.Error != nil && env.Error.Code == "MISSING_INPUT" && sse == nil {
 		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-			env.Error.Message, "invalid_request_error", "missing_input",
+			env.Error.Message, "invalid_request_error", codeMissingInput,
 		))
 		return
 	}
@@ -399,9 +396,6 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 	if sse != nil {
 		sse.send("bundle_completed", resp)
 		return
-	}
-	if corrID != "" {
-		w.Header().Set("X-Correlation-ID", corrID)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

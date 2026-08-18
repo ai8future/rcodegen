@@ -374,6 +374,96 @@ func TestCloneWorkDirs_RejectsLinkedGitWorktree(t *testing.T) {
 	}
 }
 
+// A submodule checkout hides the same gitdir pointer several levels down. The
+// root-only check missed it, so the clone shared the submodule's repository
+// with the caller.
+func TestCloneWorkDirs_RejectsNestedGitPointerFile(t *testing.T) {
+	cases := []struct {
+		name string
+		dir  string
+	}{
+		{"submodule one level down", "vendor"},
+		{"submodule several levels down", filepath.Join("vendor", "deps", "lib")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := seedWorkDir(t)
+			nested := filepath.Join(src, c.dir)
+			if err := os.MkdirAll(nested, 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", c.dir, err)
+			}
+			gitdir := filepath.Join(t.TempDir(), "super", ".git", "modules", "lib")
+			if err := os.WriteFile(filepath.Join(nested, ".git"), []byte("gitdir: "+gitdir+"\n"), 0o644); err != nil {
+				t.Fatalf("write nested .git file: %v", err)
+			}
+
+			clone, err := cloneWorkDirs(context.Background(), "sub1", []string{src}, quietLogger())
+			if clone != nil {
+				clone.cleanup(quietLogger())
+				t.Fatal("clone should be nil when validation fails")
+			}
+			if !errors.Is(err, errGitWorktree) {
+				t.Fatalf("err = %v, want errGitWorktree", err)
+			}
+			wantRel := filepath.Join(c.dir, ".git")
+			if !strings.Contains(err.Error(), wantRel) {
+				t.Errorf("error %q does not name the offending path %s", err, wantRel)
+			}
+			if !strings.Contains(err.Error(), "submodule") {
+				t.Errorf("error %q does not explain the submodule case", err)
+			}
+			if strings.Contains(err.Error(), gitdir) {
+				t.Errorf("error %q echoes the gitdir pointer", err)
+			}
+		})
+	}
+}
+
+// Nested .git directories are self-contained — a vendored repository copies
+// cleanly and must keep working.
+func TestCloneWorkDirs_AcceptsNestedGitDirectory(t *testing.T) {
+	src := seedWorkDir(t)
+	nested := filepath.Join(src, "vendor", "lib", ".git", "refs")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested .git: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "vendor", "lib", ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatalf("write nested HEAD: %v", err)
+	}
+
+	clone, err := cloneWorkDirs(context.Background(), "sub2", []string{src}, quietLogger())
+	if err != nil {
+		t.Fatalf("cloneWorkDirs: %v", err)
+	}
+	defer clone.cleanup(quietLogger())
+
+	if _, err := os.Stat(filepath.Join(clone.dirs[0], "vendor", "lib", ".git", "HEAD")); err != nil {
+		t.Errorf("cloned nested .git/HEAD missing: %v", err)
+	}
+}
+
+// A regular file named .git only matters at a directory root or inside the
+// tree as a checkout pointer; a file that merely contains ".git" in its name
+// is ordinary content.
+func TestCloneWorkDirs_AcceptsFilesNamedLikeGit(t *testing.T) {
+	src := seedWorkDir(t)
+	for _, name := range []string{".gitignore", ".gitmodules", "notes.git"} {
+		if err := os.WriteFile(filepath.Join(src, name), []byte("content\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	clone, err := cloneWorkDirs(context.Background(), "sub3", []string{src}, quietLogger())
+	if err != nil {
+		t.Fatalf("cloneWorkDirs: %v", err)
+	}
+	defer clone.cleanup(quietLogger())
+
+	if _, err := os.Stat(filepath.Join(clone.dirs[0], ".gitmodules")); err != nil {
+		t.Errorf("cloned .gitmodules missing: %v", err)
+	}
+}
+
 func TestCloneWorkDirs_AcceptsGitDirectory(t *testing.T) {
 	src := seedWorkDir(t)
 	if err := os.MkdirAll(filepath.Join(src, ".git", "refs"), 0o755); err != nil {

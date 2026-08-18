@@ -403,10 +403,17 @@ func (s *Server) GetStatus(ctx context.Context, req *pb.GetStatusRequest) (*pb.G
 	}
 
 	for _, run := range s.registry.List() {
+		// The proto has no correlation field, so an external caller's ID rides
+		// the task string — the same "task corr=id" form GetStatus has always
+		// shown for bundle runs.
+		task := run.Task
+		if run.CorrelationID != "" {
+			task += " corr=" + run.CorrelationID
+		}
 		resp.Runs = append(resp.Runs, &pb.ActiveRun{
 			RunId:       run.ID,
 			Tool:        run.Tool,
-			Task:        run.Task,
+			Task:        task,
 			StartedAtMs: run.StartedAt.UnixMilli(),
 		})
 	}

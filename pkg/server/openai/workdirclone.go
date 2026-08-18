@@ -40,9 +40,10 @@ var (
 	// contain, so a write through the clone would reach outside it.
 	errUnsafeSymlink = errors.New("unsafe symlink in work_dirs entry")
 
-	// errGitWorktree marks a source that is a linked git worktree, which copying
-	// cannot isolate from the repository it points at.
-	errGitWorktree = errors.New("work_dirs entry is a linked git worktree")
+	// errGitWorktree marks a source holding a gitdir pointer file — a linked
+	// worktree or a submodule checkout — which copying cannot isolate from the
+	// repository it points at.
+	errGitWorktree = errors.New("work_dirs entry contains a git pointer file")
 )
 
 // workDirClone holds the scratch copies of one run's work directories.
@@ -71,10 +72,7 @@ func checkWorkDirSources(srcs []string) ([]string, error) {
 		if !info.IsDir() {
 			return nil, fmt.Errorf("%w: %s is not a directory", errInvalidWorkDir, src)
 		}
-		if err := checkGitWorktree(src, root); err != nil {
-			return nil, err
-		}
-		if err := checkSymlinks(src, root); err != nil {
+		if err := checkTree(src, root); err != nil {
 			return nil, err
 		}
 		roots = append(roots, root)
@@ -82,35 +80,32 @@ func checkWorkDirSources(srcs []string) ([]string, error) {
 	return roots, nil
 }
 
-// checkGitWorktree rejects a linked git worktree. Its .git is a regular file
-// holding a gitdir pointer, so the copy keeps using the original repository's
-// index and refs — staging inside the clone mutates the caller's repository. A
-// .git directory is self-contained and copies cleanly.
-func checkGitWorktree(src, root string) error {
-	info, err := os.Lstat(filepath.Join(root, ".git"))
-	if err != nil || !info.Mode().IsRegular() {
-		return nil
-	}
-	return fmt.Errorf("%w: %s: .git is a file pointing at another repository's gitdir, "+
-		"which copying cannot isolate — point work_dirs at the main worktree instead",
-		errGitWorktree, src)
-}
-
-// checkSymlinks rejects any symlink the clone cannot contain. /bin/cp copies
-// symlinks as symlinks, so an absolute link — or a relative one aiming above
-// the root — still resolves outside the scratch root after the copy, and a
-// write through it lands in the caller's tree.
-func checkSymlinks(src, root string) error {
+// checkTree walks the whole source tree once and enforces both clone-safety
+// policies on it: no gitdir pointer file at any depth, and no symlink the
+// clone cannot contain.
+func checkTree(src, root string) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return fmt.Errorf("%w: %s: %v", errInvalidWorkDir, src, err)
 		}
-		if d.Type()&fs.ModeSymlink == 0 {
-			return nil
-		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
 			rel = d.Name()
+		}
+		// A .git regular file is a gitdir pointer: the root's own (a linked
+		// worktree) or a nested one (a submodule checkout). Either way the copy
+		// keeps using the original repository's index and refs, so work inside
+		// the "isolated" clone mutates the caller's repository. A .git
+		// directory is self-contained and copies cleanly.
+		if d.Name() == ".git" && d.Type().IsRegular() {
+			return fmt.Errorf("%w: %s: %s is a file pointing at another repository's gitdir, "+
+				"which copying cannot isolate — linked worktrees and submodule checkouts must be "+
+				"cloned by git, not by copying; point work_dirs at a main worktree with no "+
+				"submodule checkouts instead",
+				errGitWorktree, src, rel)
+		}
+		if d.Type()&fs.ModeSymlink == 0 {
+			return nil
 		}
 		target, err := os.Readlink(path)
 		if err != nil {
