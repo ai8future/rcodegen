@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/server"
@@ -282,6 +284,240 @@ func TestHandleChatCompletions_CloneWorkDirsWithoutWorkDirsIsNoOp(t *testing.T) 
 	}
 	if got := resp.Choices[0].Message.Content; got != "no work dirs" {
 		t.Fatalf("content = %q, want 'no work dirs'", got)
+	}
+}
+
+func TestHandleChatCompletions_CloneWorkDirsRejectsUnsafeSymlink(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "unused")
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	src := t.TempDir()
+	if err := os.Symlink("/etc/hosts", filepath.Join(src, "hosts-link")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}],` +
+		`"work_dirs":["` + src + `"],"clone_work_dirs":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var errResp ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if errResp.Error.Code != "unsafe_symlink" {
+		t.Errorf("code = %q, want unsafe_symlink", errResp.Error.Code)
+	}
+	if !strings.Contains(errResp.Error.Message, "hosts-link") {
+		t.Errorf("message %q does not name the offending path", errResp.Error.Message)
+	}
+}
+
+func TestHandleChatCompletions_CloneWorkDirsRejectsLinkedWorktree(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "unused")
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, ".git"), []byte("gitdir: /elsewhere/.git/worktrees/wt\n"), 0o644); err != nil {
+		t.Fatalf("write .git file: %v", err)
+	}
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}],` +
+		`"work_dirs":["` + src + `"],"clone_work_dirs":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var errResp ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if errResp.Error.Code != "unsupported_git_worktree" {
+		t.Errorf("code = %q, want unsupported_git_worktree", errResp.Error.Code)
+	}
+}
+
+// A request that can never run must not wait for the run slot it will never
+// use: Acquire blocks, so validating after it would hold the 400 behind
+// whatever is already running.
+func TestHandleChatCompletions_InvalidWorkDirRejectedWithoutARunSlot(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "unused")
+	reg := server.NewRunRegistry(1)
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, reg, []string{"opencode"}, nil, nil)
+
+	// Occupy the only slot for the duration of the request.
+	heldID, _, heldCancel, err := reg.Acquire(context.Background(), "opencode", "held")
+	if err != nil {
+		t.Fatalf("acquire holding slot: %v", err)
+	}
+	defer func() {
+		heldCancel()
+		reg.Release(heldID)
+	}()
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}],` +
+		`"work_dirs":["` + missing + `"],"clone_work_dirs":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(rec, req)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("request blocked on a run slot instead of failing validation")
+	}
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := reg.ActiveCount(); got != 1 {
+		t.Errorf("active runs = %d, want 1 (the rejected request must not take a slot)", got)
+	}
+}
+
+func TestHandleChatCompletions_StreamingReportsClonedWorkDirs(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCodeEchoingArgs(t)
+	src := t.TempDir()
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}],"stream":true,` +
+		`"work_dirs":["` + src + `"],"clone_work_dirs":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	chunks := parseSSEChunks(t, rec.Body.String())
+	final := chunks[len(chunks)-1]
+	if final.ClonedWorkDirs != 1 {
+		t.Errorf("final chunk cloned_work_dirs = %d, want 1", final.ClonedWorkDirs)
+	}
+	if final.Choices[0].FinishReason == nil {
+		t.Error("final chunk has no finish_reason")
+	}
+	// Earlier chunks carry content, not the clone count.
+	for i, c := range chunks[:len(chunks)-1] {
+		if c.ClonedWorkDirs != 0 {
+			t.Errorf("chunk %d reports cloned_work_dirs = %d before the final chunk", i, c.ClonedWorkDirs)
+		}
+	}
+}
+
+// parseSSEChunks decodes every "data:" frame of an SSE body except [DONE].
+func parseSSEChunks(t *testing.T, body string) []ChatCompletionChunk {
+	t.Helper()
+	var chunks []ChatCompletionChunk
+	for _, line := range strings.Split(body, "\n") {
+		payload, ok := strings.CutPrefix(line, "data: ")
+		if !ok || payload == "[DONE]" {
+			continue
+		}
+		var chunk ChatCompletionChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			t.Fatalf("decode SSE frame %q: %v", payload, err)
+		}
+		chunks = append(chunks, chunk)
+	}
+	if len(chunks) == 0 {
+		t.Fatalf("no SSE data frames in body: %s", body)
+	}
+	return chunks
+}
+
+// blockingDirectAPITool takes the direct-API path and stays inside it until its
+// context is cancelled, standing in for a slow API call.
+type blockingDirectAPITool struct {
+	runner.Tool
+	started chan string // receives the directory the run was pointed at
+}
+
+func (t *blockingDirectAPITool) ShouldUseDirectAPI(*runner.Config) bool { return true }
+
+func (t *blockingDirectAPITool) RunDirectAPI(ctx context.Context, cfg *runner.Config, workDir, task string) int {
+	t.started <- workDir
+	<-ctx.Done()
+	return 130
+}
+
+// A client that disconnects mid-run must not leave the direct-API path holding
+// its run slot and scratch clone until the API answers.
+func TestHandleChatCompletions_DirectAPIRunCancelsWithTheClient(t *testing.T) {
+	chassis.RequireMajor(11)
+	tool := &blockingDirectAPITool{Tool: opencode.New(), started: make(chan string, 1)}
+	reg := server.NewRunRegistry(1)
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return tool },
+	}, reg, []string{"opencode"}, nil, nil)
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "main.go"), []byte("package main"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}],` +
+		`"work_dirs":["` + src + `"],"clone_work_dirs":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(rec, req)
+	}()
+
+	var clonePath string
+	select {
+	case clonePath = <-tool.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("direct-API run never started")
+	}
+	if !strings.Contains(clonePath, "rserve-clone-") {
+		t.Fatalf("run was pointed at %s, not a scratch clone", clonePath)
+	}
+	if _, err := os.Stat(clonePath); err != nil {
+		t.Fatalf("scratch clone missing while the run is live: %v", err)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("direct-API run outlived its cancelled request")
+	}
+
+	if _, err := os.Stat(clonePath); !os.IsNotExist(err) {
+		t.Errorf("scratch clone survived the cancelled run at %s (err = %v)", clonePath, err)
+	}
+	if got := reg.ActiveCount(); got != 0 {
+		t.Errorf("active runs = %d after cancellation, want 0", got)
 	}
 }
 

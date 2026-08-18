@@ -172,7 +172,16 @@ Chat completion endpoint. Supports both streaming (SSE) and non-streaming modes.
 }
 ```
 
-**Ephemeral work directories:** set `"clone_work_dirs": true` and each `work_dirs` entry is copied into a private scratch root (`$TMPDIR/rserve-clone-{run_id}-*`, mode 0700) before the CLI starts; the tool runs against the copy and the scratch root is removed when the run ends -- on success, on failure, and on client disconnect. Use it when concurrent runs share source trees, so agent state such as `.omc/` never lands in (or collides inside) the original directory. On macOS the copy is an APFS copy-on-write clone (`cp -Rc`), which is near-instant and consumes no extra space until written to; if the filesystem rejects that, rserve falls back to a real recursive copy. Dotfiles and dot-directories are included. The field defaults to `false` (the tool runs directly in the caller's directories), and is a no-op when `work_dirs` is absent. A source that does not exist or is not a directory returns `400` with code `invalid_work_dir`. Responses report `"cloned_work_dirs": {n}` when cloning happened -- on the completion object for non-streaming requests, and on the final chunk for streaming ones. Bundle `work_dir` semantics are unaffected.
+**Ephemeral work directories:** set `"clone_work_dirs": true` and each `work_dirs` entry is copied into a private scratch root (`$TMPDIR/rserve-clone-{run_id}-*`, mode 0700) before the CLI starts; the tool runs against the copy and the scratch root is removed when the run ends -- on success, on failure, and on client disconnect. Use it when concurrent runs share source trees, so agent state such as `.omc/` never lands in (or collides inside) the original directory. On macOS the copy is an APFS copy-on-write clone (`cp -Rc`), which is near-instant and consumes no extra space until written to; if the filesystem rejects that, rserve falls back to a real recursive copy. Dotfiles and dot-directories are included. The field defaults to `false` (the tool runs directly in the caller's directories), and is a no-op when `work_dirs` is absent. Responses report `"cloned_work_dirs": {n}` when cloning happened -- on the completion object for non-streaming requests, and on the final chunk for streaming ones. Bundle `work_dir` semantics are unaffected.
+
+**What a source must look like.** Every `work_dirs` entry is checked before the request is queued for a run slot, so an unusable directory is rejected immediately rather than after waiting behind other work. A source that does not exist or is not a directory returns `400 invalid_work_dir`. Two further rules exist because a copy cannot isolate everything:
+
+| Rule | Rejected with | Why |
+|------|---------------|-----|
+| No absolute symlinks anywhere in the tree, and no relative symlink whose target resolves outside the source root | `400 unsafe_symlink` | The copy preserves symlinks as symlinks, so an escaping link still points at the original tree and a write through it lands outside the scratch root |
+| The source root's `.git` must not be a regular file | `400 unsupported_git_worktree` | A `.git` file is a linked worktree's gitdir pointer; the copy keeps using the original repository, so staging inside the clone mutates the caller's repository |
+
+Both messages name the offending path relative to the source root. Relative symlinks that stay inside the source are fine and keep working inside the clone, where they resolve to the clone's own copies. A `.git` directory is self-contained and clones normally; for a linked worktree, point `work_dirs` at the main worktree instead. A symlinked source root is itself fine -- it is resolved before anything else is checked. Sources are re-checked once the run slot is held; a source that disappears in between fails the run with `500 clone_failed`.
 
 **Model format:** `{tool}` or `{tool}:{model}` -- e.g., `claude`, `claude:opus`, `codex:gpt-5.6-sol`, `gemini`, `gemini:gemini-3-flash-preview`. Claude and Codex also accept a supported `-{effort}` suffix, such as `claude:opus-max`, `codex:gpt-5.6-luna-max`, or bare `codex-ultra` for the configured default model. OpenCode and KiloCode accept dynamic `provider/model` identifiers.
 
@@ -219,9 +228,9 @@ Response headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, 
 
 | HTTP Status | Meaning |
 |-------------|---------|
-| `400` | Bad request, unknown tool, invalid fixed model, unsupported model/effort combination, or a `work_dirs` entry that is missing or not a directory |
+| `400` | Bad request, unknown tool, invalid fixed model, unsupported model/effort combination, or a `work_dirs` entry that is missing, not a directory, holds an escaping symlink (`unsafe_symlink`), or is a linked git worktree (`unsupported_git_worktree`) |
 | `405` | Method not allowed |
-| `500` | Work-directory clone failed |
+| `500` | Work-directory clone failed, including a source that changed after validation |
 | `503` | Request cancelled or disconnected while queued for a run slot |
 
 ### GET /v1/models

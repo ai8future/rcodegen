@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 )
 
 // cpBinary is the system copy tool used to clone work directories. An absolute
@@ -20,14 +22,112 @@ const cpBinary = "/bin/cp"
 // exercise the plain-copy fallback.
 var cloneUseCOW = runtime.GOOS == "darwin"
 
-// errInvalidWorkDir marks a clone failure caused by the request (a missing or
-// non-directory source) rather than by the server.
-var errInvalidWorkDir = errors.New("invalid work_dirs entry")
+// maxBasename is NAME_MAX on both darwin and linux: the byte limit for a single
+// path component. A longer name can never be created, and probing for one
+// returns ENAMETOOLONG rather than "does not exist".
+const maxBasename = 255
+
+// maxDestAttempts bounds the basename-collision search so a scratch root that
+// cannot yield a free name fails the clone instead of spinning.
+const maxDestAttempts = 1000
+
+var (
+	// errInvalidWorkDir marks a clone failure caused by the request (a missing or
+	// non-directory source) rather than by the server.
+	errInvalidWorkDir = errors.New("invalid work_dirs entry")
+
+	// errUnsafeSymlink marks a source tree holding a symlink a copy cannot
+	// contain, so a write through the clone would reach outside it.
+	errUnsafeSymlink = errors.New("unsafe symlink in work_dirs entry")
+
+	// errGitWorktree marks a source that is a linked git worktree, which copying
+	// cannot isolate from the repository it points at.
+	errGitWorktree = errors.New("work_dirs entry is a linked git worktree")
+)
 
 // workDirClone holds the scratch copies of one run's work directories.
 type workDirClone struct {
 	root string   // scratch root, removed by cleanup
 	dirs []string // cloned directories, in the same order as the request's work_dirs
+}
+
+// checkWorkDirSources validates every source against the clone safety policies
+// and returns the symlink-resolved roots in request order. It creates nothing,
+// so the handler can run it before committing a run slot and cloneWorkDirs can
+// run it again once the slot is held.
+func checkWorkDirSources(srcs []string) ([]string, error) {
+	roots := make([]string, 0, len(srcs))
+	for _, src := range srcs {
+		// A symlinked root is fine once resolved; everything below is judged
+		// against the resolved path.
+		root, err := filepath.EvalSymlinks(src)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s: %v", errInvalidWorkDir, src, err)
+		}
+		info, err := os.Stat(root)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s: %v", errInvalidWorkDir, src, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("%w: %s is not a directory", errInvalidWorkDir, src)
+		}
+		if err := checkGitWorktree(src, root); err != nil {
+			return nil, err
+		}
+		if err := checkSymlinks(src, root); err != nil {
+			return nil, err
+		}
+		roots = append(roots, root)
+	}
+	return roots, nil
+}
+
+// checkGitWorktree rejects a linked git worktree. Its .git is a regular file
+// holding a gitdir pointer, so the copy keeps using the original repository's
+// index and refs — staging inside the clone mutates the caller's repository. A
+// .git directory is self-contained and copies cleanly.
+func checkGitWorktree(src, root string) error {
+	info, err := os.Lstat(filepath.Join(root, ".git"))
+	if err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	return fmt.Errorf("%w: %s: .git is a file pointing at another repository's gitdir, "+
+		"which copying cannot isolate — point work_dirs at the main worktree instead",
+		errGitWorktree, src)
+}
+
+// checkSymlinks rejects any symlink the clone cannot contain. /bin/cp copies
+// symlinks as symlinks, so an absolute link — or a relative one aiming above
+// the root — still resolves outside the scratch root after the copy, and a
+// write through it lands in the caller's tree.
+func checkSymlinks(src, root string) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("%w: %s: %v", errInvalidWorkDir, src, err)
+		}
+		if d.Type()&fs.ModeSymlink == 0 {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			rel = d.Name()
+		}
+		target, err := os.Readlink(path)
+		if err != nil {
+			return fmt.Errorf("%w: %s: cannot read symlink %s: %v", errInvalidWorkDir, src, rel, err)
+		}
+		if filepath.IsAbs(target) {
+			return fmt.Errorf("%w: %s: %s is an absolute symlink", errUnsafeSymlink, src, rel)
+		}
+		// WalkDir never descends through a symlink and root is already resolved,
+		// so every parent component here is a real directory and the target
+		// resolves lexically.
+		resolved := filepath.Clean(filepath.Join(filepath.Dir(path), target))
+		if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+			return fmt.Errorf("%w: %s: %s resolves outside the work_dir", errUnsafeSymlink, src, rel)
+		}
+		return nil
+	})
 }
 
 // cloneWorkDirs copies each source directory into a fresh per-run scratch root
@@ -40,15 +140,12 @@ func cloneWorkDirs(ctx context.Context, runID string, srcs []string, logger *slo
 	}
 
 	// Validate every source before creating any scratch state, so a bad request
-	// leaves nothing behind.
-	for _, src := range srcs {
-		info, err := os.Stat(src)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %s: %v", errInvalidWorkDir, src, err)
-		}
-		if !info.IsDir() {
-			return nil, fmt.Errorf("%w: %s is not a directory", errInvalidWorkDir, src)
-		}
+	// leaves nothing behind. The handler already ran this check before taking a
+	// run slot; repeating it here closes the window between the two, where a
+	// source can vanish or change shape while the request waits for a slot.
+	roots, err := checkWorkDirSources(srcs)
+	if err != nil {
+		return nil, err
 	}
 
 	root, err := os.MkdirTemp("", "rserve-clone-"+runID+"-")
@@ -57,9 +154,13 @@ func cloneWorkDirs(ctx context.Context, runID string, srcs []string, logger *slo
 	}
 	clone := &workDirClone{root: root}
 
-	for _, src := range srcs {
-		dst := clone.destFor(src)
-		method, err := copyDir(ctx, src, dst)
+	for i, src := range srcs {
+		dst, err := clone.destFor(src)
+		if err != nil {
+			clone.cleanup(logger)
+			return nil, fmt.Errorf("clone work_dir %s: %w", src, err)
+		}
+		method, err := copyDir(ctx, roots[i], dst)
 		if err != nil {
 			clone.cleanup(logger)
 			return nil, fmt.Errorf("clone work_dir %s: %w", src, err)
@@ -73,18 +174,49 @@ func cloneWorkDirs(ctx context.Context, runID string, srcs []string, logger *slo
 
 // destFor builds the scratch path for a source directory, keeping its basename
 // and disambiguating sources that share one.
-func (c *workDirClone) destFor(src string) string {
+func (c *workDirClone) destFor(src string) (string, error) {
 	base := filepath.Base(filepath.Clean(src))
 	if base == "." || base == string(filepath.Separator) {
 		base = "workdir"
 	}
-	dst := filepath.Join(c.root, base)
-	for i := 2; ; i++ {
-		if _, err := os.Lstat(dst); os.IsNotExist(err) {
-			return dst
+	for i := 1; i <= maxDestAttempts; i++ {
+		name := fitBasename(base, 0)
+		if i > 1 {
+			suffix := fmt.Sprintf("-%d", i)
+			name = fitBasename(base, len(suffix)) + suffix
 		}
-		dst = filepath.Join(c.root, fmt.Sprintf("%s-%d", base, i))
+		dst := filepath.Join(c.root, name)
+		_, err := os.Lstat(dst)
+		switch {
+		case os.IsNotExist(err):
+			return dst, nil
+		case err != nil:
+			// Only "does not exist" means the name is free. Treating every other
+			// error as free-to-retry is what let an unprobeable name loop.
+			return "", fmt.Errorf("check clone destination: %w", err)
+		}
 	}
+	return "", fmt.Errorf("no free clone destination for %q after %d attempts", base, maxDestAttempts)
+}
+
+// fitBasename truncates name so it plus a suffix of suffixLen bytes fits within
+// the filesystem's per-component limit, cutting on a rune boundary.
+func fitBasename(name string, suffixLen int) string {
+	limit := maxBasename - suffixLen
+	if limit < 1 {
+		limit = 1
+	}
+	if len(name) <= limit {
+		return name
+	}
+	trimmed := name[:limit]
+	for len(trimmed) > 0 && !utf8.ValidString(trimmed) {
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	if trimmed == "" {
+		trimmed = "workdir"
+	}
+	return trimmed
 }
 
 // cleanup removes the scratch root. A failure is logged, never returned: it

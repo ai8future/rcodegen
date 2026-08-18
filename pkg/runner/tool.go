@@ -2,6 +2,7 @@
 package runner
 
 import (
+	"context"
 	"os/exec"
 )
 
@@ -104,8 +105,10 @@ type DirectAPIRunner interface {
 	ShouldUseDirectAPI(cfg *Config) bool
 
 	// RunDirectAPI executes the task by calling the API directly, writes output
-	// to cfg.Output (or os.Stdout), and returns the exit code.
-	RunDirectAPI(cfg *Config, workDir, task string) int
+	// to cfg.Output (or os.Stdout), and returns the exit code. It must abort
+	// when ctx is cancelled: a server run holds a concurrency slot (and any
+	// scratch clone) until this returns.
+	RunDirectAPI(ctx context.Context, cfg *Config, workDir, task string) int
 }
 
 // ModelEffortProvider is an optional interface for tools whose supported

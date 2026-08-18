@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -32,14 +33,23 @@ var imageModels = map[string]bool{
 	"gemini-3.1-flash-image-preview": true,
 }
 
+// apiBaseURL is the Generative Language endpoint. Tests point it at a local server.
+var apiBaseURL = "https://generativelanguage.googleapis.com/v1beta"
+
+// imageAPITimeout caps a single generation request. Image models are slow, but
+// an unbounded call would pin a server run slot (and its scratch clone) for as
+// long as the API stays silent.
+const imageAPITimeout = 5 * time.Minute
+
 // ShouldUseDirectAPI returns true for image-generation models.
 func (t *Tool) ShouldUseDirectAPI(cfg *runner.Config) bool {
 	return imageModels[cfg.Model]
 }
 
 // RunDirectAPI calls the Gemini REST API directly, saves any generated images,
-// prints the text response, and returns an exit code.
-func (t *Tool) RunDirectAPI(cfg *runner.Config, workDir, task string) int {
+// prints the text response, and returns an exit code. Cancelling ctx aborts the
+// in-flight request.
+func (t *Tool) RunDirectAPI(ctx context.Context, cfg *runner.Config, workDir, task string) int {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
 		fmt.Fprintf(os.Stderr, "GEMINI_API_KEY environment variable not set\n")
@@ -98,14 +108,20 @@ func (t *Tool) RunDirectAPI(cfg *runner.Config, workDir, task string) int {
 		return 1
 	}
 
-	url := fmt.Sprintf(
-		"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
-		cfg.Model, apiKey,
-	)
+	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", apiBaseURL, cfg.Model, apiKey)
 
-	resp, err := http.Post(url, "application/json", bytes.NewReader(bodyBytes)) //nolint:noctx
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "API request failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to build request: %v\n", redactKey(err.Error(), apiKey))
+		return 1
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: imageAPITimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		// The key rides in the query string, and a transport error quotes the URL.
+		fmt.Fprintf(os.Stderr, "API request failed: %s\n", redactKey(err.Error(), apiKey))
 		return 1
 	}
 	defer resp.Body.Close()
@@ -163,6 +179,14 @@ func (t *Tool) RunDirectAPI(cfg *runner.Config, workDir, task string) int {
 	}
 
 	return 0
+}
+
+// redactKey removes the API key from text headed for stderr.
+func redactKey(s, key string) string {
+	if key == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, key, "REDACTED")
 }
 
 // imageFileToPart reads an image file and returns a Gemini API inlineData part.

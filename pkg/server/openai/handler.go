@@ -246,6 +246,19 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Validate clone sources before taking a run slot. Acquire blocks until one
+	// frees up, so checking afterwards makes an unusable work_dir queue behind
+	// real work and burn a slot just to return its 400.
+	cloneRequested := req.CloneWorkDirs && len(req.WorkDirs) > 0
+	if cloneRequested {
+		if _, err := checkWorkDirSources(req.WorkDirs); err != nil {
+			writeJSON(w, http.StatusBadRequest, NewErrorResponse(
+				err.Error(), "invalid_request_error", workDirErrorCode(err),
+			))
+			return
+		}
+	}
+
 	runID, runCtx, cancel, err := h.registry.Acquire(r.Context(), toolName, task)
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, NewErrorResponse(
@@ -260,16 +273,13 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// sits in the same teardown stack as cancel/Release, so a client disconnect
 	// removes the scratch root too.
 	var clone *workDirClone
-	if req.CloneWorkDirs && len(req.WorkDirs) > 0 {
+	if cloneRequested {
 		cloneLogger := logz.New("info")
 		clone, err = cloneWorkDirs(runCtx, runID, req.WorkDirs, cloneLogger)
 		if err != nil {
-			if errors.Is(err, errInvalidWorkDir) {
-				writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-					err.Error(), "invalid_request_error", "invalid_work_dir",
-				))
-				return
-			}
+			// These sources passed validation before the slot was acquired, so a
+			// failure here is a source that changed underneath the wait or a copy
+			// that broke — a server-side failure, not a bad request.
 			writeJSON(w, http.StatusInternalServerError, NewErrorResponse(
 				err.Error(), "server_error", "clone_failed",
 			))
@@ -455,6 +465,18 @@ func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context,
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// workDirErrorCode maps a work_dirs validation failure to its API error code.
+func workDirErrorCode(err error) string {
+	switch {
+	case errors.Is(err, errUnsafeSymlink):
+		return "unsafe_symlink"
+	case errors.Is(err, errGitWorktree):
+		return "unsupported_git_worktree"
+	default:
+		return "invalid_work_dir"
+	}
 }
 
 // formatToolUse builds a "[ToolName: summary]\n" string from a content block.

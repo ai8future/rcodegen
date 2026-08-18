@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.2.12 — 2026-08-18
+- **Fixed two ways `clone_work_dirs` failed to isolate anything** (external audit, 3 high + 2 medium; both reproduced before fixing). `cp -Rc` preserves symlinks, so a cloned tree kept links pointing outside itself and a write through one landed in the caller's original tree. Sources are now resolved with `EvalSymlinks` and walked before any scratch state exists: absolute symlinks are rejected, relative ones only when their target escapes the root — `400 unsafe_symlink`, naming the offending path relative to the root
+- **Linked git worktrees are refused instead of silently shared**: a `.git` regular file is a gitdir pointer, so staging inside the "isolated" clone mutated the caller's repository. Now `400 unsupported_git_worktree`; a `.git` directory still clones normally
+- **Fixed an uncancellable infinite loop in the basename-collision suffixer**: `Lstat` returns `ENAMETOOLONG` for a basename over NAME_MAX, which is neither "exists" nor "does not exist", so the retry loop never terminated. Unexpected `Lstat` errors now fail the clone, the suffix search is bounded at 1000 attempts, and the base is truncated on a rune boundary so basename plus suffix always fits 255 bytes
+- **Direct-API runs now honor cancellation**: `DirectAPIRunner.RunDirectAPI` takes a `context.Context` threaded from the run context, and gemini's image path uses `http.NewRequestWithContext` with a 5-minute client bound — a disconnected client no longer holds its run slot and scratch clone until the API answers. Transport errors are scrubbed of the API key that rides in the query string
+- **`work_dirs` validation moved ahead of `registry.Acquire`**, which blocks: an unusable directory used to queue behind real work and burn a slot to return its 400. Sources are re-checked once the slot is held, so one that vanished during the wait fails as `500 clone_failed` rather than hanging
+- 16 new tests (absolute/escaping/internal symlinks, `.git` file vs directory, NAME_MAX truncation and the 1000-attempt bound under a deadline, colliding 255-byte basenames, streaming `cloned_work_dirs`, rejection without taking a run slot, direct-API cancellation at both the handler and gemini layers, key redaction); `go build`, `go vet`, and the full `-race` suite green; README and API docs updated
+- Details: `_bugs_fixed/2026-08-18-clone-work-dirs-isolation-escapes.md`
+- Agent: Claude:Opus 5
+
 ## 4.2.11 — 2026-08-18
 - **Ephemeral work directories for chat completions**: new optional `"clone_work_dirs": true` on `POST /v1/chat/completions` copies each `work_dirs` entry into a per-run scratch root (`$TMPDIR/rserve-clone-{run_id}-*`, 0700) and runs the CLI against the copy, so agent state such as `.omc/` never lands in — or collides inside — a shared source tree when concurrent workers target the same repo
 - **Copy-on-write on APFS**: cloning uses `cp -Rc` (clonefile-backed, near-instant, no extra disk until written, dotfiles included) and falls back to a plain recursive copy when the filesystem rejects it; each clone logs `src`, `dst`, and `method=cow|copy`
