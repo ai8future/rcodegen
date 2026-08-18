@@ -220,7 +220,15 @@ func main() {
 			case <-ctx.Done():
 				shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer shutCancel()
-				return httpServer.Shutdown(shutCtx)
+				err := httpServer.Shutdown(shutCtx)
+				// Async runs have no connection left to fail on, so they are
+				// told the server is going away through their callbacks —
+				// best-effort, and bounded so a dead receiver cannot hold the
+				// exit open.
+				asyncCtx, asyncCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer asyncCancel()
+				httpHandler.Shutdown(asyncCtx)
+				return err
 			case err := <-errCh:
 				if err == http.ErrServerClosed {
 					return nil

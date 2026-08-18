@@ -31,6 +31,10 @@ var wantRetryable = map[ErrorCode]bool{
 	"invalid_id":               false,
 	"not_found":                false,
 	"no_file_store":            false,
+	"invalid_callback_url":     false,
+	"invalid_callback_headers": false,
+	"callback_stream_conflict": false,
+	"run_cancelled":            false,
 
 	"concurrency_limit":  true,
 	"clone_failed":       true,
@@ -38,6 +42,7 @@ var wantRetryable = map[ErrorCode]bool{
 	"bundle_failed":      true,
 	"bundle_list_failed": true,
 	"save_failed":        true,
+	"server_shutdown":    true,
 }
 
 func TestErrorRetryable_MatchesTheShippedClassification(t *testing.T) {

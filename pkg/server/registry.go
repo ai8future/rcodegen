@@ -37,6 +37,12 @@ type AcquireOptions struct {
 	// CorrelationID is stored on the run entry as-is; callers sanitize
 	// externally supplied values before passing them.
 	CorrelationID string
+	// RunID registers the run under an identifier the caller already published,
+	// instead of minting a fresh one. An async submission answers 202 with its
+	// run_id before any slot is free, and naming the slot with that same ID is
+	// what keeps status output, gRPC CancelRun, and the HTTP run endpoints
+	// talking about one run rather than two. Empty means "mint one".
+	RunID string
 	// OnQueued is called once, on the caller's goroutine, when every slot is
 	// busy and the request is about to wait — never when a slot was free.
 	// position is this waiter's place in line at that moment, counting from 1.
@@ -111,7 +117,10 @@ func (rr *RunRegistry) AcquireWith(ctx context.Context, tool, task string, opts 
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	runID := generateRunID()
+	runID := opts.RunID
+	if runID == "" {
+		runID = generateRunID()
+	}
 
 	rr.mu.Lock()
 	rr.runs[runID] = &ActiveRun{
@@ -181,6 +190,12 @@ func (rr *RunRegistry) QueuedCount() int {
 // MaxConcurrent returns the configured maximum concurrent runs.
 func (rr *RunRegistry) MaxConcurrent() int {
 	return rr.maxConcurrent
+}
+
+// NewRunID mints a run identifier from the same space the registry uses, for a
+// caller that must name a run before it holds a slot.
+func NewRunID() string {
+	return generateRunID()
 }
 
 // generateRunID produces a short unique hex ID.

@@ -37,6 +37,10 @@ const (
 	codeInvalidID              ErrorCode = "invalid_id"
 	codeNotFound               ErrorCode = "not_found"
 	codeNoFileStore            ErrorCode = "no_file_store"
+	codeInvalidCallbackURL     ErrorCode = "invalid_callback_url"
+	codeInvalidCallbackHeaders ErrorCode = "invalid_callback_headers"
+	codeCallbackStreamConflict ErrorCode = "callback_stream_conflict"
+	codeRunCancelled           ErrorCode = "run_cancelled"
 
 	// Retryable: a transient server-side or environmental failure. The same
 	// request can succeed later.
@@ -47,6 +51,7 @@ const (
 	codeBundleFailed     ErrorCode = "bundle_failed"
 	codeBundleListFailed ErrorCode = "bundle_list_failed"
 	codeSaveFailed       ErrorCode = "save_failed"
+	codeServerShutdown   ErrorCode = "server_shutdown"
 )
 
 // errorRetryable classifies every declared error code. The mapping is the
@@ -76,6 +81,15 @@ var errorRetryable = map[ErrorCode]bool{
 	codeInvalidID:     false,
 	codeNotFound:      false,
 	codeNoFileStore:   false,
+	// Async callback mode request errors: a callback URL the server refuses to
+	// POST to, headers it cannot send, or a callback asked for alongside a
+	// stream. All three are properties of the request, unchanged by resending.
+	codeInvalidCallbackURL:     false,
+	codeInvalidCallbackHeaders: false,
+	codeCallbackStreamConflict: false,
+	// The caller cancelled this run through DELETE /v1/runs/{id}. Retrying is a
+	// new decision, not a recovery.
+	codeRunCancelled: false,
 
 	// --- retryable ----------------------------------------------------------
 	// The slot wait was interrupted (shutdown or a disconnected client); the
@@ -94,6 +108,10 @@ var errorRetryable = map[ErrorCode]bool{
 	// own filesystem.
 	codeBundleListFailed: true,
 	codeSaveFailed:       true,
+	// An async run was still in flight when the server shut down. Nothing about
+	// the request was wrong, and rserve keeps no durable state, so the caller's
+	// only recovery is to submit it again.
+	codeServerShutdown: true,
 }
 
 // retryableForCode reports whether a caller should retry an error with this

@@ -32,6 +32,9 @@ type Handler struct {
 	sessions       *server.SessionStore
 	authToken      string        // optional bearer token from RSERVE_TOKEN; empty = no auth
 	runBundleFn    bundleRunFunc // bundle execution, replaceable in tests
+	// async holds the runs that outlive their request: their lifecycle
+	// contexts, their retained results, and the callback dispatcher.
+	async *asyncRuns
 }
 
 type writerFunc func([]byte) (int, error)
@@ -51,11 +54,14 @@ func NewHandler(s *settings.Settings, toolFactories map[string]server.ToolFactor
 		sessions:       sessions,
 		authToken:      os.Getenv("RSERVE_TOKEN"),
 		runBundleFn:    defaultBundleRun(s),
+		async:          newAsyncRuns(),
 	}
 	h.mux.HandleFunc("/v1/chat/completions", h.handleChatCompletions)
 	h.mux.HandleFunc("/v1/models", h.handleModels)
 	h.mux.HandleFunc("/v1/bundles", h.handleBundles)
 	h.mux.HandleFunc("/v1/bundles/", h.handleBundleByName)
+	h.mux.HandleFunc("/v1/runs", h.handleRuns)
+	h.mux.HandleFunc("/v1/runs/", h.handleRunByID)
 	h.mux.HandleFunc("/health", h.handleHealth)
 	if fileStore != nil {
 		h.mux.HandleFunc("/v1/files", h.handleFiles)
@@ -146,7 +152,9 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleChatCompletions is the main handler for chat completion requests.
+// handleChatCompletions is the main handler for chat completion requests. A
+// request is validated in full before either path starts, so a bad one is
+// refused on this connection whether it asked for a callback or not.
 func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse(
@@ -167,6 +175,59 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	plan, status, errResp := h.planChatCompletion(r, &req)
+	if errResp != nil {
+		writeJSON(w, status, *errResp)
+		return
+	}
+	if plan.callback != nil {
+		h.submitAsyncRun(w, plan)
+		return
+	}
+	h.runChatSync(w, r, plan)
+}
+
+// chatPlan is a chat completion request that has passed every check and is
+// ready to run — on this connection, or detached from it behind a callback.
+type chatPlan struct {
+	tool           runner.Tool
+	cfg            *runner.Config
+	toolName       string
+	model          string // the model string the caller sent, echoed back
+	correlationID  string
+	workDirs       []string
+	cloneRequested bool
+	stream         bool
+	showToolUse    bool
+	// callback is non-nil when the caller asked for async delivery.
+	callback *callbackTarget
+}
+
+// planChatCompletion validates a decoded request and builds the run it
+// describes. On rejection it returns the HTTP status and envelope to send and a
+// nil plan; nothing has been acquired or created either way.
+func (h *Handler) planChatCompletion(r *http.Request, req *ChatCompletionRequest) (*chatPlan, int, *ErrorResponse) {
+	// Async delivery and streaming are two answers to the same question, and a
+	// request that asks for both has no defined outcome. Refuse it before any
+	// of the work below.
+	var callback *callbackTarget
+	if req.CallbackURL != "" {
+		if req.Stream {
+			return rejected(http.StatusBadRequest, NewErrorResponse(
+				"callback_url cannot be combined with stream: a callback delivers the completion once, "+
+					"a stream delivers it incrementally — pick one",
+				"invalid_request_error", codeCallbackStreamConflict,
+			))
+		}
+		cb, err := newCallbackTarget(req.CallbackURL, req.CallbackHeaders)
+		if err != nil {
+			return rejected(http.StatusBadRequest, NewErrorResponse(
+				err.Error(), "invalid_request_error", callbackErrorCode(err),
+			))
+		}
+		callback = cb
+	}
+
 	toolName, modelOverride := ParseModel(req.Model)
 
 	// "claude-max" style: an effort suffix riding on the bare tool name.
@@ -177,19 +238,17 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			toolName, requestEffort = baseTool, e
 			factory = h.toolFactories[toolName]
 		} else {
-			writeJSON(w, http.StatusBadRequest, NewErrorResponse(
+			return rejected(http.StatusBadRequest, NewErrorResponse(
 				fmt.Sprintf("unknown tool: %s", toolName), "invalid_request_error", codeUnknownTool,
 			))
-			return
 		}
 	}
 
 	task := ExtractTaskPrompt(req.Messages)
 	if task == "" {
-		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
+		return rejected(http.StatusBadRequest, NewErrorResponse(
 			"no user message found", "invalid_request_error", codeEmptyTask,
 		))
-		return
 	}
 
 	showToolUse := r.Header.Get("X-Show-Tool-Use") == "true"
@@ -213,10 +272,9 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// tool's valid effort suffixes.
 	if modelOverride != "" {
 		if err := runner.ValidateModel(tool, modelOverride); err != nil {
-			writeJSON(w, http.StatusBadRequest, NewErrorResponse(
+			return rejected(http.StatusBadRequest, NewErrorResponse(
 				err.Error(), "invalid_request_error", codeInvalidModel,
 			))
-			return
 		}
 	}
 
@@ -250,32 +308,53 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		cfg.Effort = requestEffort
 	}
 	if err := runner.ValidateModel(tool, cfg.Model); err != nil {
-		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
+		return rejected(http.StatusBadRequest, NewErrorResponse(
 			err.Error(), "invalid_request_error", codeInvalidModel,
 		))
-		return
 	}
 	if err := runner.ValidateEffort(tool, cfg.Model, cfg.Effort); err != nil {
-		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
+		return rejected(http.StatusBadRequest, NewErrorResponse(
 			err.Error(), "invalid_request_error", codeInvalidEffort,
 		))
-		return
 	}
 
 	// Validate clone sources before taking a run slot. Acquire blocks until one
 	// frees up, so checking afterwards makes an unusable work_dir queue behind
-	// real work and burn a slot just to return its 400.
+	// real work and burn a slot just to return its 400. An async submission has
+	// the same reason and one more: after the 202 there is no connection left to
+	// report a bad work_dir on.
 	cloneRequested := req.CloneWorkDirs && len(req.WorkDirs) > 0
 	if cloneRequested {
 		if _, err := checkWorkDirSources(req.WorkDirs); err != nil {
-			writeJSON(w, http.StatusBadRequest, NewErrorResponse(
+			return rejected(http.StatusBadRequest, NewErrorResponse(
 				err.Error(), "invalid_request_error", workDirErrorCode(err),
 			))
-			return
 		}
 	}
 
-	corrID := correlationID(r)
+	return &chatPlan{
+		tool:           tool,
+		cfg:            cfg,
+		toolName:       toolName,
+		model:          req.Model, // echo back the original model string
+		correlationID:  correlationID(r),
+		workDirs:       req.WorkDirs,
+		cloneRequested: cloneRequested,
+		stream:         req.Stream,
+		showToolUse:    showToolUse,
+		callback:       callback,
+	}, 0, nil
+}
+
+// rejected packages a validation failure for planChatCompletion's caller.
+func rejected(status int, resp ErrorResponse) (*chatPlan, int, *ErrorResponse) {
+	return nil, status, &resp
+}
+
+// runChatSync executes a validated plan on the caller's own connection: the
+// original behaviour, where the run lives and dies with the request.
+func (h *Handler) runChatSync(w http.ResponseWriter, r *http.Request, plan *chatPlan) {
+	tool, cfg, corrID := plan.tool, plan.cfg, plan.correlationID
 
 	// A request that waits for a busy slot looks exactly like a slow one from
 	// outside. Streaming callers are told as it happens; non-streaming callers
@@ -284,7 +363,7 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// it was before.
 	var sse *SSEWriter
 	acquireOpts := server.AcquireOptions{CorrelationID: corrID}
-	if req.Stream {
+	if plan.stream {
 		acquireOpts.OnQueued = func(position int) {
 			sse = NewSSEWriter(w)
 			sse.SetHeaders()
@@ -292,7 +371,7 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	run, err := h.registry.AcquireWith(r.Context(), toolName, task, acquireOpts)
+	run, err := h.registry.AcquireWith(r.Context(), plan.toolName, cfg.Task, acquireOpts)
 	if err != nil {
 		h.writeChatError(w, sse, http.StatusServiceUnavailable, NewErrorResponse(
 			"failed to acquire run slot: "+err.Error(), "server_error", codeConcurrencyLimit,
@@ -302,7 +381,7 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	if sse != nil {
 		_ = sse.WriteEvent(queueEvent{Type: "started"})
 	}
-	if !req.Stream {
+	if !plan.stream {
 		if ms := run.QueueWait.Milliseconds(); ms > 0 {
 			w.Header().Set("X-Queue-Wait-Ms", strconv.FormatInt(ms, 10))
 		}
@@ -315,9 +394,9 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// sits in the same teardown stack as cancel/Release, so a client disconnect
 	// removes the scratch root too.
 	var clone *workDirClone
-	if cloneRequested {
+	if plan.cloneRequested {
 		cloneLogger := logz.New("info")
-		clone, err = cloneWorkDirs(runCtx, runID, req.WorkDirs, cloneLogger)
+		clone, err = cloneWorkDirs(runCtx, runID, plan.workDirs, cloneLogger)
 		if err != nil {
 			// These sources passed validation before the slot was acquired, so a
 			// failure here is a source that changed underneath the wait or a copy
@@ -333,16 +412,16 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 
 	meta := completionMeta{
 		runID:          runID,
-		model:          req.Model, // echo back the original model string
-		toolName:       toolName,
+		model:          plan.model,
+		toolName:       plan.toolName,
 		correlationID:  corrID,
 		clonedWorkDirs: clone.count(),
 	}
 
-	if req.Stream {
-		h.handleStreaming(w, runCtx, tool, cfg, meta, showToolUse, cancel, sse)
+	if plan.stream {
+		h.handleStreaming(w, runCtx, tool, cfg, meta, plan.showToolUse, cancel, sse)
 	} else {
-		h.handleNonStreaming(w, runCtx, tool, cfg, meta)
+		writeJSON(w, http.StatusOK, h.completeNonStreaming(runCtx, tool, cfg, meta))
 	}
 }
 
@@ -481,8 +560,10 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, to
 	sse.WriteDone()
 }
 
-// handleNonStreaming handles a non-streaming chat completion request.
-func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context, tool runner.Tool, cfg *runner.Config, meta completionMeta) {
+// completeNonStreaming runs the tool to completion and builds the response
+// object. It writes nothing: the synchronous path sends the result on the
+// caller's connection, the async path POSTs it to a callback and retains it.
+func (h *Handler) completeNonStreaming(ctx context.Context, tool runner.Tool, cfg *runner.Config, meta completionMeta) ChatCompletionResponse {
 	var buf bytes.Buffer
 	if !tool.UsesStreamOutput() {
 		cfg.Output = &buf
@@ -529,7 +610,7 @@ func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context,
 	}
 	resp.Usage, resp.CostUSD, resp.UsageSource = runUsage(tool, result)
 
-	writeJSON(w, http.StatusOK, resp)
+	return resp
 }
 
 // workDirErrorCode maps a work_dirs validation failure to its API error code.

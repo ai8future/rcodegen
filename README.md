@@ -639,7 +639,7 @@ The gRPC listener is plaintext and has no authentication layer. Keep it on loopb
 
 ### OpenAI-Compatible HTTP API
 
-The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs`, `clone_work_dirs`, and `session_id` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, or `gemini:gemini-3.1-pro-preview`), with an optional **`-{effort}` suffix** on either form: `claude:opus-max`, `codex:gpt-5.6-luna-high`, or bare `codex-ultra` (the configured default model at that effort). The suffix is only treated as an effort when that specific model supports it, so hyphenated names like `gpt-5.6-luna` are never mangled; chat requests reject unsupported combinations such as `gpt-5.6-luna-ultra`. Supported suffixes also work on `model` fields in bundle step definitions. `/v1/models` enumerates fixed `tool:model` combinations for tools found on the server's `PATH`, flags the configured default with `"default": true`, and lists model-specific suffixes in `"efforts"`. OpenCode and KiloCode advertise `"dynamic": true`, list their configured default, and continue accepting arbitrary `provider/model` identifiers. Unknown models in fixed namespaces receive a 400 listing valid options. Chat request bodies are limited to 10MB; bundle run request bodies are limited to 1MB.
+The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs`, `clone_work_dirs`, `session_id`, and `callback_url` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, or `gemini:gemini-3.1-pro-preview`), with an optional **`-{effort}` suffix** on either form: `claude:opus-max`, `codex:gpt-5.6-luna-high`, or bare `codex-ultra` (the configured default model at that effort). The suffix is only treated as an effort when that specific model supports it, so hyphenated names like `gpt-5.6-luna` are never mangled; chat requests reject unsupported combinations such as `gpt-5.6-luna-ultra`. Supported suffixes also work on `model` fields in bundle step definitions. `/v1/models` enumerates fixed `tool:model` combinations for tools found on the server's `PATH`, flags the configured default with `"default": true`, and lists model-specific suffixes in `"efforts"`. OpenCode and KiloCode advertise `"dynamic": true`, list their configured default, and continue accepting arbitrary `provider/model` identifiers. Unknown models in fixed namespaces receive a 400 listing valid options. Chat request bodies are limited to 10MB; bundle run request bodies are limited to 1MB.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -652,6 +652,10 @@ The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus
 | `/v1/files` | GET | List uploaded files |
 | `/v1/files/{id}` | GET | Get uploaded-file metadata |
 | `/v1/files/{id}` | DELETE | Delete a file |
+| `/v1/runs/{run_id}` | GET | Async run status and timings |
+| `/v1/runs/{run_id}/result` | GET | Retained completion of a finished async run |
+| `/v1/runs` | GET | Async run summaries, filterable by `?correlation_id=` |
+| `/v1/runs/{run_id}` | DELETE | Cancel a queued or running async run |
 | `/health` | GET | Server health and active run count |
 
 ```bash
@@ -695,6 +699,28 @@ For streaming requests, `X-Show-Tool-Use: true` includes Claude/Gemini tool-use 
 
 Chat requests also accept `X-Correlation-ID` — an external run identifier such as a Windmill job UUID. It is sanitized to `[A-Za-z0-9._-]` and capped at 128 characters, echoed back as the `X-Correlation-ID` response header and as `"correlation_id"` in the body (on the completion object, or the final chunk when streaming), and attached to the run registry entry so `GetStatus` shows which external job owns each slot. This is the same handling bundle runs have always had; the header echo now happens for every endpoint, including error responses.
 
+### Async callback mode
+
+A synchronous chat completion holds one connection for the entire run, ties the client's read timeout to the caller's step timeout to the instance timeout, and dies with the connection — a client disconnect cancels the run. For runs measured in minutes, that coupling is the biggest reliability gap there is. Send `"callback_url"` and the run is detached from the request instead:
+
+```bash
+curl http://127.0.0.1:14261/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: windmill-job-42" \
+  -d '{"model":"claude:opus","messages":[{"role":"user","content":"audit this code"}],
+       "work_dirs":["/path/to/project"],"clone_work_dirs":true,
+       "callback_url":"https://windmill.example.com/api/w/aows/jobs_u/resume/..."}'
+# → 202 {"run_id":"a1b2c3d4e5f60718","status":"queued","correlation_id":"windmill-job-42"}
+```
+
+The request is validated in full first — model, effort, `work_dirs` policies, the callback URL itself — so a bad request still comes back as the same `400` on the same connection. Only then does rserve answer `202` and let go. The run then proceeds exactly as the synchronous path does (same queue accounting, same cloning, same completion shape), and when it ends rserve POSTs the completion — the synchronous body plus `"run_id"` and `"status": "success"|"failure"` — to the callback URL: 10s per attempt, 3 attempts, backoff 2s then 8s, then it gives up and logs. A failure payload embeds the usual error envelope, `retryable` included. Delivery happens after the run slot is freed, so a slow receiver never holds capacity.
+
+`callback_url` must be `https`, or plain `http` only for a loopback or RFC1918 host; anything else is `400 invalid_callback_url`. It cannot be combined with `"stream": true` (`400 callback_stream_conflict`). Optional `callback_headers` ride the POST verbatim for receivers that need their own auth. Header values are never logged, and neither is the callback URL's path or query — a Windmill resume URL is a secret in path form, so logs name only its scheme and host.
+
+Poll or manage a run through `/v1/runs`: `GET /v1/runs/{run_id}` for `queued|running|success|failure` plus timings, `GET /v1/runs/{run_id}/result` for the retained payload, `GET /v1/runs?correlation_id=` to find the runs one job owns, and `DELETE /v1/runs/{run_id}` to cancel — which kills the CLI subprocess, removes the scratch clone, frees the slot, and delivers a `run_cancelled` failure callback. `DELETE` is what replaces "client disconnect cancels the run" once there is no connection to drop.
+
+**Retention is in-memory and non-durable — this is deliberate.** Results are bounded to 100 or 1 hour, whichever binds first, with least-recently-used eviction; queued and running runs are never evicted; message content is capped at 64KB and truncated with `"output_truncated": true` rather than dropped. **A restart loses every pending run and every retained result.** In-flight runs get one best-effort `server_shutdown` failure callback (retryable) if their receiver is up, and nothing at all if it is not. rserve holds no durable state by design — the fleet keeps that in Postgres — so the caller's own timeout is the real guard. For a Windmill flow, that is the step's suspend timeout: submit with the step's resume URL as `callback_url`, suspend, and rserve resumes the flow with the completion. No held connection, no timeout coupling, and a worker restart no longer kills the run. `API.md` has the full pairing example.
+
 ### Cost, usage, and queue visibility
 
 Chat completions report where their numbers came from. `"usage_source": "cli"` means the tool's CLI reported usage: `usage` is populated, and `"cost_usd"` too when the CLI reports a cost (Claude does; Gemini reports tokens only, so `cost_usd` is omitted rather than sent as zero). `"usage_source": "unreported"` means the CLI publishes none — Codex's JSON carries `usage: null`, and OpenCode and KiloCode have no usage channel at all — and then `usage` and `cost_usd` are omitted entirely. rserve never invents these numbers: an omitted `cost_usd` means "not measured", not "free", so anything summing costs across runs must treat `unreported` as unknown. Each tool adapter implements `runner.UsageReporter`, so a CLI that starts reporting usage is a one-adapter change.
@@ -719,9 +745,9 @@ Every error response carries `"retryable"` alongside `message`, `type`, and `cod
 
 It exists so an automatic retry policy — Windmill's per-step `retry`, for one — can tell "try again" from "doomed" without pattern-matching messages or guessing from the HTTP status, which cannot distinguish a transient 500 from a permanent one. The field is always present; `false` is a verdict, not a missing field.
 
-`retryable: false` covers the malformed, the non-existent, and the refused-on-policy: `method_not_allowed`, `unauthorized`, `invalid_json`, `unknown_tool`, `empty_task`, `invalid_model`, `invalid_effort`, `invalid_work_dir`, `unsafe_symlink`, `unsupported_git_worktree`, `unknown_bundle`, `missing_input`, `invalid_upload`, `missing_file`, `invalid_id`, `not_found`, `no_file_store`.
+`retryable: false` covers the malformed, the non-existent, and the refused-on-policy: `method_not_allowed`, `unauthorized`, `invalid_json`, `unknown_tool`, `empty_task`, `invalid_model`, `invalid_effort`, `invalid_work_dir`, `unsafe_symlink`, `unsupported_git_worktree`, `unknown_bundle`, `missing_input`, `invalid_upload`, `missing_file`, `invalid_id`, `not_found`, `no_file_store`, `invalid_callback_url`, `invalid_callback_headers`, `callback_stream_conflict`, and `run_cancelled` (the caller asked for it; retrying is a new decision, not a recovery).
 
-`retryable: true` covers the transient: `concurrency_limit` (a slot wait interrupted before the work started), `clone_failed` and `work_dir_failed` (filesystem failures that are not policy rejections), `bundle_failed` (a CLI that crashed, exited unexpectedly, timed out, or hit a provider limit), `bundle_list_failed`, and `save_failed`.
+`retryable: true` covers the transient: `concurrency_limit` (a slot wait interrupted before the work started), `clone_failed` and `work_dir_failed` (filesystem failures that are not policy rejections), `bundle_failed` (a CLI that crashed, exited unexpectedly, timed out, or hit a provider limit), `bundle_list_failed`, `save_failed`, and `server_shutdown` (an async run caught in flight by a restart).
 
 The classification lives in one map in `pkg/server/openai/errorcodes.go`, and the tests parse the package to assert that every code it can emit is classified there — an unclassified code fails the build rather than defaulting quietly.
 

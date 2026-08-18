@@ -20,6 +20,14 @@ type ChatCompletionRequest struct {
 	// CloneWorkDirs runs the tool against throwaway copies of work_dirs so
 	// concurrent runs never write state into the same source tree.
 	CloneWorkDirs bool `json:"clone_work_dirs,omitempty"`
+	// CallbackURL switches the request to async callback mode: the server
+	// validates it, answers 202 with a run_id, releases the connection, and
+	// POSTs the completion here when the run ends. Mutually exclusive with
+	// stream.
+	CallbackURL string `json:"callback_url,omitempty"`
+	// CallbackHeaders ride the callback POST verbatim — a bearer token for a
+	// receiver that needs one. Values are never logged.
+	CallbackHeaders map[string]string `json:"callback_headers,omitempty"`
 }
 
 // Message represents a single chat message with a role and content.
@@ -129,6 +137,64 @@ type StreamChoice struct {
 type Delta struct {
 	Role    string `json:"role,omitempty"`
 	Content string `json:"content,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// Async callback mode types
+// ---------------------------------------------------------------------------
+
+// Run lifecycle states, reported by the run endpoints and by the terminal
+// status field of a callback payload.
+const (
+	runStatusQueued  = "queued"
+	runStatusRunning = "running"
+	runStatusSuccess = "success"
+	runStatusFailure = "failure"
+)
+
+// AsyncSubmitResponse is the 202 answer to a chat completion carrying a
+// callback_url: the run's identity, handed back before any work starts.
+type AsyncSubmitResponse struct {
+	RunID         string `json:"run_id"`
+	Status        string `json:"status"`
+	CorrelationID string `json:"correlation_id,omitempty"`
+}
+
+// AsyncCompletion is what a finished async run publishes — POSTed to the
+// callback URL and retained for GET /v1/runs/{run_id}/result. It is the
+// synchronous completion shape (inlined) plus the run's identity and outcome,
+// so a caller can hand it to the same parser either way.
+type AsyncCompletion struct {
+	ChatCompletionResponse
+	RunID  string `json:"run_id"`
+	Status string `json:"status"` // success or failure
+	// Error carries the same envelope detail a synchronous failure returns,
+	// retryable included. Present only when status is "failure".
+	Error *ErrorDetail `json:"error,omitempty"`
+	// OutputTruncated marks a completion whose message content was cut to the
+	// retention size cap. The result is never dropped silently instead.
+	OutputTruncated bool `json:"output_truncated,omitempty"`
+}
+
+// RunSummary is the status view of one async run: GET /v1/runs/{run_id} and
+// each entry of the correlation lookup. Timestamps are Unix seconds and are
+// omitted until the run reaches that stage.
+type RunSummary struct {
+	RunID         string `json:"run_id"`
+	Status        string `json:"status"`
+	CorrelationID string `json:"correlation_id,omitempty"`
+	CreatedAt     int64  `json:"created_at"`
+	StartedAt     int64  `json:"started_at,omitempty"`
+	FinishedAt    int64  `json:"finished_at,omitempty"`
+	// QueueWaitMs is how long the run waited for a slot, mirroring the
+	// synchronous path's X-Queue-Wait-Ms.
+	QueueWaitMs int64 `json:"queue_wait_ms,omitempty"`
+}
+
+// RunList is the GET /v1/runs response body.
+type RunList struct {
+	Object string       `json:"object"`
+	Data   []RunSummary `json:"data"`
 }
 
 // ---------------------------------------------------------------------------

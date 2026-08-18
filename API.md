@@ -168,9 +168,13 @@ Chat completion endpoint. Supports both streaming (SSE) and non-streaming modes.
   "stream": false,
   "work_dirs": ["/path/to/project"],
   "clone_work_dirs": false,
-  "session_id": "optional-session-id"
+  "session_id": "optional-session-id",
+  "callback_url": "https://windmill.example.com/api/w/aows/jobs_u/resume/...",
+  "callback_headers": {"Authorization": "Bearer receiver-token"}
 }
 ```
+
+`callback_url` switches the request into [async callback mode](#async-callback-mode): the server answers `202` with a `run_id` and delivers the completion later. Everything below applies to both modes unless it says otherwise.
 
 **Ephemeral work directories:** set `"clone_work_dirs": true` and each `work_dirs` entry is copied into a private scratch root (`$TMPDIR/rserve-clone-{run_id}-*`, mode 0700) before the CLI starts; the tool runs against the copy and the scratch root is removed when the run ends -- on success, on failure, and on client disconnect. Use it when concurrent runs share source trees, so agent state such as `.omc/` never lands in (or collides inside) the original directory. On macOS the copy is an APFS copy-on-write clone (`cp -Rc`), which is near-instant and consumes no extra space until written to; if the filesystem rejects that, rserve falls back to a real recursive copy. Dotfiles and dot-directories are included. The field defaults to `false` (the tool runs directly in the caller's directories), and is a no-op when `work_dirs` is absent. Responses report `"cloned_work_dirs": {n}` when cloning happened -- on the completion object for non-streaming requests, and on the final chunk for streaming ones. Bundle `work_dir` semantics are unaffected.
 
@@ -257,15 +261,136 @@ data: {"type": "started"}
 
 | `retryable` | Codes | Why |
 |-------------|-------|-----|
-| `false` | `method_not_allowed`, `unauthorized`, `invalid_json`, `unknown_tool`, `empty_task`, `invalid_model`, `invalid_effort`, `invalid_work_dir`, `unsafe_symlink`, `unsupported_git_worktree`, `unknown_bundle`, `missing_input`, `invalid_upload`, `missing_file`, `invalid_id`, `not_found`, `no_file_store` | The request is malformed, names something that does not exist, or is refused on policy grounds. It will be refused identically every time until the caller changes it |
-| `true` | `concurrency_limit`, `clone_failed`, `work_dir_failed`, `bundle_failed`, `bundle_list_failed`, `save_failed` | Transient: an interrupted slot wait, a filesystem failure, or a CLI/provider failure (crash, unexpected exit, timeout, rate limit). The same request can succeed later |
+| `false` | `method_not_allowed`, `unauthorized`, `invalid_json`, `unknown_tool`, `empty_task`, `invalid_model`, `invalid_effort`, `invalid_work_dir`, `unsafe_symlink`, `unsupported_git_worktree`, `unknown_bundle`, `missing_input`, `invalid_upload`, `missing_file`, `invalid_id`, `not_found`, `no_file_store`, `invalid_callback_url`, `invalid_callback_headers`, `callback_stream_conflict`, `run_cancelled` | The request is malformed, names something that does not exist, or is refused on policy grounds. It will be refused identically every time until the caller changes it |
+| `true` | `concurrency_limit`, `clone_failed`, `work_dir_failed`, `bundle_failed`, `bundle_list_failed`, `save_failed`, `server_shutdown` | Transient: an interrupted slot wait, a filesystem failure, a CLI/provider failure (crash, unexpected exit, timeout, rate limit), or a server restart that caught the run in flight. The same request can succeed later |
 
 | HTTP Status | Meaning |
 |-------------|---------|
-| `400` | Bad request, unknown tool, invalid fixed model, unsupported model/effort combination, or a `work_dirs` entry that is missing, not a directory, holds an escaping symlink (`unsafe_symlink`), or holds a git pointer file (`unsupported_git_worktree`) |
+| `202` | Async submission accepted; the completion will be POSTed to `callback_url` |
+| `400` | Bad request, unknown tool, invalid fixed model, unsupported model/effort combination, an unusable `callback_url`/`callback_headers`, `callback_url` together with `stream`, or a `work_dirs` entry that is missing, not a directory, holds an escaping symlink (`unsafe_symlink`), or holds a git pointer file (`unsupported_git_worktree`) |
+| `404` | Unknown run ID, or one whose result has been evicted from retention |
 | `405` | Method not allowed |
 | `500` | Work-directory clone failed, including a source that changed after validation |
 | `503` | Request cancelled or disconnected while queued for a run slot |
+
+### Async callback mode
+
+A synchronous completion holds one HTTP connection for the whole run, couples three timeouts (client read < caller's module timeout < instance timeout), and dies with the connection: a client disconnect cancels the run. For runs measured in minutes that is the largest source of avoidable failure. In callback mode the connection is released immediately and the run's lifecycle belongs to the server.
+
+Send `callback_url` on a chat completion and rserve:
+
+1. validates the request **in full** — model, effort, `work_dirs` policies, the callback URL itself — so a bad request still fails on this connection with the same `400` it always did;
+2. answers `202` with the run's identity and releases the connection;
+3. runs it exactly as the synchronous path would (same queue accounting, same `clone_work_dirs` behaviour, same completion shape);
+4. POSTs the completion to `callback_url` when the run ends, success or failure;
+5. retains the result for polling, whether or not the callback was delivered.
+
+```json
+{"run_id": "a1b2c3d4e5f60718", "status": "queued", "correlation_id": "windmill-job-42"}
+```
+
+`callback_url` cannot be combined with `"stream": true` (`400 callback_stream_conflict`) — a callback delivers the completion once, a stream delivers it incrementally.
+
+**Callback URL rules.** `https` is accepted for any host. Plain `http` is accepted only when the host is a loopback or RFC1918 address (`127.0.0.0/8`, `::1`, `localhost`, `10/8`, `172.16/12`, `192.168/16`, IPv6 unique-local), where the network itself is the boundary. Anything else is `400 invalid_callback_url`. `callback_headers` are applied verbatim to the POST (a bearer token for a receiver that needs one); names must be valid HTTP field names and values must not contain line breaks, else `400 invalid_callback_headers`. **Header values are never logged, and neither is the callback URL's path or query** — a Windmill resume URL is a secret in path form, so logs name only its scheme and host.
+
+**Callback payload.** The synchronous completion object plus `run_id` and `status`:
+
+```json
+{
+  "id": "chatcmpl-a1b2c3d4e5f60718",
+  "object": "chat.completion",
+  "created": 1711800000,
+  "model": "claude:opus",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "..."}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1200, "completion_tokens": 3500, "total_tokens": 4700},
+  "usage_source": "cli",
+  "cost_usd": 0.0432,
+  "correlation_id": "windmill-job-42",
+  "run_id": "a1b2c3d4e5f60718",
+  "status": "success"
+}
+```
+
+A failure carries the same error envelope a synchronous caller would have received, `retryable` included:
+
+```json
+{
+  "id": "chatcmpl-a1b2c3d4e5f60718",
+  "object": "chat.completion",
+  "created": 1711800000,
+  "model": "claude:opus",
+  "choices": [],
+  "run_id": "a1b2c3d4e5f60718",
+  "status": "failure",
+  "error": {"message": "server shut down before the run finished; ...", "type": "server_error", "code": "server_shutdown", "retryable": true}
+}
+```
+
+`status` reports whether the run produced a completion, not whether the model was happy: a CLI that exits nonzero still yields `success` with whatever it wrote, exactly as the synchronous path returns `200` for the same run. `failure` means no completion exists — `clone_failed`, `run_cancelled`, or `server_shutdown`.
+
+**Delivery.** POST with `Content-Type: application/json`, 10s per attempt, 3 attempts with backoff (2s, then 8s), then rserve gives up and logs a warning. Any non-2xx counts as a failed attempt. Delivery happens **after** the run slot is released, so a slow receiver never holds capacity. An undelivered callback costs the run nothing: the result stays available at `GET /v1/runs/{run_id}/result` for as long as retention holds it.
+
+**Retention is in-memory and non-durable.** Results live in the rserve process, bounded to **100 results or 1 hour**, whichever binds first, with least-recently-used eviction; a run that is still queued or running is never evicted. Message content is capped at 64KB — the same discipline as bundle step output — and an oversize completion is truncated with `"output_truncated": true` rather than dropped. **A restart loses every pending run and every retained result.** Callers whose run was in flight get one best-effort `server_shutdown` failure callback if their receiver is up, and nothing at all if it is not. Durable run state belongs in the caller's own store (Postgres, in this fleet) or in the caller's timeout — for a Windmill flow, the suspend timeout is the guard.
+
+### GET /v1/runs/{run_id}
+
+Lifecycle status of an async run. Timestamps are Unix seconds and appear as the run reaches each stage.
+
+```json
+{
+  "run_id": "a1b2c3d4e5f60718",
+  "status": "running",
+  "correlation_id": "windmill-job-42",
+  "created_at": 1711800000,
+  "started_at": 1711800004,
+  "queue_wait_ms": 4120
+}
+```
+
+`status` is `queued`, `running`, `success`, or `failure`. `404 not_found` means the ID is unknown or its result has been evicted — from here those are the same condition.
+
+### GET /v1/runs/{run_id}/result
+
+The retained callback payload, byte for byte what the callback receiver was sent. `404 not_found` when the run is unknown, evicted, or has not finished yet (the message says which, and names the current status).
+
+### GET /v1/runs
+
+Run summaries, newest first. `?correlation_id=` filters to the runs one external job owns — the value is sanitized the same way `X-Correlation-ID` is. Without the parameter every known run is listed.
+
+```json
+{"object": "list", "data": [{"run_id": "a1b2c3d4e5f60718", "status": "success", "correlation_id": "windmill-job-42", "created_at": 1711800000, "started_at": 1711800004, "finished_at": 1711800039}]}
+```
+
+### DELETE /v1/runs/{run_id}
+
+Cancels a queued or running async run: the CLI subprocess is killed, the scratch clone removed, the run slot freed, and a `run_cancelled` failure callback delivered. This is what replaces "client disconnect cancels the run" once the connection is gone. Returns `204` for any known run — including one that already finished, so a caller cancelling twice sees the same answer — and `404` once the run has been evicted.
+
+### Windmill pairing
+
+The payoff: a flow step submits with its own resume URL as the callback, then suspends. rserve resumes the flow with the completion as the resume payload. No held connection, no timeout coupling, and a worker restart no longer kills the run.
+
+```python
+# Step 1 — submit, then suspend. Returns immediately.
+import requests, wmill
+
+resume_urls = wmill.get_resume_urls()          # approval/resume endpoints for this step
+r = requests.post(
+    "http://127.0.0.1:14261/v1/chat/completions",
+    headers={"X-Correlation-ID": wmill.get_job_id()},
+    json={
+        "model": "claude:opus",
+        "messages": [{"role": "user", "content": task}],
+        "work_dirs": ["/srv/repo"],
+        "clone_work_dirs": True,
+        "callback_url": resume_urls["resume"],
+    },
+    timeout=30,
+)
+r.raise_for_status()                            # 400s are still 400s, right here
+run_id = r.json()["run_id"]                     # keep it: poll or cancel with this
+```
+
+Set the step's suspend timeout to the longest the run may take (e.g. 2h); it becomes the only timeout knob in the flow. The resumed payload is the callback body above, so the next step reads `status`, `choices[0].message.content`, `cost_usd`, and — on failure — `error.retryable`, which is exactly what a Windmill `retry` policy should branch on. If the flow times out or the callback never lands, `GET /v1/runs/{run_id}` and `GET /v1/runs/{run_id}/result` are the fallback, subject to the retention bounds above.
 
 ### GET /v1/models
 
