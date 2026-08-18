@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 
 	"rcodegen/pkg/runner"
@@ -98,6 +99,24 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, BuildModelList(h.availableTools, h.toolFactories))
 }
 
+// splitToolEffort resolves "claude-max" style names where an effort suffix
+// rides on a bare tool name. Returns the tool, effort, and whether it matched.
+func (h *Handler) splitToolEffort(name string) (tool, effort string, ok bool) {
+	for tn, factory := range h.toolFactories {
+		prefix := tn + "-"
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		rest := name[len(prefix):]
+		for _, e := range factory().ValidEfforts() {
+			if rest == e {
+				return tn, e, true
+			}
+		}
+	}
+	return "", "", false
+}
+
 // handleHealth returns server health information.
 func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, HealthResponse{
@@ -131,12 +150,19 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 
 	toolName, modelOverride := ParseModel(req.Model)
 
+	// "claude-max" style: an effort suffix riding on the bare tool name.
+	requestEffort := ""
 	factory, ok := h.toolFactories[toolName]
 	if !ok {
-		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-			fmt.Sprintf("unknown tool: %s", toolName), "invalid_request_error", "unknown_tool",
-		))
-		return
+		if baseTool, e, found := h.splitToolEffort(toolName); found {
+			toolName, requestEffort = baseTool, e
+			factory = h.toolFactories[toolName]
+		} else {
+			writeJSON(w, http.StatusBadRequest, NewErrorResponse(
+				fmt.Sprintf("unknown tool: %s", toolName), "invalid_request_error", "unknown_tool",
+			))
+			return
+		}
 	}
 
 	task := ExtractTaskPrompt(req.Messages)
@@ -151,9 +177,20 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 
 	tool := factory()
 
+	// "claude:opus-max" style: an effort suffix on the model name. Split before
+	// validation so the base model is checked, not the suffixed string.
+	if modelOverride != "" {
+		base, e := runner.SplitModelEffort(tool, modelOverride)
+		modelOverride = base
+		if e != "" {
+			requestEffort = e
+		}
+	}
+
 	// Reject unknown models up front with the valid list — a bad model passed
 	// through to the CLI fails silently (200 with empty content). GET
-	// /v1/models enumerates every valid tool:model combination.
+	// /v1/models enumerates every valid tool:model combination and each
+	// tool's valid effort suffixes.
 	if modelOverride != "" {
 		if err := runner.ValidateModel(tool, modelOverride); err != nil {
 			writeJSON(w, http.StatusBadRequest, NewErrorResponse(
@@ -202,6 +239,10 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 	if cfg.Model == "" {
 		cfg.Model = tool.DefaultModel()
+	}
+	// Effort from the request's suffix overrides the settings default.
+	if requestEffort != "" {
+		cfg.Effort = requestEffort
 	}
 
 	oaiModel := req.Model // echo back the original model string

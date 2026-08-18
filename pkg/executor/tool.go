@@ -44,9 +44,14 @@ func (e *ToolExecutor) Execute(step *bundle.Step, ctx *orchestrator.Context, ws 
 	// Apply tool-specific defaults (sets MaxBudget, etc.)
 	tool.ApplyToolDefaults(cfg)
 
-	// Override model if specified in step
+	// Override model if specified in step. A "-{effort}" suffix on the model
+	// (e.g. "opus-max", "gpt-5.6-luna-high") sets the step's effort level.
 	if step.Model != "" {
-		cfg.Model = step.Model
+		base, effort := runner.SplitModelEffort(tool, step.Model)
+		cfg.Model = base
+		if effort != "" {
+			cfg.Effort = effort
+		}
 	} else if cfg.Model == "" {
 		cfg.Model = tool.DefaultModel()
 	}

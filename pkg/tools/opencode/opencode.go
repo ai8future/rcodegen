@@ -47,6 +47,11 @@ func (t *Tool) ValidModels() []string {
 	return nil
 }
 
+// ValidEfforts returns nil: opencode has no reasoning-effort concept.
+func (t *Tool) ValidEfforts() []string {
+	return nil
+}
+
 func (t *Tool) DefaultModel() string {
 	return settings.DefaultOpenCodeModel
 }

@@ -22,6 +22,10 @@ type Tool interface {
 	// ValidModels returns the list of valid model names for this tool
 	ValidModels() []string
 
+	// ValidEfforts returns the reasoning-effort levels this tool accepts,
+	// lowest to highest. Nil means the tool has no effort concept.
+	ValidEfforts() []string
+
 	// DefaultModel returns the default model name
 	DefaultModel() string
 

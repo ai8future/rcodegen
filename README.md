@@ -333,7 +333,7 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
   "output_dir": "",
   "default_build_dir": "",
   "defaults": {
-    "codex": { "model": "gpt-5.5", "effort": "xhigh" },
+    "codex": { "model": "gpt-5.6-sol", "effort": "xhigh" },
     "claude": { "model": "sonnet", "budget": "10.00", "effort": "xhigh" },
     "gemini": { "model": "gemini-3.1-pro-preview" },
     "opencode": {
@@ -378,7 +378,7 @@ In task text, `@path/to/file` is expanded to that file's contents before executi
 `fable`, `sonnet`, `opus`, `haiku` (settings default: `sonnet`). Effort levels: `low`, `medium`, `high`, `xhigh`, `max` (default: `xhigh`).
 
 ### Codex
-`gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex` (default: `gpt-5.5`)
+`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex` (default: `gpt-5.6-sol`). Effort levels: `low`, `medium`, `high`, `xhigh` (default: `xhigh`).
 
 ### Gemini
 `gemini-3.1-pro-preview`, `gemini-3.1-flash-image-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, plus the `banana` alias for the image-preview model (default: `gemini-3.1-pro-preview`)
@@ -421,7 +421,7 @@ Use `--static` to disable animation.
 | Output Format | stream-json | --json | stream-json | json | json |
 | Cost Tracking | iTerm2 API | iTerm2 API | iTerm2 API | None in v1 | None in v1 |
 | Budget Control | `--max-budget-usd` | None | None | Provider-side | Provider-side |
-| Default Model | sonnet | gpt-5.5 | gemini-3.1-pro-preview | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct |
+| Default Model | sonnet | gpt-5.6-sol | gemini-3.1-pro-preview | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct |
 
 ## Project Structure
 
@@ -638,7 +638,7 @@ The gRPC listener is plaintext and has no authentication layer. Keep it on loopb
 
 ### OpenAI-Compatible HTTP API
 
-The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs` and `session_id` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, or `gemini:gemini-3.1-pro-preview`). `/v1/models` enumerates every valid `tool:model` combination for tools whose underlying CLI is found on the server's `PATH`, with each tool's default model flagged `"default": true` — the single source of truth for model naming. An unknown model in a chat request is rejected with a 400 listing the valid options rather than passed through to the CLI (which would fail silently). Chat request bodies are limited to 10MB; bundle run request bodies are limited to 1MB.
+The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs` and `session_id` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, or `gemini:gemini-3.1-pro-preview`), with an optional **`-{effort}` suffix** on either form: `claude:opus-max`, `codex:gpt-5.6-luna-high`, or bare `claude-max` (default model at that effort). The suffix is only treated as an effort when the remainder is a valid model, so hyphenated names like `gpt-5.6-luna` are never mangled; the same suffix works on `model` fields in bundle step definitions. `/v1/models` enumerates every valid `tool:model` combination for tools whose underlying CLI is found on the server's `PATH`, with each tool's default model flagged `"default": true` and its valid effort suffixes listed as `"efforts"` on the bare tool entry — the single source of truth for model and effort naming. An unknown model in a chat request is rejected with a 400 listing the valid options rather than passed through to the CLI (which would fail silently). Chat request bodies are limited to 10MB; bundle run request bodies are limited to 1MB.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|

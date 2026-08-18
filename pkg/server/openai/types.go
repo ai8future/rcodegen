@@ -90,11 +90,12 @@ type ModelList struct {
 
 // ModelInfo represents a single model entry.
 type ModelInfo struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
-	Default bool   `json:"default,omitempty"` // true for a tool's default model
+	ID      string   `json:"id"`
+	Object  string   `json:"object"`
+	Created int64    `json:"created"`
+	OwnedBy string   `json:"owned_by"`
+	Default bool     `json:"default,omitempty"` // true for a tool's default model
+	Efforts []string `json:"efforts,omitempty"` // bare tool entries: valid "-{effort}" suffixes
 }
 
 // ---------------------------------------------------------------------------

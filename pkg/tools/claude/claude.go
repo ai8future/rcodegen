@@ -78,6 +78,11 @@ func (t *Tool) ValidModels() []string {
 	return []string{"fable", "sonnet", "opus", "haiku"}
 }
 
+// ValidEfforts returns the reasoning-effort levels claude accepts.
+func (t *Tool) ValidEfforts() []string {
+	return []string{"low", "medium", "high", "xhigh", "max"}
+}
+
 // DefaultModel returns the default model name
 func (t *Tool) DefaultModel() string {
 	return "opus"

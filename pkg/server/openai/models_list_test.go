@@ -29,7 +29,8 @@ func TestBuildModelList_EnumeratesToolModels(t *testing.T) {
 	}
 
 	// Bare tool entries plus every tool:model combination.
-	for _, want := range []string{"claude", "codex", "claude:opus", "claude:fable", "claude:sonnet", "claude:haiku", "codex:gpt-5.5"} {
+	for _, want := range []string{"claude", "codex", "claude:opus", "claude:fable", "claude:sonnet", "claude:haiku",
+		"codex:gpt-5.6-sol", "codex:gpt-5.6-terra", "codex:gpt-5.6-luna", "codex:gpt-5.5"} {
 		if _, ok := ids[want]; !ok {
 			t.Errorf("model list missing %q; got %d entries", want, len(ml.Data))
 		}
@@ -42,8 +43,19 @@ func TestBuildModelList_EnumeratesToolModels(t *testing.T) {
 	if ids["claude:haiku"].Default {
 		t.Error("claude:haiku should not be flagged default")
 	}
-	if !ids["codex:gpt-5.5"].Default {
-		t.Error("codex:gpt-5.5 should be flagged default")
+	if !ids["codex:gpt-5.6-sol"].Default {
+		t.Error("codex:gpt-5.6-sol should be flagged default")
+	}
+	if ids["codex:gpt-5.5"].Default {
+		t.Error("codex:gpt-5.5 should no longer be flagged default")
+	}
+
+	// Valid effort suffixes surfaced on bare tool entries.
+	if got := ids["claude"].Efforts; len(got) != 5 || got[4] != "max" {
+		t.Errorf("claude efforts = %v, want [low medium high xhigh max]", got)
+	}
+	if got := ids["codex"].Efforts; len(got) != 4 || got[3] != "xhigh" {
+		t.Errorf("codex efforts = %v, want [low medium high xhigh]", got)
 	}
 
 	// The guessing failure from the field: luna must not exist.
@@ -66,9 +78,9 @@ func TestHandleModels_WithFactories(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&ml); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	// 2 bare tools + 4 claude models + 6 codex models.
-	if len(ml.Data) != 12 {
-		t.Errorf("expected 12 entries, got %d", len(ml.Data))
+	// 2 bare tools + 4 claude models + 9 codex models.
+	if len(ml.Data) != 15 {
+		t.Errorf("expected 15 entries, got %d", len(ml.Data))
 	}
 }
 
@@ -85,6 +97,61 @@ func TestChatCompletions_InvalidModelRejected(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Valid options") || !strings.Contains(rec.Body.String(), "gpt-5.5") {
 		t.Errorf("error should list valid options, got: %s", rec.Body.String())
+	}
+}
+
+func TestSplitModelEffort(t *testing.T) {
+	claudeTool := claude.New()
+	codexTool := codex.New()
+	cases := []struct {
+		tool         runner.Tool
+		in, base, ef string
+	}{
+		{claudeTool, "opus-max", "opus", "max"},
+		{claudeTool, "opus", "opus", ""},
+		{claudeTool, "fable-xhigh", "fable", "xhigh"},
+		{codexTool, "gpt-5.6-luna-high", "gpt-5.6-luna", "high"},
+		{codexTool, "gpt-5.6-luna", "gpt-5.6-luna", ""}, // hyphenated model name untouched
+		{codexTool, "gpt-5.5-xhigh", "gpt-5.5", "xhigh"},
+		{codexTool, "gpt-5.5-max", "gpt-5.5-max", ""}, // max invalid for codex → left alone
+	}
+	for _, c := range cases {
+		base, ef := runner.SplitModelEffort(c.tool, c.in)
+		if base != c.base || ef != c.ef {
+			t.Errorf("SplitModelEffort(%q) = (%q, %q), want (%q, %q)", c.in, base, ef, c.base, c.ef)
+		}
+	}
+}
+
+func TestSplitToolEffort_BareToolNames(t *testing.T) {
+	h := NewHandler(nil, claudeCodexFactories(), server.NewRunRegistry(2), []string{"claude", "codex"}, nil, nil)
+
+	if tool, ef, ok := h.splitToolEffort("claude-max"); !ok || tool != "claude" || ef != "max" {
+		t.Errorf("claude-max → (%q, %q, %v), want (claude, max, true)", tool, ef, ok)
+	}
+	if tool, ef, ok := h.splitToolEffort("codex-high"); !ok || tool != "codex" || ef != "high" {
+		t.Errorf("codex-high → (%q, %q, %v), want (codex, high, true)", tool, ef, ok)
+	}
+	if _, _, ok := h.splitToolEffort("codex-max"); ok {
+		t.Error("codex-max should not resolve (max is claude-only)")
+	}
+	if _, _, ok := h.splitToolEffort("claude-banana"); ok {
+		t.Error("claude-banana should not resolve")
+	}
+}
+
+func TestChatCompletions_InvalidEffortSuffixRejected(t *testing.T) {
+	h := NewHandler(nil, claudeCodexFactories(), server.NewRunRegistry(2), []string{"claude", "codex"}, nil, nil)
+
+	// "max" is not a codex effort, so gpt-5.5-max is neither a model nor a
+	// valid model+effort → 400 listing real options.
+	body := `{"model":"codex:gpt-5.5-max","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

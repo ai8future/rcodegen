@@ -419,6 +419,12 @@ func (d *LiveDisplay) renderStep(index int, step *LiveStep) {
 			modelName = "3-flash"
 		case "gemini-2":
 			modelName = "2"
+		case "gpt-5.6-sol":
+			modelName = "5.6-sol"
+		case "gpt-5.6-terra":
+			modelName = "5.6-terra"
+		case "gpt-5.6-luna":
+			modelName = "5.6-luna"
 		case "gpt-5.5":
 			modelName = "5.5"
 		case "gpt-5.4":

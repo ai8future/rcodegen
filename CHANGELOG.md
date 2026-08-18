@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.2.9 — 2026-08-18
+- **Added the GPT-5.6 codex family**: `gpt-5.6-sol` (new default, matching the Codex CLI's own default), `gpt-5.6-terra`, `gpt-5.6-luna`; older models kept for backward compatibility. Updated settings defaults/fallback, setup wizard, live-display short names, `settings.json.example`, README, and PRODUCT docs
+- **Effort via model-name suffix**: `claude:opus-max`, `codex:gpt-5.6-luna-high`, or bare `claude-max` now set the reasoning effort per request; the suffix is only stripped when the remainder is a valid model, so hyphenated names like `gpt-5.6-luna` are never mangled. Works in chat completions and bundle step `model` fields; invalid combinations (e.g. `codex:gpt-5.5-max`) are rejected with 400
+- **New `ValidEfforts()` on the Tool interface** (claude: low→max; codex: low→xhigh; others nil) + `runner.SplitModelEffort`; `/v1/models` now lists each tool's valid effort suffixes as `"efforts"` on the bare tool entry
+- 4 new/updated tests (suffix splitting incl. hyphenated-model safety, bare-tool efforts, invalid-effort 400, GPT-5.6 enumeration/defaults)
+- Agent: Claude:Opus 4.8
+
 ## 4.2.8 — 2026-08-18
 - **`GET /v1/models` now enumerates the full model naming space**: one bare entry per available tool plus one `tool:model` entry for every model the tool accepts (from each tool's `ValidModels()`), with the tool's default model flagged `"default": true` — the single discovery endpoint for agents, ending model-name guessing (e.g. `codex:luna`)
 - **Chat completions reject unknown models with 400** listing the valid options (`runner.ValidateModel`), instead of passing them through to the CLI where they fail silently as a 200 with empty content

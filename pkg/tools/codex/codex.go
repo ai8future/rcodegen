@@ -49,12 +49,17 @@ func (t *Tool) ReportPrefix() string {
 
 // ValidModels returns the list of valid model names
 func (t *Tool) ValidModels() []string {
-	return []string{"gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1-codex", "gpt-4o-codex"}
+	return []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1-codex", "gpt-4o-codex"}
+}
+
+// ValidEfforts returns the reasoning-effort levels codex accepts.
+func (t *Tool) ValidEfforts() []string {
+	return []string{"low", "medium", "high", "xhigh"}
 }
 
 // DefaultModel returns the default model name
 func (t *Tool) DefaultModel() string {
-	return "gpt-5.5"
+	return "gpt-5.6-sol"
 }
 
 // DefaultModelSetting returns the default model from settings

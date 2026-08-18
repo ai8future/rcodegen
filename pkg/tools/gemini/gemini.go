@@ -54,6 +54,11 @@ func (t *Tool) ValidModels() []string {
 	return []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.1-flash-image-preview", "banana"}
 }
 
+// ValidEfforts returns nil: gemini has no reasoning-effort concept.
+func (t *Tool) ValidEfforts() []string {
+	return nil
+}
+
 // DefaultModel returns the default model name
 func (t *Tool) DefaultModel() string {
 	return "gemini-3.1-pro-preview"

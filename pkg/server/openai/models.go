@@ -77,17 +77,20 @@ func BuildModelList(available []string, factories map[string]server.ToolFactory)
 	now := nowUnix()
 	var data []ModelInfo
 	for _, name := range available {
-		data = append(data, ModelInfo{
+		info := ModelInfo{
 			ID:      name,
 			Object:  "model",
 			Created: now,
 			OwnedBy: "rcodegen",
-		})
+		}
 		factory, ok := factories[name]
 		if !ok {
+			data = append(data, info)
 			continue
 		}
 		tool := factory()
+		info.Efforts = tool.ValidEfforts()
+		data = append(data, info)
 		def := tool.DefaultModel()
 		for _, m := range tool.ValidModels() {
 			data = append(data, ModelInfo{
