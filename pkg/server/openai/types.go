@@ -20,6 +20,10 @@ type ChatCompletionRequest struct {
 	// CloneWorkDirs runs the tool against throwaway copies of work_dirs so
 	// concurrent runs never write state into the same source tree.
 	CloneWorkDirs bool `json:"clone_work_dirs,omitempty"`
+	// ReturnArtifacts returns the text files the run created or modified inside
+	// its clone, which cleanup would otherwise destroy. Requires CloneWorkDirs:
+	// without a clone there is no sandbox to diff.
+	ReturnArtifacts bool `json:"return_artifacts,omitempty"`
 	// CallbackURL switches the request to async callback mode: the server
 	// validates it, answers 202 with a run_id, releases the connection, and
 	// POSTs the completion here when the run ends. Mutually exclusive with
@@ -59,6 +63,11 @@ type ChatCompletionResponse struct {
 	// UsageSource says where usage and cost came from: "cli" when the tool
 	// reported them, "unreported" when it publishes none.
 	UsageSource string `json:"usage_source,omitempty"`
+	// Artifacts are the files the run wrote inside its work_dir clone, present
+	// only when the request asked for them. ArtifactsSkipped names the ones
+	// that were found but not returned, with the reason for each.
+	Artifacts        []Artifact        `json:"artifacts,omitempty"`
+	ArtifactsSkipped []ArtifactSkipped `json:"artifacts_skipped,omitempty"`
 }
 
 // Choice represents a single completion choice.
@@ -124,6 +133,11 @@ type ChatCompletionChunk struct {
 	// object's fields of those names.
 	CostUSD     float64 `json:"cost_usd,omitempty"`
 	UsageSource string  `json:"usage_source,omitempty"`
+	// Artifacts and ArtifactsSkipped ride the final chunk too: the run's files
+	// exist only once it has finished, so there is no earlier chunk to put them
+	// on.
+	Artifacts        []Artifact        `json:"artifacts,omitempty"`
+	ArtifactsSkipped []ArtifactSkipped `json:"artifacts_skipped,omitempty"`
 }
 
 // StreamChoice represents a single choice within a streaming chunk.

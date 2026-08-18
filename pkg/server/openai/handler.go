@@ -190,15 +190,16 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 // chatPlan is a chat completion request that has passed every check and is
 // ready to run — on this connection, or detached from it behind a callback.
 type chatPlan struct {
-	tool           runner.Tool
-	cfg            *runner.Config
-	toolName       string
-	model          string // the model string the caller sent, echoed back
-	correlationID  string
-	workDirs       []string
-	cloneRequested bool
-	stream         bool
-	showToolUse    bool
+	tool            runner.Tool
+	cfg             *runner.Config
+	toolName        string
+	model           string // the model string the caller sent, echoed back
+	correlationID   string
+	workDirs        []string
+	cloneRequested  bool
+	returnArtifacts bool
+	stream          bool
+	showToolUse     bool
 	// callback is non-nil when the caller asked for async delivery.
 	callback *callbackTarget
 }
@@ -324,6 +325,21 @@ func (h *Handler) planChatCompletion(r *http.Request, req *ChatCompletionRequest
 	// the same reason and one more: after the 202 there is no connection left to
 	// report a bad work_dir on.
 	cloneRequested := req.CloneWorkDirs && len(req.WorkDirs) > 0
+
+	// Artifacts are the diff of a clone against the manifest taken when it was
+	// made. Without a clone there is no manifest, no sandbox, and no boundary
+	// that makes returning the caller's own files defensible — so the request
+	// is refused rather than answered with an empty list, which would read as
+	// "the agent wrote nothing".
+	if req.ReturnArtifacts && !cloneRequested {
+		return rejected(http.StatusBadRequest, NewErrorResponse(
+			"return_artifacts requires clone_work_dirs: true and at least one work_dir; "+
+				"artifacts are the files a run wrote inside its own clone, and an uncloned run "+
+				"writes into the caller's tree, where they already are",
+			"invalid_request_error", codeArtifactsRequireClone,
+		))
+	}
+
 	if cloneRequested {
 		if _, err := checkWorkDirSources(req.WorkDirs); err != nil {
 			return rejected(http.StatusBadRequest, NewErrorResponse(
@@ -333,16 +349,17 @@ func (h *Handler) planChatCompletion(r *http.Request, req *ChatCompletionRequest
 	}
 
 	return &chatPlan{
-		tool:           tool,
-		cfg:            cfg,
-		toolName:       toolName,
-		model:          req.Model, // echo back the original model string
-		correlationID:  correlationID(r),
-		workDirs:       req.WorkDirs,
-		cloneRequested: cloneRequested,
-		stream:         req.Stream,
-		showToolUse:    showToolUse,
-		callback:       callback,
+		tool:            tool,
+		cfg:             cfg,
+		toolName:        toolName,
+		model:           req.Model, // echo back the original model string
+		correlationID:   correlationID(r),
+		workDirs:        req.WorkDirs,
+		cloneRequested:  cloneRequested,
+		returnArtifacts: req.ReturnArtifacts,
+		stream:          req.Stream,
+		showToolUse:     showToolUse,
+		callback:        callback,
 	}, 0, nil
 }
 
@@ -394,6 +411,7 @@ func (h *Handler) runChatSync(w http.ResponseWriter, r *http.Request, plan *chat
 	// sits in the same teardown stack as cancel/Release, so a client disconnect
 	// removes the scratch root too.
 	var clone *workDirClone
+	var artifacts *artifactCollector
 	if plan.cloneRequested {
 		cloneLogger := logz.New("info")
 		clone, err = cloneWorkDirs(runCtx, runID, plan.workDirs, cloneLogger)
@@ -408,6 +426,14 @@ func (h *Handler) runChatSync(w http.ResponseWriter, r *http.Request, plan *chat
 		}
 		defer clone.cleanup(cloneLogger)
 		cfg.WorkDirs = clone.dirs
+		if plan.returnArtifacts {
+			// The manifest is taken here — after the clone, before the CLI — so
+			// the diff shows this run's writes and nothing the source already
+			// held. close runs ahead of cleanup, both before the scratch root
+			// goes away.
+			artifacts = newArtifactCollector(clone, cloneLogger)
+			defer artifacts.close()
+		}
 	}
 
 	meta := completionMeta{
@@ -416,6 +442,7 @@ func (h *Handler) runChatSync(w http.ResponseWriter, r *http.Request, plan *chat
 		toolName:       plan.toolName,
 		correlationID:  corrID,
 		clonedWorkDirs: clone.count(),
+		artifacts:      artifacts,
 	}
 
 	if plan.stream {
@@ -445,6 +472,10 @@ type completionMeta struct {
 	toolName       string
 	correlationID  string
 	clonedWorkDirs int
+	// artifacts collects what the run wrote inside its clone, once the run is
+	// over and while the clone still exists. Nil unless the caller asked for
+	// artifacts; a nil collector answers nothing.
+	artifacts *artifactCollector
 }
 
 // handleStreaming handles a streaming chat completion request. sse is non-nil
@@ -553,6 +584,7 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, to
 		},
 	}
 	finalChunk.Usage, finalChunk.CostUSD, finalChunk.UsageSource = runUsage(tool, result)
+	finalChunk.Artifacts, finalChunk.ArtifactsSkipped = meta.artifacts.collect()
 	mu.Lock()
 	_ = sse.WriteChunk(finalChunk)
 	mu.Unlock()
@@ -609,6 +641,9 @@ func (h *Handler) completeNonStreaming(ctx context.Context, tool runner.Tool, cf
 		},
 	}
 	resp.Usage, resp.CostUSD, resp.UsageSource = runUsage(tool, result)
+	// Collected here, with the run over and the clone still standing: a run that
+	// failed is exactly the one whose half-written files are worth reading.
+	resp.Artifacts, resp.ArtifactsSkipped = meta.artifacts.collect()
 
 	return resp
 }

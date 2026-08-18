@@ -34,6 +34,7 @@ var wantRetryable = map[ErrorCode]bool{
 	"invalid_callback_url":     false,
 	"invalid_callback_headers": false,
 	"callback_stream_conflict": false,
+	"artifacts_require_clone":  false,
 	"run_cancelled":            false,
 
 	"concurrency_limit":  true,

@@ -168,6 +168,7 @@ Chat completion endpoint. Supports both streaming (SSE) and non-streaming modes.
   "stream": false,
   "work_dirs": ["/path/to/project"],
   "clone_work_dirs": false,
+  "return_artifacts": false,
   "session_id": "optional-session-id",
   "callback_url": "https://windmill.example.com/api/w/aows/jobs_u/resume/...",
   "callback_headers": {"Authorization": "Bearer receiver-token"}
@@ -186,6 +187,28 @@ Chat completion endpoint. Supports both streaming (SSE) and non-streaming modes.
 | No regular file named `.git` anywhere in the tree, at any depth | `400 unsupported_git_worktree` | A `.git` file is a gitdir pointer -- a linked worktree at the root, a submodule checkout further down. The copy keeps using the original repository, so work inside the "isolated" clone mutates the caller's repository |
 
 Both messages name the offending path relative to the source root. Relative symlinks that stay inside the source are fine and keep working inside the clone, where they resolve to the clone's own copies. A `.git` **directory** is self-contained and clones normally at any depth, so a vendored repository is fine; only the pointer file is refused. For a linked worktree, point `work_dirs` at the main worktree; for a tree with submodule checkouts, there is no copy-based isolation -- let git create the working copy instead. A symlinked source root is itself fine -- it is resolved before anything else is checked. Sources are re-checked once the run slot is held; a source that disappears in between fails the run with `500 clone_failed`.
+
+**Artifacts: getting files back out of a clone.** A cloned run is a sandbox, and cleanup destroys everything in it — so an agent asked to "write the report to `report.md`" writes it into a directory nobody will ever read. Set `"return_artifacts": true` alongside `"clone_work_dirs": true` and the text files the run created or modified inside its clone come back inline on the response:
+
+```json
+{
+  "artifacts": [
+    {"path": "out/report.md", "content": "# Digest\n...", "bytes": 4182}
+  ],
+  "artifacts_skipped": [
+    {"path": "out/chart.png", "reason": "binary"}
+  ]
+}
+```
+
+`return_artifacts` without `clone_work_dirs` (and at least one `work_dirs` entry) is `400 artifacts_require_clone`, not an empty list: an uncloned run writes into the caller's own tree, where the files already are, and answering `"artifacts": []` would read as "the agent wrote nothing".
+
+- **What counts as written.** A manifest of every visible file's path, size, and mtime is taken after the clone completes and before the CLI starts. Anything created, or whose size or mtime moved, is an artifact. Files the source tree already held are not, and neither are deletions. Hidden entries are out of scope at any depth — a clone's `.git` index and a tool's own dot-directory state churn on every run and are not what a caller asked for.
+- **Paths** are relative to the clone of the `work_dirs` entry that holds them. With more than one `work_dirs` entry they are prefixed with that clone's directory name (`alpha/notes.md`), since a bare relative path would be ambiguous across them.
+- **Text only,** decided from the first 8KB: a NUL byte or invalid UTF-8 means binary. A rune straddling the 8KB boundary is not held against the file.
+- **Caps** are the bundle artifact caps, reused verbatim: 512KB per file, 2MB of content per response, 100 artifacts. A file over the per-file cap is **skipped, not truncated** — an artifact that arrives is always the whole file. `artifacts_skipped` names everything found but not returned, with a reason: `binary`, `oversize`, `response_cap` (the 2MB budget was spent), `too_many_files`, `collection_error`, or `scan_limit` (the clone holds more entries than one walk visits, so a created-or-modified diff over it cannot be trusted). The skip report is itself capped at 100 entries; further skips are logged only.
+- **A failed run still reports its artifacts.** Half-written output is usually the most diagnostic thing a failed or cancelled run produced. The one exception is a failure where no clone was ever made — a rejected `work_dirs` entry, or a clone that could not be created — since there is then nothing to diff.
+- **Collection runs strictly before cleanup** and can never fail a run: a clone or a file that cannot be read becomes a `collection_error` entry and a log line, not an error response. Each clone directory is pinned by an open descriptor taken before the CLI starts, so a run that replaces its own clone directory with a symlink cannot redirect collection elsewhere.
 
 **Model format:** `{tool}` or `{tool}:{model}` -- e.g., `claude`, `claude:opus`, `codex:gpt-5.6-sol`, `gemini`, `gemini:gemini-3-flash-preview`. Claude and Codex also accept a supported `-{effort}` suffix, such as `claude:opus-max`, `codex:gpt-5.6-luna-max`, or bare `codex-ultra` for the configured default model. OpenCode and KiloCode accept dynamic `provider/model` identifiers.
 
@@ -218,11 +241,13 @@ Both messages name the offending path relative to the source root. Relative syml
   "cost_usd": 0.0432,
   "session_id": "abc123",
   "cloned_work_dirs": 1,
-  "correlation_id": "windmill-job-42"
+  "correlation_id": "windmill-job-42",
+  "artifacts": [{"path": "out/report.md", "content": "# Digest\n...", "bytes": 4182}],
+  "artifacts_skipped": [{"path": "out/chart.png", "reason": "binary"}]
 }
 ```
 
-`correlation_id` is present only when the request carried `X-Correlation-ID`.
+`correlation_id` is present only when the request carried `X-Correlation-ID`. `artifacts` and `artifacts_skipped` are present only when the request asked for them with `return_artifacts`, and each is omitted when empty.
 
 **Usage and cost provenance:** `usage_source` says where the numbers came from and is always present on a completed response.
 
@@ -239,7 +264,7 @@ Server-Sent Events format. Each event is `data: {json chunk}\n\n`. Final message
 
 Response headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`.
 
-`session_id`, `cloned_work_dirs`, `correlation_id`, `usage`, `usage_source`, and `cost_usd` ride the final chunk (the one carrying `finish_reason`), not the content chunks.
+`session_id`, `cloned_work_dirs`, `correlation_id`, `usage`, `usage_source`, `cost_usd`, `artifacts`, and `artifacts_skipped` ride the final chunk (the one carrying `finish_reason`), not the content chunks. Artifacts have no earlier chunk to ride: the run's files exist only once it has finished.
 
 **Queue visibility:** when every run slot is busy a request waits for one, which from outside looks exactly like a slow run. Streaming requests that wait receive two extra frames before any completion chunk, and only when a wait actually happened:
 
@@ -261,13 +286,13 @@ data: {"type": "started"}
 
 | `retryable` | Codes | Why |
 |-------------|-------|-----|
-| `false` | `method_not_allowed`, `unauthorized`, `invalid_json`, `unknown_tool`, `empty_task`, `invalid_model`, `invalid_effort`, `invalid_work_dir`, `unsafe_symlink`, `unsupported_git_worktree`, `unknown_bundle`, `missing_input`, `invalid_upload`, `missing_file`, `invalid_id`, `not_found`, `no_file_store`, `invalid_callback_url`, `invalid_callback_headers`, `callback_stream_conflict`, `run_cancelled` | The request is malformed, names something that does not exist, or is refused on policy grounds. It will be refused identically every time until the caller changes it |
+| `false` | `method_not_allowed`, `unauthorized`, `invalid_json`, `unknown_tool`, `empty_task`, `invalid_model`, `invalid_effort`, `invalid_work_dir`, `unsafe_symlink`, `unsupported_git_worktree`, `unknown_bundle`, `missing_input`, `invalid_upload`, `missing_file`, `invalid_id`, `not_found`, `no_file_store`, `invalid_callback_url`, `invalid_callback_headers`, `callback_stream_conflict`, `artifacts_require_clone`, `run_cancelled` | The request is malformed, names something that does not exist, or is refused on policy grounds. It will be refused identically every time until the caller changes it |
 | `true` | `concurrency_limit`, `clone_failed`, `work_dir_failed`, `bundle_failed`, `bundle_list_failed`, `save_failed`, `server_shutdown` | Transient: an interrupted slot wait, a filesystem failure, a CLI/provider failure (crash, unexpected exit, timeout, rate limit), or a server restart that caught the run in flight. The same request can succeed later |
 
 | HTTP Status | Meaning |
 |-------------|---------|
 | `202` | Async submission accepted; the completion will be POSTed to `callback_url` |
-| `400` | Bad request, unknown tool, invalid fixed model, unsupported model/effort combination, an unusable `callback_url`/`callback_headers`, `callback_url` together with `stream`, or a `work_dirs` entry that is missing, not a directory, holds an escaping symlink (`unsafe_symlink`), or holds a git pointer file (`unsupported_git_worktree`) |
+| `400` | Bad request, unknown tool, invalid fixed model, unsupported model/effort combination, an unusable `callback_url`/`callback_headers`, `callback_url` together with `stream`, `return_artifacts` without a work-directory clone (`artifacts_require_clone`), or a `work_dirs` entry that is missing, not a directory, holds an escaping symlink (`unsafe_symlink`), or holds a git pointer file (`unsupported_git_worktree`) |
 | `404` | Unknown run ID, or one whose result has been evicted from retention |
 | `405` | Method not allowed |
 | `500` | Work-directory clone failed, including a source that changed after validation |
@@ -326,11 +351,15 @@ A failure carries the same error envelope a synchronous caller would have receiv
 }
 ```
 
-`status` reports whether the run produced a completion, not whether the model was happy: a CLI that exits nonzero still yields `success` with whatever it wrote, exactly as the synchronous path returns `200` for the same run. `failure` means no completion exists — `clone_failed`, `run_cancelled`, or `server_shutdown`.
+`status` reports whether the run produced a completion, not whether the model was happy: a CLI that exits nonzero still yields `success` with whatever it wrote, exactly as the synchronous path returns `200` for the same run. `failure` means no completion exists — `clone_failed`, `run_cancelled`, or `server_shutdown`. A `run_cancelled` failure still carries `artifacts`: what the run wrote before the kill is the point of cancelling it and looking.
 
 **Delivery.** POST with `Content-Type: application/json`, 10s per attempt, 3 attempts with backoff (2s, then 8s), then rserve gives up and logs a warning. Any non-2xx counts as a failed attempt. Delivery happens **after** the run slot is released, so a slow receiver never holds capacity. An undelivered callback costs the run nothing: the result stays available at `GET /v1/runs/{run_id}/result` for as long as retention holds it.
 
 **Retention is in-memory and non-durable.** Results live in the rserve process, bounded to **100 results or 1 hour**, whichever binds first, with least-recently-used eviction; a run that is still queued or running is never evicted. Message content is capped at 64KB — the same discipline as bundle step output — and an oversize completion is truncated with `"output_truncated": true` rather than dropped. **A restart loses every pending run and every retained result.** Callers whose run was in flight get one best-effort `server_shutdown` failure callback if their receiver is up, and nothing at all if it is not. Durable run state belongs in the caller's own store (Postgres, in this fleet) or in the caller's timeout — for a Windmill flow, the suspend timeout is the guard.
+
+**Artifacts diverge between the callback and the retained copy, on purpose.** A callback is delivered once and then forgotten, so it carries artifacts in full, up to the same 2MB response budget the synchronous path uses. Retention has to hold results in this process's memory alongside 99 others, so it keeps the same 64KB discipline as message content: when a completion's artifact contents exceed 64KB in total, the **retained** copy drops them and lists every one in `artifacts_skipped` with reason `evicted_from_retention`, while the POST the receiver got carries the bytes.
+
+The practical consequence: **take the artifacts off your callback.** `GET /v1/runs/{run_id}/result` is the fallback for learning a run's outcome, not a second copy of its payload — an artifact big enough to matter is exactly the one polling will not return.
 
 ### GET /v1/runs/{run_id}
 
@@ -382,6 +411,7 @@ r = requests.post(
         "messages": [{"role": "user", "content": task}],
         "work_dirs": ["/srv/repo"],
         "clone_work_dirs": True,
+        "return_artifacts": True,               # the files the agent writes come back
         "callback_url": resume_urls["resume"],
     },
     timeout=30,
@@ -390,7 +420,7 @@ r.raise_for_status()                            # 400s are still 400s, right her
 run_id = r.json()["run_id"]                     # keep it: poll or cancel with this
 ```
 
-Set the step's suspend timeout to the longest the run may take (e.g. 2h); it becomes the only timeout knob in the flow. The resumed payload is the callback body above, so the next step reads `status`, `choices[0].message.content`, `cost_usd`, and — on failure — `error.retryable`, which is exactly what a Windmill `retry` policy should branch on. If the flow times out or the callback never lands, `GET /v1/runs/{run_id}` and `GET /v1/runs/{run_id}/result` are the fallback, subject to the retention bounds above.
+Set the step's suspend timeout to the longest the run may take (e.g. 2h); it becomes the only timeout knob in the flow. The resumed payload is the callback body above, so the next step reads `status`, `choices[0].message.content`, `cost_usd`, `artifacts`, and — on failure — `error.retryable`, which is exactly what a Windmill `retry` policy should branch on. Read `artifacts` out of the resume payload and into the flow's own state (a variable, an email, a database row); polling will not give them back once they are over the retention budget. If the flow times out or the callback never lands, `GET /v1/runs/{run_id}` and `GET /v1/runs/{run_id}/result` are the fallback, subject to the retention bounds above.
 
 ### GET /v1/models
 

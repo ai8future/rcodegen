@@ -40,6 +40,7 @@ const (
 	codeInvalidCallbackURL     ErrorCode = "invalid_callback_url"
 	codeInvalidCallbackHeaders ErrorCode = "invalid_callback_headers"
 	codeCallbackStreamConflict ErrorCode = "callback_stream_conflict"
+	codeArtifactsRequireClone  ErrorCode = "artifacts_require_clone"
 	codeRunCancelled           ErrorCode = "run_cancelled"
 
 	// Retryable: a transient server-side or environmental failure. The same
@@ -87,6 +88,10 @@ var errorRetryable = map[ErrorCode]bool{
 	codeInvalidCallbackURL:     false,
 	codeInvalidCallbackHeaders: false,
 	codeCallbackStreamConflict: false,
+	// return_artifacts without a work_dir clone. Artifacts are the diff of a
+	// sandbox against itself, so the request contradicts itself and will until
+	// the caller changes it.
+	codeArtifactsRequireClone: false,
 	// The caller cancelled this run through DELETE /v1/runs/{id}. Retrying is a
 	// new decision, not a recovery.
 	codeRunCancelled: false,

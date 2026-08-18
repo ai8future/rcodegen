@@ -478,6 +478,10 @@ rcodegen/
 │   │   ├── openai/                  # OpenAI-compatible HTTP API
 │   │   │   ├── handler.go           # /v1/chat/completions, /v1/models, /health
 │   │   │   ├── bundles.go           # Bundle list/detail/run endpoints and artifacts
+│   │   │   ├── asyncruns.go         # Callback mode, /v1/runs endpoints, result retention
+│   │   │   ├── workdirclone.go      # Per-run scratch copies of work_dirs
+│   │   │   ├── cloneartifacts.go    # Files a run wrote inside its clone
+│   │   │   ├── errorcodes.go        # Error codes and their retryability
 │   │   │   ├── types.go             # Request/response types
 │   │   │   ├── models.go            # Model name parsing
 │   │   │   ├── sse.go               # Server-sent events writer
@@ -639,7 +643,7 @@ The gRPC listener is plaintext and has no authentication layer. Keep it on loopb
 
 ### OpenAI-Compatible HTTP API
 
-The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs`, `clone_work_dirs`, `session_id`, and `callback_url` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, or `gemini:gemini-3.1-pro-preview`), with an optional **`-{effort}` suffix** on either form: `claude:opus-max`, `codex:gpt-5.6-luna-high`, or bare `codex-ultra` (the configured default model at that effort). The suffix is only treated as an effort when that specific model supports it, so hyphenated names like `gpt-5.6-luna` are never mangled; chat requests reject unsupported combinations such as `gpt-5.6-luna-ultra`. Supported suffixes also work on `model` fields in bundle step definitions. `/v1/models` enumerates fixed `tool:model` combinations for tools found on the server's `PATH`, flags the configured default with `"default": true`, and lists model-specific suffixes in `"efforts"`. OpenCode and KiloCode advertise `"dynamic": true`, list their configured default, and continue accepting arbitrary `provider/model` identifiers. Unknown models in fixed namespaces receive a 400 listing valid options. Chat request bodies are limited to 10MB; bundle run request bodies are limited to 1MB.
+The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs`, `clone_work_dirs`, `return_artifacts`, `session_id`, and `callback_url` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, or `gemini:gemini-3.1-pro-preview`), with an optional **`-{effort}` suffix** on either form: `claude:opus-max`, `codex:gpt-5.6-luna-high`, or bare `codex-ultra` (the configured default model at that effort). The suffix is only treated as an effort when that specific model supports it, so hyphenated names like `gpt-5.6-luna` are never mangled; chat requests reject unsupported combinations such as `gpt-5.6-luna-ultra`. Supported suffixes also work on `model` fields in bundle step definitions. `/v1/models` enumerates fixed `tool:model` combinations for tools found on the server's `PATH`, flags the configured default with `"default": true`, and lists model-specific suffixes in `"efforts"`. OpenCode and KiloCode advertise `"dynamic": true`, list their configured default, and continue accepting arbitrary `provider/model` identifiers. Unknown models in fixed namespaces receive a 400 listing valid options. Chat request bodies are limited to 10MB; bundle run request bodies are limited to 1MB.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -695,6 +699,21 @@ Sources are validated before the request queues for a run slot, so an unusable d
 }
 ```
 
+### Artifacts from a clone
+
+A clone is a sandbox the agent may write anything into, and cleanup destroys all of it — so "write the report to `report.md`" produces a report nobody can read, and message text is the only channel out. Add `"return_artifacts": true` to a cloned request and the files the run created or modified come back inline:
+
+```json
+{
+  "artifacts": [{"path": "out/report.md", "content": "# Digest\n...", "bytes": 4182}],
+  "artifacts_skipped": [{"path": "out/chart.png", "reason": "binary"}]
+}
+```
+
+The diff is against a manifest of paths, sizes, and mtimes taken after the clone finishes and before the CLI starts, so what comes back is this run's work and not the source tree it was given. Hidden entries are out of scope at any depth (a clone's `.git` index churns on every run). Paths are relative to the clone that holds them, prefixed with its directory name when more than one `work_dirs` entry was cloned. Text files only, decided from the first 8KB — a NUL byte or invalid UTF-8 means binary. The caps are the bundle artifact caps reused verbatim: 512KB per file, 2MB of content per response, 100 artifacts; a file over the per-file cap is **skipped, not truncated**, so an artifact that arrives is always the whole file. Everything found but not returned is named in `artifacts_skipped` with a reason (`binary`, `oversize`, `response_cap`, `too_many_files`, `collection_error`, `scan_limit`).
+
+`return_artifacts` requires `clone_work_dirs` and at least one `work_dirs` entry, else `400 artifacts_require_clone` — an uncloned run writes into the caller's own tree, where the files already are. Collection runs strictly before cleanup, can never fail a run (an unreadable file becomes a `collection_error` entry and a log line), and **still happens when the run failed**: a failed or cancelled run's half-written output is usually the most diagnostic thing it produced. In async callback mode the artifacts ride the callback in full; the retained copy holds them only while their total stays inside the 64KB retention budget, and past it keeps their names with reason `evicted_from_retention`. Take the bytes off the callback, not off `GET /v1/runs/{id}/result`.
+
 For streaming requests, `X-Show-Tool-Use: true` includes Claude/Gemini tool-use summaries as text chunks. Claude and Gemini expose structured streaming events; Codex, OpenCode, and KiloCode stdout is forwarded as raw content chunks.
 
 Chat requests also accept `X-Correlation-ID` — an external run identifier such as a Windmill job UUID. It is sanitized to `[A-Za-z0-9._-]` and capped at 128 characters, echoed back as the `X-Correlation-ID` response header and as `"correlation_id"` in the body (on the completion object, or the final chunk when streaming), and attached to the run registry entry so `GetStatus` shows which external job owns each slot. This is the same handling bundle runs have always had; the header echo now happens for every endpoint, including error responses.
@@ -745,7 +764,7 @@ Every error response carries `"retryable"` alongside `message`, `type`, and `cod
 
 It exists so an automatic retry policy — Windmill's per-step `retry`, for one — can tell "try again" from "doomed" without pattern-matching messages or guessing from the HTTP status, which cannot distinguish a transient 500 from a permanent one. The field is always present; `false` is a verdict, not a missing field.
 
-`retryable: false` covers the malformed, the non-existent, and the refused-on-policy: `method_not_allowed`, `unauthorized`, `invalid_json`, `unknown_tool`, `empty_task`, `invalid_model`, `invalid_effort`, `invalid_work_dir`, `unsafe_symlink`, `unsupported_git_worktree`, `unknown_bundle`, `missing_input`, `invalid_upload`, `missing_file`, `invalid_id`, `not_found`, `no_file_store`, `invalid_callback_url`, `invalid_callback_headers`, `callback_stream_conflict`, and `run_cancelled` (the caller asked for it; retrying is a new decision, not a recovery).
+`retryable: false` covers the malformed, the non-existent, and the refused-on-policy: `method_not_allowed`, `unauthorized`, `invalid_json`, `unknown_tool`, `empty_task`, `invalid_model`, `invalid_effort`, `invalid_work_dir`, `unsafe_symlink`, `unsupported_git_worktree`, `unknown_bundle`, `missing_input`, `invalid_upload`, `missing_file`, `invalid_id`, `not_found`, `no_file_store`, `invalid_callback_url`, `invalid_callback_headers`, `callback_stream_conflict`, `artifacts_require_clone`, and `run_cancelled` (the caller asked for it; retrying is a new decision, not a recovery).
 
 `retryable: true` covers the transient: `concurrency_limit` (a slot wait interrupted before the work started), `clone_failed` and `work_dir_failed` (filesystem failures that are not policy rejections), `bundle_failed` (a CLI that crashed, exited unexpectedly, timed out, or hit a provider limit), `bundle_list_failed`, `save_failed`, and `server_shutdown` (an async run caught in flight by a restart).
 

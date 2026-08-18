@@ -51,6 +51,11 @@ const (
 	// cap the content is cut and marked, never silently dropped.
 	asyncOutputCap = stepOutputCap
 
+	// asyncRetainedArtifactCap is how many bytes of artifact content a retained
+	// result may hold, holding retention to the same discipline. Past it the
+	// retained copy keeps names instead of contents; see retainedCopy.
+	asyncRetainedArtifactCap = asyncOutputCap
+
 	// callbackAttemptTimeout bounds one delivery attempt.
 	callbackAttemptTimeout = 10 * time.Second
 )
@@ -471,7 +476,9 @@ func (h *Handler) executeAsync(run *asyncRun, plan *chatPlan) {
 	defer run.cancel()
 
 	status, payload := h.runAsync(run, plan)
-	h.async.finish(run, status, payload)
+	// The callback gets the payload whole; retention gets whatever fits its
+	// memory discipline. They are the same object whenever nothing was evicted.
+	h.async.finish(run, status, retainedCopy(payload))
 	h.deliverCallback(context.Background(), run, payload, h.async.backoff)
 }
 
@@ -485,26 +492,33 @@ func (h *Handler) runAsync(run *asyncRun, plan *chatPlan) (string, *AsyncComplet
 	if err != nil {
 		// The lifecycle context is cancelled only by DELETE or shutdown, so a
 		// failed acquire here is one of those, not a busy server.
-		return runStatusFailure, asyncFailure(run, plan, h.abortError(run))
+		return runStatusFailure, asyncFailure(run, plan, h.abortError(run), nil)
 	}
 	defer acq.Cancel()
 	defer h.registry.Release(acq.RunID)
 	h.async.markRunning(run, acq.QueueWait)
 
 	var clone *workDirClone
+	var artifacts *artifactCollector
 	if plan.cloneRequested {
 		cloneLogger := asyncLogger()
 		clone, err = cloneWorkDirs(acq.Ctx, run.id, plan.workDirs, cloneLogger)
 		if err != nil {
+			// No clone was made, so there is nothing to collect: this is the
+			// one failure that reports no artifacts rather than partial ones.
 			if run.ctx.Err() != nil {
-				return runStatusFailure, asyncFailure(run, plan, h.abortError(run))
+				return runStatusFailure, asyncFailure(run, plan, h.abortError(run), nil)
 			}
 			return runStatusFailure, asyncFailure(run, plan, NewErrorResponse(
 				err.Error(), "server_error", codeCloneFailed,
-			))
+			), nil)
 		}
 		defer clone.cleanup(cloneLogger)
 		plan.cfg.WorkDirs = clone.dirs
+		if plan.returnArtifacts {
+			artifacts = newArtifactCollector(clone, cloneLogger)
+			defer artifacts.close()
+		}
 	}
 
 	resp := h.completeNonStreaming(acq.Ctx, plan.tool, plan.cfg, completionMeta{
@@ -513,13 +527,16 @@ func (h *Handler) runAsync(run *asyncRun, plan *chatPlan) (string, *AsyncComplet
 		toolName:       plan.toolName,
 		correlationID:  plan.correlationID,
 		clonedWorkDirs: clone.count(),
+		artifacts:      artifacts,
 	})
 
 	// A cancelled run returns whatever the CLI managed to emit before it was
 	// killed. That is a fragment, not an answer, so it is reported as the
-	// failure it is.
+	// failure it is — with the files it wrote before the kill, which are the
+	// most useful thing a cancelled run leaves behind. Collection already ran
+	// above and is memoized, so this costs no second walk.
 	if run.ctx.Err() != nil {
-		return runStatusFailure, asyncFailure(run, plan, h.abortError(run))
+		return runStatusFailure, asyncFailure(run, plan, h.abortError(run), artifacts)
 	}
 	return runStatusSuccess, asyncSuccess(run, resp)
 }
@@ -552,10 +569,11 @@ func asyncSuccess(run *asyncRun, resp ChatCompletionResponse) *AsyncCompletion {
 
 // asyncFailure builds the terminal payload for a run that produced no
 // completion. It carries the same error envelope — retryable included — a
-// synchronous caller would have received.
-func asyncFailure(run *asyncRun, plan *chatPlan, errResp ErrorResponse) *AsyncCompletion {
+// synchronous caller would have received, plus whatever the run wrote before it
+// died: a failed run's partial output is often the only diagnostic there is.
+func asyncFailure(run *asyncRun, plan *chatPlan, errResp ErrorResponse, artifacts *artifactCollector) *AsyncCompletion {
 	detail := errResp.Error
-	return &AsyncCompletion{
+	payload := &AsyncCompletion{
 		ChatCompletionResponse: ChatCompletionResponse{
 			ID:            "chatcmpl-" + run.id,
 			Object:        "chat.completion",
@@ -568,6 +586,40 @@ func asyncFailure(run *asyncRun, plan *chatPlan, errResp ErrorResponse) *AsyncCo
 		Status: runStatusFailure,
 		Error:  &detail,
 	}
+	payload.Artifacts, payload.ArtifactsSkipped = artifacts.collect()
+	return payload
+}
+
+// retainedCopy is the version of a completion this process keeps in memory.
+//
+// Retention follows the same 64KB discipline as step output, and artifacts can
+// be two megabytes; a callback has no such limit, because it is delivered once
+// and then forgotten. So the two diverge on purpose: over the budget, the
+// retained copy keeps the artifacts' names in artifacts_skipped and drops their
+// contents, while the POST the caller receives carries them in full. A caller
+// that needs the bytes takes them off its callback — polling is the fallback for
+// the result, not a second copy of the payload.
+func retainedCopy(payload *AsyncCompletion) *AsyncCompletion {
+	if payload == nil || len(payload.Artifacts) == 0 {
+		return payload
+	}
+	total := 0
+	for _, a := range payload.Artifacts {
+		total += len(a.Content)
+	}
+	if total <= asyncRetainedArtifactCap {
+		return payload
+	}
+
+	retained := *payload
+	skipped := make([]ArtifactSkipped, 0, len(payload.ArtifactsSkipped)+len(payload.Artifacts))
+	skipped = append(skipped, payload.ArtifactsSkipped...)
+	for _, a := range payload.Artifacts {
+		skipped = append(skipped, ArtifactSkipped{Path: a.Path, Reason: artifactSkipEvicted})
+	}
+	retained.Artifacts = nil
+	retained.ArtifactsSkipped = skipped
+	return &retained
 }
 
 // capCompletionOutput trims message content to the retention cap, reporting
