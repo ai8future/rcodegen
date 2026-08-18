@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	rcodegenpkg "rcodegen"
@@ -43,7 +44,7 @@ func main() {
 
 	defaultPort := chassis.Port("rserve", chassis.PortGRPC)
 	port := flag.Int("port", defaultPort, "gRPC listen port")
-	bind := flag.String("bind", "127.0.0.1", "bind address (use 0.0.0.0 for all interfaces)")
+	bind := flag.String("bind", "127.0.0.1", "listen address (remote binds require RSERVE_ALLOW_INSECURE_REMOTE=1)")
 	maxConcurrent := flag.Int("max-concurrent", 3, "max simultaneous runs")
 	sessionTTL := flag.Int("session-ttl", 30, "session TTL in minutes (0 = no expiry)")
 	showVersion := flag.Bool("v", false, "show version and exit")
@@ -55,6 +56,14 @@ func main() {
 	}
 
 	logger := logz.New("info")
+	allowInsecureRemote := os.Getenv("RSERVE_ALLOW_INSECURE_REMOTE") == "1"
+	if err := validateBindAddress(*bind, allowInsecureRemote); err != nil {
+		logger.Error("unsafe bind refused", "bind", *bind, "error", err)
+		os.Exit(1)
+	}
+	if !isLoopbackBind(*bind) {
+		logger.Warn("remote bind explicitly enabled; native gRPC is unauthenticated and both listeners are plaintext", "bind", *bind)
+	}
 
 	// --- chassis: OTel initialization (before creating interceptors/metrics) ---
 	var shutdownOtel otelinit.ShutdownFunc
@@ -230,6 +239,24 @@ func main() {
 		logger.Error("serve error", "error", err)
 		os.Exit(1)
 	}
+}
+
+func validateBindAddress(address string, allowInsecureRemote bool) error {
+	if isLoopbackBind(address) || allowInsecureRemote {
+		return nil
+	}
+	return fmt.Errorf("non-loopback bind requires RSERVE_ALLOW_INSECURE_REMOTE=1; prefer loopback behind authenticated TLS transport")
+}
+
+func isLoopbackBind(address string) bool {
+	host := strings.TrimSpace(address)
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // publishRunCompleted publishes a codegen run.completed event to the event bus.

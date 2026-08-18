@@ -19,11 +19,13 @@ type Tool interface {
 	// ReportPrefix returns the tool-specific prefix for report filenames (e.g., "claude-", "codex-")
 	ReportPrefix() string
 
-	// ValidModels returns the list of valid model names for this tool
+	// ValidModels returns the fixed model names for this tool. Nil or empty
+	// means the tool accepts a dynamic model namespace.
 	ValidModels() []string
 
-	// ValidEfforts returns the reasoning-effort levels this tool accepts,
-	// lowest to highest. Nil means the tool has no effort concept.
+	// ValidEfforts returns every reasoning-effort name this tool may accept,
+	// lowest to highest. Nil means the tool has no effort concept. Tools whose
+	// capabilities vary by model can also implement ModelEffortProvider.
 	ValidEfforts() []string
 
 	// DefaultModel returns the default model name
@@ -104,6 +106,13 @@ type DirectAPIRunner interface {
 	// RunDirectAPI executes the task by calling the API directly, writes output
 	// to cfg.Output (or os.Stdout), and returns the exit code.
 	RunDirectAPI(cfg *Config, workDir, task string) int
+}
+
+// ModelEffortProvider is an optional interface for tools whose supported
+// reasoning efforts vary by model. Tools that do not implement it use the
+// tool-wide ValidEfforts list for every model.
+type ModelEffortProvider interface {
+	ValidEffortsForModel(model string) []string
 }
 
 // FlagDef defines a command-line flag

@@ -32,7 +32,7 @@ type TaskDef struct {
 // CodexDefaults holds default settings for rcodex
 type CodexDefaults struct {
 	Model  string `json:"model"`  // Default model (e.g., "gpt-5.6-sol")
-	Effort string `json:"effort"` // Default effort level (low, medium, high, xhigh)
+	Effort string `json:"effort"` // Default effort level (low through ultra; model-dependent)
 }
 
 // ClaudeDefaults holds default settings for rclaude
@@ -626,13 +626,22 @@ func RunInteractiveSetup() (*Settings, bool) {
 	if codexModelInput != "" {
 		codexModel = codexModelInput
 	}
+	codexSupportsMax := codexModel == "gpt-5.6-sol" || codexModel == "gpt-5.6-terra" || codexModel == "gpt-5.6-luna"
+	codexSupportsUltra := codexModel == "gpt-5.6-sol" || codexModel == "gpt-5.6-terra"
 
 	fmt.Printf("\n%s%sDefault reasoning effort?%s\n", bold, green, reset)
 	fmt.Printf("%sHigher effort = better results but slower and uses more credits.%s\n\n", dim, reset)
 	fmt.Printf("  %s1.%s %sxhigh%s %s(recommended - most thorough)%s\n", dim, reset, magenta, reset, dim, reset)
 	fmt.Printf("  %s2.%s %shigh%s\n", dim, reset, magenta, reset)
 	fmt.Printf("  %s3.%s %smedium%s\n", dim, reset, magenta, reset)
-	fmt.Printf("  %s4.%s %slow%s %s(fastest)%s\n\n", dim, reset, magenta, reset, dim, reset)
+	fmt.Printf("  %s4.%s %slow%s %s(fastest)%s\n", dim, reset, magenta, reset, dim, reset)
+	if codexSupportsMax {
+		fmt.Printf("  %s5.%s %smax%s %s(GPT-5.6 only)%s\n", dim, reset, magenta, reset, dim, reset)
+	}
+	if codexSupportsUltra {
+		fmt.Printf("  %s6.%s %sultra%s %s(Sol/Terra only)%s\n", dim, reset, magenta, reset, dim, reset)
+	}
+	fmt.Println()
 
 	fmt.Printf("%sEffort level%s [%s1%s]: ", bold, reset, yellow, reset)
 	effortInput, _ := reader.ReadString('\n')
@@ -648,10 +657,13 @@ func RunInteractiveSetup() (*Settings, bool) {
 		codexEffort = "medium"
 	case "4", "low":
 		codexEffort = "low"
-	default:
-		// Accept direct input if it's a valid effort level
-		if effortInput == "xhigh" || effortInput == "high" || effortInput == "medium" || effortInput == "low" {
-			codexEffort = effortInput
+	case "5", "max":
+		if codexSupportsMax {
+			codexEffort = "max"
+		}
+	case "6", "ultra":
+		if codexSupportsUltra {
+			codexEffort = "ultra"
 		}
 	}
 

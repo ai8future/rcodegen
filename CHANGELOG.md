@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.2.10 — 2026-08-18
+- **Fixed dynamic OpenCode/KiloCode HTTP models**: empty `ValidModels()` lists now correctly mean dynamic namespaces, so arbitrary `provider/model` overrides are accepted instead of rejected as invalid
+- **Made model discovery configuration-aware**: `/v1/models` now flags the actual configured default, publishes effort levels per model, and marks dynamic namespaces while listing their configured default
+- **Corrected Codex GPT-5.6 effort support**: Sol/Terra accept through `ultra`, Luna through `max`, and older models through `xhigh`; CLI validation, HTTP suffix parsing, settings setup, and documentation now enforce the same matrix
+- **Hardened rserve remote binding**: non-loopback native binds are refused unless `RSERVE_ALLOW_INSECURE_REMOTE=1` explicitly acknowledges plaintext unauthenticated gRPC and plaintext HTTP; Windmill guidance now keeps rserve loopback-only behind authenticated TLS and uses an absolute work root
+- Completed and synchronized README, API, PRODUCT, and Windmill documentation; added regression coverage for dynamic models, configured defaults, model-specific efforts, invalid combinations, and the remote-bind interlock
+- Details: `_bugs_fixed/2026-08-18-model-discovery-effort-and-rserve-security-fixes.md`
+- Agent: Codex:gpt-5.6-sol-high
+
 ## 4.2.9 — 2026-08-18
 - **Added the GPT-5.6 codex family**: `gpt-5.6-sol` (new default, matching the Codex CLI's own default), `gpt-5.6-terra`, `gpt-5.6-luna`; older models kept for backward compatibility. Updated settings defaults/fallback, setup wizard, live-display short names, `settings.json.example`, README, and PRODUCT docs
 - **Effort via model-name suffix**: `claude:opus-max`, `codex:gpt-5.6-luna-high`, or bare `claude-max` now set the reasoning effort per request; the suffix is only stripped when the remainder is a valid model, so hyphenated names like `gpt-5.6-luna` are never mangled. Works in chat completions and bundle step `model` fields; invalid combinations (e.g. `codex:gpt-5.5-max`) are rejected with 400

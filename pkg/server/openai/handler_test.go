@@ -123,6 +123,30 @@ func TestHandleChatCompletions_NonStreamToolReturnsStdout(t *testing.T) {
 	}
 }
 
+func TestHandleChatCompletions_DynamicModelOverrideAccepted(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "dynamic model output")
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode:custom/provider-model","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp ChatCompletionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := resp.Choices[0].Message.Content; got != "dynamic model output" {
+		t.Fatalf("content = %q, want dynamic model output", got)
+	}
+}
+
 func TestHandleChatCompletions_NonStreamToolWritesSSE(t *testing.T) {
 	chassis.RequireMajor(11)
 	installFakeOpenCode(t, "streamed CLI output")

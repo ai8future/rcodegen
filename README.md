@@ -208,7 +208,7 @@ Custom tasks can be added in `~/.rcodegen/settings.json`. Built-in task names ar
 
 **rcodex:**
 ```
--e, --effort <lvl>      Reasoning effort: low, medium, high, xhigh (default: xhigh)
+-e, --effort <lvl>      Reasoning effort: low through ultra, model-dependent (default: xhigh)
 -s, --status            Track credit usage before/after task
 -S, --no-status         Disable credit usage tracking
 ```
@@ -357,7 +357,7 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
 
 1. Hardcoded defaults
 2. `~/.rcodegen/settings.json`
-3. Environment variables (`RCODEGEN_CODE_DIR`, `RCODEGEN_OUTPUT_DIR`, `RCODEGEN_MODEL`, `RCODEGEN_BUDGET`, `RCODEGEN_EFFORT`, `RCODEGEN_LOG_LEVEL`; `RCODEGEN_EFFORT` applies to Claude and Codex, but `max` is Claude-only)
+3. Environment variables (`RCODEGEN_CODE_DIR`, `RCODEGEN_OUTPUT_DIR`, `RCODEGEN_MODEL`, `RCODEGEN_BUDGET`, `RCODEGEN_EFFORT`, `RCODEGEN_LOG_LEVEL`; `RCODEGEN_EFFORT` applies to Claude and Codex, with Codex levels validated against the selected model)
 4. CLI flags (highest priority)
 
 ### Task Template Variables
@@ -378,7 +378,7 @@ In task text, `@path/to/file` is expanded to that file's contents before executi
 `fable`, `sonnet`, `opus`, `haiku` (settings default: `sonnet`). Effort levels: `low`, `medium`, `high`, `xhigh`, `max` (default: `xhigh`).
 
 ### Codex
-`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex` (default: `gpt-5.6-sol`). Effort levels: `low`, `medium`, `high`, `xhigh` (default: `xhigh`).
+`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex` (default: `gpt-5.6-sol`). The configured default effort is `xhigh`. Sol and Terra support `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; Luna supports through `max`; older models support through `xhigh`.
 
 ### Gemini
 `gemini-3.1-pro-preview`, `gemini-3.1-flash-image-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, plus the `banana` alias for the image-preview model (default: `gemini-3.1-pro-preview`)
@@ -589,8 +589,8 @@ Summaries and checkpoints are stored under `~/.rcodegen/batches/<name>/`. A fail
 # Start with defaults
 rserve
 
-# Custom port, concurrency, and bind address
-rserve -port 9000 -max-concurrent 5 -bind 0.0.0.0
+# Custom port and concurrency, still loopback-only
+rserve -port 9000 -max-concurrent 5 -bind 127.0.0.1
 
 # Show version
 rserve -v
@@ -601,7 +601,7 @@ rserve -v
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-port` | gRPC listen port (HTTP is port+1) | `14260` |
-| `-bind` | Bind address (`0.0.0.0` for all interfaces) | `127.0.0.1` |
+| `-bind` | Listen address; non-loopback values require an explicit unsafe-remote override | `127.0.0.1` |
 | `-max-concurrent` | Max simultaneous runs | `3` |
 | `-session-ttl` | Session inactivity TTL in minutes (`0` disables expiry) | `30` |
 | `-v` | Show version and exit | |
@@ -612,6 +612,7 @@ Optional server environment variables:
 |----------|--------|
 | `RSERVE_TOKEN` | Require a bearer token on HTTP endpoints except `/health` |
 | `RSERVE_WORK_ROOT` | Absolute root that confines HTTP bundle `work_dir` values |
+| `RSERVE_ALLOW_INSECURE_REMOTE=1` | Permit a non-loopback native bind after acknowledging plaintext unauthenticated gRPC; prefer a loopback TLS gateway |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Enable OpenTelemetry export to an OTLP endpoint |
 | `KAFKAKIT_BOOTSTRAP_SERVERS` | Enable the optional kafkakit/lifecycle integration for Kafka/Redpanda brokers |
 | `KAFKAKIT_TENANT_ID` | Set the event tenant ID (default: `ai8`) |
@@ -638,12 +639,12 @@ The gRPC listener is plaintext and has no authentication layer. Keep it on loopb
 
 ### OpenAI-Compatible HTTP API
 
-The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs` and `session_id` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, or `gemini:gemini-3.1-pro-preview`), with an optional **`-{effort}` suffix** on either form: `claude:opus-max`, `codex:gpt-5.6-luna-high`, or bare `claude-max` (default model at that effort). The suffix is only treated as an effort when the remainder is a valid model, so hyphenated names like `gpt-5.6-luna` are never mangled; the same suffix works on `model` fields in bundle step definitions. `/v1/models` enumerates every valid `tool:model` combination for tools whose underlying CLI is found on the server's `PATH`, with each tool's default model flagged `"default": true` and its valid effort suffixes listed as `"efforts"` on the bare tool entry — the single source of truth for model and effort naming. An unknown model in a chat request is rejected with a 400 listing the valid options rather than passed through to the CLI (which would fail silently). Chat request bodies are limited to 10MB; bundle run request bodies are limited to 1MB.
+The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs` and `session_id` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, or `gemini:gemini-3.1-pro-preview`), with an optional **`-{effort}` suffix** on either form: `claude:opus-max`, `codex:gpt-5.6-luna-high`, or bare `codex-ultra` (the configured default model at that effort). The suffix is only treated as an effort when that specific model supports it, so hyphenated names like `gpt-5.6-luna` are never mangled; chat requests reject unsupported combinations such as `gpt-5.6-luna-ultra`. Supported suffixes also work on `model` fields in bundle step definitions. `/v1/models` enumerates fixed `tool:model` combinations for tools found on the server's `PATH`, flags the configured default with `"default": true`, and lists model-specific suffixes in `"efforts"`. OpenCode and KiloCode advertise `"dynamic": true`, list their configured default, and continue accepting arbitrary `provider/model` identifiers. Unknown models in fixed namespaces receive a 400 listing valid options. Chat request bodies are limited to 10MB; bundle run request bodies are limited to 1MB.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/v1/chat/completions` | POST | Chat completion (streaming and non-streaming) |
-| `/v1/models` | GET | Every available tool + valid `tool:model` combination, defaults flagged |
+| `/v1/models` | GET | Available tools, fixed models, dynamic namespaces, configured defaults, and model-specific efforts |
 | `/v1/bundles` | GET | List available bundles with their inputs |
 | `/v1/bundles/{name}` | GET | Bundle detail: full step DAG (parallel groups, vote/merge, conditionals) |
 | `/v1/bundles/{name}` | POST | Run a bundle, return per-step results + inline artifacts (SSE streaming optional) |
@@ -691,7 +692,7 @@ Unknown, expired, or tool-mismatched IDs are ignored and start a fresh run. The 
 
 ### Bundle Execution API
 
-Bundles can be run over plain HTTP (in addition to gRPC `RunBundle`), making them callable from any orchestration layer (e.g. a Windmill flow step):
+Bundles can be run over the native loopback HTTP API (in addition to gRPC `RunBundle`). Remote orchestration layers such as Windmill must reach it through authenticated TLS transport:
 
 ```bash
 # List bundles with their inputs
@@ -820,6 +821,6 @@ Only use on trusted codebases in controlled environments. Lock files are stored 
 
 ## Version
 
-Current version: **4.2.7**
+Current version: **4.2.10**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.

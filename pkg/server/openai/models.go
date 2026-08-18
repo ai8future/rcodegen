@@ -6,7 +6,9 @@ import (
 	"strings"
 
 	rcodegenpkg "rcodegen"
+	"rcodegen/pkg/runner"
 	"rcodegen/pkg/server"
+	"rcodegen/pkg/settings"
 )
 
 // ParseModel splits a model string like "claude:opus-4" into (tool, model).
@@ -69,11 +71,11 @@ func DetectAvailableTools(toolFactories map[string]server.ToolFactory) []string 
 }
 
 // BuildModelList constructs a ModelList response with one bare entry per
-// available tool (runs that tool's default model) plus one "tool:model" entry
-// for every model the tool accepts — the single source of truth for the model
-// naming space, so agents discover valid names instead of guessing. The
-// tool's default model entry is flagged with "default": true.
-func BuildModelList(available []string, factories map[string]server.ToolFactory) ModelList {
+// available tool (runs that tool's configured default model) plus one
+// "tool:model" entry for every fixed model the tool accepts. Dynamic model
+// namespaces include their configured default and advertise "dynamic": true
+// on the bare tool entry. Model entries carry their model-specific efforts.
+func BuildModelList(available []string, factories map[string]server.ToolFactory, configured *settings.Settings) ModelList {
 	now := nowUnix()
 	var data []ModelInfo
 	for _, name := range available {
@@ -89,22 +91,35 @@ func BuildModelList(available []string, factories map[string]server.ToolFactory)
 			continue
 		}
 		tool := factory()
-		info.Efforts = tool.ValidEfforts()
+		applyToolSettings(tool, configured)
+		def := tool.DefaultModelSetting()
+		info.Efforts = runner.EffortsForModel(tool, def)
+		models := tool.ValidModels()
+		info.Dynamic = len(models) == 0
 		data = append(data, info)
-		def := tool.DefaultModel()
-		for _, m := range tool.ValidModels() {
+		if len(models) == 0 && def != "" {
+			models = []string{def}
+		}
+		for _, m := range models {
 			data = append(data, ModelInfo{
 				ID:      name + ":" + m,
 				Object:  "model",
 				Created: now,
 				OwnedBy: "rcodegen",
 				Default: m == def,
+				Efforts: runner.EffortsForModel(tool, m),
 			})
 		}
 	}
 	return ModelList{
 		Object: "list",
 		Data:   data,
+	}
+}
+
+func applyToolSettings(tool runner.Tool, configured *settings.Settings) {
+	if aware, ok := tool.(runner.SettingsAware); ok && configured != nil {
+		aware.SetSettings(configured)
 	}
 }
 

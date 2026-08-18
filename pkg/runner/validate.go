@@ -11,12 +11,41 @@ import (
 // Returns nil if valid, or an error with a helpful message if invalid.
 func ValidateModel(tool Tool, model string) error {
 	validModels := tool.ValidModels()
+	// A nil/empty list is the Tool contract for a dynamic model namespace
+	// (for example opencode and kilocode provider/model identifiers).
+	if len(validModels) == 0 {
+		return nil
+	}
 	for _, valid := range validModels {
 		if model == valid {
 			return nil
 		}
 	}
 	return fmt.Errorf("invalid model '%s'. Valid options: %s", model, strings.Join(validModels, ", "))
+}
+
+// EffortsForModel returns the effort levels accepted by a specific model.
+// Most tools use one tool-wide list; tools with model-dependent capabilities
+// can implement ModelEffortProvider.
+func EffortsForModel(tool Tool, model string) []string {
+	if provider, ok := tool.(ModelEffortProvider); ok {
+		return provider.ValidEffortsForModel(model)
+	}
+	return tool.ValidEfforts()
+}
+
+// ValidateEffort checks whether an effort is supported by a specific model.
+func ValidateEffort(tool Tool, model, effort string) error {
+	if effort == "" {
+		return nil
+	}
+	validEfforts := EffortsForModel(tool, model)
+	for _, valid := range validEfforts {
+		if effort == valid {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid effort '%s' for model '%s'. Valid options: %s", effort, model, strings.Join(validEfforts, ", "))
 }
 
 // IsValidModel returns true if the model is valid for the given tool.
@@ -35,7 +64,7 @@ func SplitModelEffort(tool Tool, model string) (base, effort string) {
 		suffix := "-" + e
 		if strings.HasSuffix(model, suffix) {
 			candidate := strings.TrimSuffix(model, suffix)
-			if IsValidModel(tool, candidate) {
+			if IsValidModel(tool, candidate) && ValidateEffort(tool, candidate, e) == nil {
 				return candidate, e
 			}
 		}

@@ -11,18 +11,18 @@ Start the server:
 ```bash
 rserve                                    # defaults: gRPC 14260, HTTP 14261, localhost, 3 concurrent
 rserve -port 9000 -max-concurrent 5       # custom port (HTTP is port+1)
-rserve -bind 0.0.0.0                      # listen on all interfaces
+rserve -bind 127.0.0.1                    # explicit loopback bind
 ```
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-port` | gRPC listen port (HTTP is port+1) | `14260` |
-| `-bind` | Bind address | `127.0.0.1` |
+| `-bind` | Listen address; non-loopback values require `RSERVE_ALLOW_INSECURE_REMOTE=1` | `127.0.0.1` |
 | `-max-concurrent` | Max simultaneous runs | `3` |
 | `-session-ttl` | Session inactivity TTL in minutes (`0` disables expiry) | `30` |
 | `-v` | Show version and exit | |
 
-Concurrency is controlled by a shared semaphore and requests queue until a slot is available. `RSERVE_TOKEN` optionally protects HTTP endpoints except `/health`; the plaintext gRPC listener has no authentication. Keep both listeners on loopback or put them behind authenticated TLS transport before exposing them to another host.
+Concurrency is controlled by a shared semaphore and requests queue until a slot is available. `RSERVE_TOKEN` optionally protects HTTP endpoints except `/health`; the plaintext gRPC listener has no authentication and native HTTP has no TLS. Keep rserve on loopback and expose only the required API through authenticated TLS transport. Non-loopback binds are refused unless `RSERVE_ALLOW_INSECURE_REMOTE=1` explicitly acknowledges the risk.
 
 ---
 
@@ -150,7 +150,7 @@ grpcurl -plaintext 127.0.0.1:14260 rserve.RServe/ListTasks
 **Default port:** `14261` (gRPC port + 1)
 **Authentication:** none by default. If `RSERVE_TOKEN` is set, send `Authorization: Bearer <token>` on every endpoint except `/health`.
 
-Any OpenAI SDK client can connect to this API by pointing the base URL to `http://host:14261`.
+Local OpenAI SDK clients can connect by pointing the base URL to `http://127.0.0.1:14261`. Remote clients must use an authenticated TLS gateway or encrypted tunnel.
 
 ### POST /v1/chat/completions
 
@@ -171,7 +171,7 @@ Chat completion endpoint. Supports both streaming (SSE) and non-streaming modes.
 }
 ```
 
-**Model format:** `{tool}` or `{tool}:{model}` -- e.g., `claude`, `claude:opus`, `codex:gpt-5.5`, `gemini`, `gemini:gemini-3-flash-preview`.
+**Model format:** `{tool}` or `{tool}:{model}` -- e.g., `claude`, `claude:opus`, `codex:gpt-5.6-sol`, `gemini`, `gemini:gemini-3-flash-preview`. Claude and Codex also accept a supported `-{effort}` suffix, such as `claude:opus-max`, `codex:gpt-5.6-luna-max`, or bare `codex-ultra` for the configured default model. OpenCode and KiloCode accept dynamic `provider/model` identifiers.
 
 **Request headers:**
 
@@ -215,24 +215,33 @@ Response headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, 
 
 | HTTP Status | Meaning |
 |-------------|---------|
-| `400` | Bad request or unknown tool |
+| `400` | Bad request, unknown tool, invalid fixed model, or unsupported model/effort combination |
 | `405` | Method not allowed |
 | `503` | Request cancelled or disconnected while queued for a run slot |
 
 ### GET /v1/models
 
-List available tools (only those whose CLI binary is found on PATH).
+List available tools (only those whose CLI binary is found on PATH), configured defaults, fixed model namespaces, and model-specific effort suffixes. Dynamic OpenCode/KiloCode namespaces set `"dynamic": true` and list their configured default while continuing to accept arbitrary `provider/model` identifiers.
 
 ```json
 {
   "object": "list",
   "data": [
-    {"id": "claude", "object": "model", "created": 1711800000, "owned_by": "rcodegen"},
-    {"id": "codex", "object": "model", "created": 1711800000, "owned_by": "rcodegen"},
-    {"id": "gemini", "object": "model", "created": 1711800000, "owned_by": "rcodegen"}
+    {"id": "claude", "object": "model", "created": 1711800000, "owned_by": "rcodegen", "efforts": ["low", "medium", "high", "xhigh", "max"]},
+    {"id": "claude:sonnet", "object": "model", "created": 1711800000, "owned_by": "rcodegen", "default": true, "efforts": ["low", "medium", "high", "xhigh", "max"]},
+    {"id": "codex", "object": "model", "created": 1711800000, "owned_by": "rcodegen", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+    {"id": "codex:gpt-5.6-sol", "object": "model", "created": 1711800000, "owned_by": "rcodegen", "default": true, "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+    {"id": "opencode", "object": "model", "created": 1711800000, "owned_by": "rcodegen", "dynamic": true}
   ]
 }
 ```
+
+### GET/POST /v1/bundles and GET /v1/bundles/{name}
+
+- `GET /v1/bundles` lists bundle names and required inputs.
+- `GET /v1/bundles/{name}` returns the complete step DAG.
+- `POST /v1/bundles/{name}` runs a bundle with optional `inputs`, absolute `work_dir`, `options`, and SSE `stream`. Responses include per-step results, final output, usage, correlation ID, and bounded inline text artifacts.
+- `X-Correlation-ID` is sanitized, echoed, and attached to the run registry entry. `RSERVE_WORK_ROOT` can confine `work_dir` values and must be absolute.
 
 ### GET /health
 
@@ -373,6 +382,7 @@ Wraps the `claude` CLI. Supports streaming JSON output via `claude --output-form
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-b, --budget <usd>` | Max budget in USD per run | `10.00` (max: `1000.00`) |
+| `-e, --effort <lvl>` | Reasoning effort: `low`, `medium`, `high`, `xhigh`, `max` | `xhigh` |
 | `-s, --status` | Track credit usage before/after task | |
 | `-S, --no-status` | Disable credit usage tracking | |
 
@@ -390,11 +400,11 @@ Wraps the `codex` CLI via `codex exec`.
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-e, --effort <lvl>` | Reasoning effort: `low`, `medium`, `high`, `xhigh` | `xhigh` |
+| `-e, --effort <lvl>` | Reasoning effort through `ultra`, validated per model | `xhigh` |
 | `-s, --status` | Track credit usage before/after task | |
 | `-S, --no-status` | Disable credit usage tracking | |
 
-**Valid models:** `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex`
+**Valid models:** `gpt-5.6-sol` (default), `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex`. Sol/Terra accept efforts through `ultra`, Luna through `max`, and older models through `xhigh`.
 
 ```bash
 rcodex -c myproject audit
@@ -514,7 +524,7 @@ Jobs sharing a `session` identifier are executed sequentially with session IDs c
   "output_dir": "",
   "default_build_dir": "",
   "defaults": {
-    "codex": { "model": "gpt-5.5", "effort": "xhigh" },
+    "codex": { "model": "gpt-5.6-sol", "effort": "xhigh" },
     "claude": { "model": "sonnet", "budget": "10.00" },
     "gemini": { "model": "gemini-3.1-pro-preview" }
   },
@@ -534,7 +544,10 @@ Jobs sharing a `session` identifier are executed sequentially with session IDs c
 | `RCODEGEN_OUTPUT_DIR` | Override `output_dir` |
 | `RCODEGEN_MODEL` | Override model for all tools |
 | `RCODEGEN_BUDGET` | Override Claude budget |
-| `RCODEGEN_EFFORT` | Override Claude/Codex effort (`max` is Claude-only) |
+| `RCODEGEN_EFFORT` | Override Claude/Codex effort (Codex support is model-specific) |
+| `RSERVE_TOKEN` | Require bearer authentication on native HTTP except `/health` |
+| `RSERVE_WORK_ROOT` | Absolute root that confines HTTP bundle `work_dir` values |
+| `RSERVE_ALLOW_INSECURE_REMOTE` | Set to `1` to permit an explicitly unsafe non-loopback native bind |
 | `RCODEGEN_LOG_LEVEL` | Log level (`warn`, `debug`, etc.) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry collector endpoint (enables tracing/metrics) |
 | `KAFKAKIT_BOOTSTRAP_SERVERS` | Kafka brokers for the optional kafkakit/lifecycle integration |

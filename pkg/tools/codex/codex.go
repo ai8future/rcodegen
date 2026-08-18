@@ -54,7 +54,20 @@ func (t *Tool) ValidModels() []string {
 
 // ValidEfforts returns the reasoning-effort levels codex accepts.
 func (t *Tool) ValidEfforts() []string {
-	return []string{"low", "medium", "high", "xhigh"}
+	return []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+}
+
+// ValidEffortsForModel returns the effort matrix exposed by the Codex model
+// catalog. GPT-5.6 Luna supports max but not ultra; older models stop at xhigh.
+func (t *Tool) ValidEffortsForModel(model string) []string {
+	switch model {
+	case "gpt-5.6-sol", "gpt-5.6-terra":
+		return []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+	case "gpt-5.6-luna":
+		return []string{"low", "medium", "high", "xhigh", "max"}
+	default:
+		return []string{"low", "medium", "high", "xhigh"}
+	}
 }
 
 // DefaultModel returns the default model name
@@ -225,7 +238,7 @@ func (t *Tool) ToolSpecificFlags() []runner.FlagDef {
 		{
 			Short:       "-e",
 			Long:        "--effort",
-			Description: "Reasoning effort: low, medium, high, xhigh",
+			Description: "Reasoning effort: low through ultra (model-dependent)",
 			TakesArg:    true,
 			Default:     "xhigh",
 			Target:      "Effort",
@@ -276,10 +289,9 @@ func (t *Tool) ValidateConfig(cfg *runner.Config) error {
 		return fmt.Errorf("model must be specified")
 	}
 
-	// Validate effort level
-	validEfforts := map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true}
-	if cfg.Effort != "" && !validEfforts[cfg.Effort] {
-		return fmt.Errorf("invalid effort '%s': must be one of low, medium, high, xhigh", cfg.Effort)
+	// Validate effort level for the selected model.
+	if err := runner.ValidateEffort(t, cfg.Model, cfg.Effort); err != nil {
+		return err
 	}
 
 	return nil
@@ -320,7 +332,7 @@ func (t *Tool) ToolSpecificHelpSections() []runner.HelpSection {
 		{
 			Title: "Codex Options",
 			Lines: []string{
-				fmt.Sprintf("  %s-e%s, %s--effort%s %s<lvl>%s    Reasoning effort: low, medium, high, xhigh %s(default: xhigh)%s",
+				fmt.Sprintf("  %s-e%s, %s--effort%s %s<lvl>%s    Reasoning effort: low through ultra, model-dependent %s(default: xhigh)%s",
 					runner.Green, runner.Reset, runner.Green, runner.Reset, runner.Yellow, runner.Reset, runner.Dim, runner.Reset),
 			},
 		},

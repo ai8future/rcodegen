@@ -2,7 +2,7 @@
 
 Living document. Captures the architecture discussion and decisions for using
 Windmill as the execution/control plane on top of rcodegen/rserve, so any
-session can resume from here. Last updated: 2026-08-18 (rcodegen v4.2.6).
+session can resume from here. Last updated: 2026-08-18 (rcodegen v4.2.10).
 
 ---
 
@@ -24,8 +24,8 @@ session can resume from here. Last updated: 2026-08-18 (rcodegen v4.2.6).
 │ approval gates, retry policies, run history in HA Postgres,  │
 │ operator UI, AI-agent steps                                  │
 └──────────────────────────▲───────────────────────────────────┘
-                           │ HTTP: POST /v1/bundles/{name}
-                           │ (bearer token + X-Correlation-ID)
+                           │ HTTPS gateway: POST /v1/bundles/{name}
+                           │ (TLS + bearer token + X-Correlation-ID)
 ┌──────────────────────────┴───────────────────────────────────┐
 │ MODEL EXECUTION                                              │
 │ rserve → rcodegen bundles → claude / codex / gemini /        │
@@ -81,20 +81,26 @@ runs someday span days, cross many services, and need signal-heavy workflows.
   steps: **AI Agent, Approval/Suspend, Branches, For-loops**.
 
 ### rserve (Mac Studio)
-- Ports: gRPC **14260**, HTTP **14261**. Binds `127.0.0.1` by default —
-  **must start with `-bind 0.0.0.0`** to be reachable from the VM.
+- Ports: gRPC **14260**, HTTP **14261**. Keep rserve bound to
+  **`127.0.0.1`**. Its native gRPC listener is plaintext and unauthenticated,
+  and its native HTTP listener has no TLS.
+- Remote access: expose only HTTP 14261 through an authenticated TLS reverse
+  proxy or equivalent encrypted tunnel. Do not expose native gRPC 14260 to the
+  LAN. Restrict the gateway to the Windmill VM at the host firewall as defense
+  in depth.
 - Auth: set `RSERVE_TOKEN` → requires `Authorization: Bearer <token>` on all
-  HTTP endpoints except `/health`. Required before LAN exposure.
+  HTTP endpoints except `/health`. Keep it enabled behind the TLS gateway.
 - Optional containment: `RSERVE_WORK_ROOT` restricts every `work_dir` to one
-  parent directory (recommended: `~/rcodegen-runs`).
+  parent directory. It must be absolute; use `/Users/cliff/rcodegen-runs`.
 - OpenTelemetry: chassis OTel initializes when
   `OTEL_EXPORTER_OTLP_ENDPOINT` is set — the Langfuse hook-up point later.
 
 ---
 
-## 3. The API contract (built in v4.2.3–4.2.6)
+## 3. The API contract
 
-Windmill talks to rserve over plain HTTP. Full details in README; summary:
+Windmill talks to rserve through the authenticated HTTPS gateway. The gateway
+forwards to rserve's loopback HTTP listener. Full details in README; summary:
 
 | Endpoint | Purpose |
 |---|---|
@@ -140,7 +146,7 @@ curl -sS -m 3600 \
   -H "X-Correlation-ID: $WM_JOB_ID" \
   -H "Content-Type: application/json" \
   -d "{\"inputs\":{\"topic\":\"$TOPIC\"},\"work_dir\":\"/Users/cliff/rcodegen-runs/$WM_JOB_ID\"}" \
-  "http://<mac-studio-ip>:14261/v1/bundles/research-report"
+  "https://<rserve-gateway>/v1/bundles/research-report"
 ```
 
 ---
@@ -192,12 +198,12 @@ Input form (topic, model, effort)
 |---|---|
 | Execution plane | Windmill CE (already running); no LangChain, no Temporal for now |
 | hotfolderd | Retired for this path; lessons ported |
-| Bundle invocation | HTTP `POST /v1/bundles/{name}` (built) |
+| Bundle invocation | HTTPS gateway → loopback HTTP `POST /v1/bundles/{name}` (built API; gateway required) |
 | Artifact transport | **Inline in response**; Windmill publishes (option B) |
 | Trace identity | `X-Correlation-ID` = Windmill job UUID, end to end |
 | Concurrency-full behavior | Queue (rserve = quota governor), not fast-fail |
 | Verdict/failure contract | **Deferred until the pilot flow teaches us** — keep minimal |
-| Worker placement | Now: rserve-over-wire from VM workers. Later: dedicated k3s agent-worker image (CLIs + rcodegen + persistent home for CLI auth). Mac Studio = bootstrap, not destination |
+| Worker placement | Now: VM workers call the authenticated TLS gateway; native rserve stays loopback-only. Later: dedicated k3s agent-worker image (CLIs + rcodegen + persistent home for CLI auth). Mac Studio = bootstrap, not destination |
 | Artifact home | Private `reports` git repo (recommended, not yet created) |
 | Dropbox | Not a requirement; folder-drop UX abandoned |
 
@@ -230,8 +236,10 @@ Input form (topic, model, effort)
 ## 8. Ops checklist (before the pilot is "real")
 
 - [ ] `ssh root@z2prox 'qm set 103 --onboot 1'` — Windmill must survive host reboots
-- [ ] rserve as a LaunchAgent on the Mac Studio: `-bind 0.0.0.0` +
-      `RSERVE_TOKEN` + `RSERVE_WORK_ROOT=~/rcodegen-runs`
+- [ ] rserve as a LaunchAgent on the Mac Studio: keep `-bind 127.0.0.1`, set
+      `RSERVE_TOKEN`, and set `RSERVE_WORK_ROOT=/Users/cliff/rcodegen-runs`
+- [ ] Put HTTP 14261 behind an authenticated TLS gateway restricted to the
+      Windmill VM; verify native gRPC 14260 is not reachable from the LAN
 - [ ] Store the rserve token as a Windmill **variable/secret** in AOWS
 - [ ] Create the private `reports` repo; give the flow push credentials (Windmill secret)
 - [ ] Health LaunchAgent: add alerting (currently logs only)

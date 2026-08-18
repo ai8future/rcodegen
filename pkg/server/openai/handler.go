@@ -96,7 +96,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // handleModels returns the list of available tools and every valid
 // tool:model combination.
 func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, BuildModelList(h.availableTools, h.toolFactories))
+	writeJSON(w, http.StatusOK, BuildModelList(h.availableTools, h.toolFactories, h.settings))
 }
 
 // splitToolEffort resolves "claude-max" style names where an effort suffix
@@ -108,7 +108,9 @@ func (h *Handler) splitToolEffort(name string) (tool, effort string, ok bool) {
 			continue
 		}
 		rest := name[len(prefix):]
-		for _, e := range factory().ValidEfforts() {
+		instance := factory()
+		applyToolSettings(instance, h.settings)
+		for _, e := range runner.EffortsForModel(instance, instance.DefaultModelSetting()) {
 			if rest == e {
 				return tn, e, true
 			}
@@ -176,6 +178,7 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	showToolUse := r.Header.Get("X-Show-Tool-Use") == "true"
 
 	tool := factory()
+	applyToolSettings(tool, h.settings)
 
 	// "claude:opus-max" style: an effort suffix on the model name. Split before
 	// validation so the base model is checked, not the suffixed string.
@@ -198,21 +201,6 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			))
 			return
 		}
-	}
-
-	runID, runCtx, cancel, err := h.registry.Acquire(r.Context(), toolName, task)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, NewErrorResponse(
-			"failed to acquire run slot: "+err.Error(), "server_error", "concurrency_limit",
-		))
-		return
-	}
-	defer cancel()
-	defer h.registry.Release(runID)
-
-	// Inject settings if the tool supports it
-	if sa, ok := tool.(runner.SettingsAware); ok && h.settings != nil {
-		sa.SetSettings(h.settings)
 	}
 
 	// Build config
@@ -244,6 +232,28 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	if requestEffort != "" {
 		cfg.Effort = requestEffort
 	}
+	if err := runner.ValidateModel(tool, cfg.Model); err != nil {
+		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
+			err.Error(), "invalid_request_error", "invalid_model",
+		))
+		return
+	}
+	if err := runner.ValidateEffort(tool, cfg.Model, cfg.Effort); err != nil {
+		writeJSON(w, http.StatusBadRequest, NewErrorResponse(
+			err.Error(), "invalid_request_error", "invalid_effort",
+		))
+		return
+	}
+
+	runID, runCtx, cancel, err := h.registry.Acquire(r.Context(), toolName, task)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, NewErrorResponse(
+			"failed to acquire run slot: "+err.Error(), "server_error", "concurrency_limit",
+		))
+		return
+	}
+	defer cancel()
+	defer h.registry.Release(runID)
 
 	oaiModel := req.Model // echo back the original model string
 

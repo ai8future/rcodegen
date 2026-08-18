@@ -8,8 +8,8 @@ import "time"
 
 // ChatCompletionRequest represents an OpenAI-compatible chat completion request.
 type ChatCompletionRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
+	Model     string    `json:"model"`
+	Messages  []Message `json:"messages"`
 	Stream    bool      `json:"stream,omitempty"`
 	WorkDirs  []string  `json:"work_dirs,omitempty"`
 	SessionID string    `json:"session_id,omitempty"`
@@ -27,10 +27,10 @@ type Message struct {
 
 // ChatCompletionResponse represents an OpenAI-compatible chat completion response.
 type ChatCompletionResponse struct {
-	ID      string   `json:"id"`
-	Object  string   `json:"object"`
-	Created int64    `json:"created"`
-	Model   string   `json:"model"`
+	ID        string   `json:"id"`
+	Object    string   `json:"object"`
+	Created   int64    `json:"created"`
+	Model     string   `json:"model"`
 	Choices   []Choice `json:"choices"`
 	Usage     *Usage   `json:"usage,omitempty"`
 	SessionID string   `json:"session_id,omitempty"`
@@ -56,10 +56,10 @@ type Usage struct {
 
 // ChatCompletionChunk represents a single chunk in a streaming response.
 type ChatCompletionChunk struct {
-	ID      string         `json:"id"`
-	Object  string         `json:"object"`
-	Created int64          `json:"created"`
-	Model   string         `json:"model"`
+	ID        string         `json:"id"`
+	Object    string         `json:"object"`
+	Created   int64          `json:"created"`
+	Model     string         `json:"model"`
 	Choices   []StreamChoice `json:"choices"`
 	Usage     *Usage         `json:"usage,omitempty"`
 	SessionID string         `json:"session_id,omitempty"`
@@ -95,7 +95,8 @@ type ModelInfo struct {
 	Created int64    `json:"created"`
 	OwnedBy string   `json:"owned_by"`
 	Default bool     `json:"default,omitempty"` // true for a tool's default model
-	Efforts []string `json:"efforts,omitempty"` // bare tool entries: valid "-{effort}" suffixes
+	Efforts []string `json:"efforts,omitempty"` // valid "-{effort}" suffixes for this entry
+	Dynamic bool     `json:"dynamic,omitempty"` // true when arbitrary provider/model names are accepted
 }
 
 // ---------------------------------------------------------------------------
