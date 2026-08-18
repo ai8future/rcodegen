@@ -92,9 +92,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
-// handleModels returns the list of available models.
+// handleModels returns the list of available tools and every valid
+// tool:model combination.
 func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, BuildModelList(h.availableTools))
+	writeJSON(w, http.StatusOK, BuildModelList(h.availableTools, h.toolFactories))
 }
 
 // handleHealth returns server health information.
@@ -149,6 +150,18 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	showToolUse := r.Header.Get("X-Show-Tool-Use") == "true"
 
 	tool := factory()
+
+	// Reject unknown models up front with the valid list — a bad model passed
+	// through to the CLI fails silently (200 with empty content). GET
+	// /v1/models enumerates every valid tool:model combination.
+	if modelOverride != "" {
+		if err := runner.ValidateModel(tool, modelOverride); err != nil {
+			writeJSON(w, http.StatusBadRequest, NewErrorResponse(
+				err.Error(), "invalid_request_error", "invalid_model",
+			))
+			return
+		}
+	}
 
 	runID, runCtx, cancel, err := h.registry.Acquire(r.Context(), toolName, task)
 	if err != nil {

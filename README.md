@@ -638,12 +638,12 @@ The gRPC listener is plaintext and has no authentication layer. Keep it on loopb
 
 ### OpenAI-Compatible HTTP API
 
-The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs` and `session_id` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, or `gemini:gemini-3.1-pro-preview`). `/v1/models` lists only tools whose underlying CLI is found on the server's `PATH`. Chat request bodies are limited to 10MB; bundle run request bodies are limited to 1MB.
+The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs` and `session_id` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, or `gemini:gemini-3.1-pro-preview`). `/v1/models` enumerates every valid `tool:model` combination for tools whose underlying CLI is found on the server's `PATH`, with each tool's default model flagged `"default": true` — the single source of truth for model naming. An unknown model in a chat request is rejected with a 400 listing the valid options rather than passed through to the CLI (which would fail silently). Chat request bodies are limited to 10MB; bundle run request bodies are limited to 1MB.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/v1/chat/completions` | POST | Chat completion (streaming and non-streaming) |
-| `/v1/models` | GET | List available tool identifiers |
+| `/v1/models` | GET | Every available tool + valid `tool:model` combination, defaults flagged |
 | `/v1/bundles` | GET | List available bundles with their inputs |
 | `/v1/bundles/{name}` | GET | Bundle detail: full step DAG (parallel groups, vote/merge, conditionals) |
 | `/v1/bundles/{name}` | POST | Run a bundle, return per-step results + inline artifacts (SSE streaming optional) |

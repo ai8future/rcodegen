@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.2.8 — 2026-08-18
+- **`GET /v1/models` now enumerates the full model naming space**: one bare entry per available tool plus one `tool:model` entry for every model the tool accepts (from each tool's `ValidModels()`), with the tool's default model flagged `"default": true` — the single discovery endpoint for agents, ending model-name guessing (e.g. `codex:luna`)
+- **Chat completions reject unknown models with 400** listing the valid options (`runner.ValidateModel`), instead of passing them through to the CLI where they fail silently as a 200 with empty content
+- 4 new tests (enumeration + defaults, handler count, invalid-model 400, advertised-models validation); README updated
+- Agent: Claude:Opus 4.8
+
 ## 4.2.7 — 2026-08-18
 - Audited the 4.2.3–4.2.6 HTTP bundle changes and closed incomplete fixes: gRPC `CancelRun` now reaches the bundle execution context, conditional `else` branches execute, vote `OutputRef` results surface correctly, and conditional/failing/cancelled runs preserve accurate step and aggregate usage metrics
 - Hardened bundle artifacts with `os.Root`: `RSERVE_WORK_ROOT` rejects symlink-component escapes, reads remain rooted, all inspected directory entries count toward the 10,000-entry scan bound, and only regular text artifacts are collected

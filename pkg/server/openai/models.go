@@ -68,18 +68,35 @@ func DetectAvailableTools(toolFactories map[string]server.ToolFactory) []string 
 	return available
 }
 
-// BuildModelList constructs a ModelList response with ModelInfo entries for
-// each available tool. The list Object is "list", and each entry uses
-// Object="model", OwnedBy="rcodegen", and Created set to the current Unix time.
-func BuildModelList(available []string) ModelList {
+// BuildModelList constructs a ModelList response with one bare entry per
+// available tool (runs that tool's default model) plus one "tool:model" entry
+// for every model the tool accepts — the single source of truth for the model
+// naming space, so agents discover valid names instead of guessing. The
+// tool's default model entry is flagged with "default": true.
+func BuildModelList(available []string, factories map[string]server.ToolFactory) ModelList {
 	now := nowUnix()
-	data := make([]ModelInfo, len(available))
-	for i, name := range available {
-		data[i] = ModelInfo{
+	var data []ModelInfo
+	for _, name := range available {
+		data = append(data, ModelInfo{
 			ID:      name,
 			Object:  "model",
 			Created: now,
 			OwnedBy: "rcodegen",
+		})
+		factory, ok := factories[name]
+		if !ok {
+			continue
+		}
+		tool := factory()
+		def := tool.DefaultModel()
+		for _, m := range tool.ValidModels() {
+			data = append(data, ModelInfo{
+				ID:      name + ":" + m,
+				Object:  "model",
+				Created: now,
+				OwnedBy: "rcodegen",
+				Default: m == def,
+			})
 		}
 	}
 	return ModelList{

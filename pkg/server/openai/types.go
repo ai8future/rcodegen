@@ -94,6 +94,7 @@ type ModelInfo struct {
 	Object  string `json:"object"`
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
+	Default bool   `json:"default,omitempty"` // true for a tool's default model
 }
 
 // ---------------------------------------------------------------------------
