@@ -126,8 +126,9 @@ func (o *Orchestrator) emitStep(ev StepEvent) {
 	}
 }
 
-// stepCompletedEvent builds a completed StepEvent for branches that do not
-// extract per-step stats (conditional steps, dispatcher errors).
+// stepCompletedEvent builds a completed StepEvent for branches outside the main
+// stats-extraction path (conditional steps, dispatcher errors), pulling cost,
+// tokens, and model from the envelope when present.
 func stepCompletedEvent(i int, step bundle.Step, env *envelope.Envelope, d time.Duration) StepEvent {
 	ev := StepEvent{
 		Type:       StepEventCompleted,
@@ -137,12 +138,59 @@ func stepCompletedEvent(i int, step bundle.Step, env *envelope.Envelope, d time.
 		DurationMs: d.Milliseconds(),
 		Envelope:   env,
 	}
-	if env != nil {
-		ev.Status = string(env.Status)
-	} else {
+	if env == nil {
 		ev.Status = string(envelope.StatusFailure)
+		return ev
+	}
+	ev.Status = string(env.Status)
+	if c, ok := env.Result["cost_usd"].(float64); ok {
+		ev.CostUSD = c
+	}
+	if m, ok := env.Result["model"].(string); ok {
+		ev.Model = m
+	}
+	if t, ok := env.Result["input_tokens"].(int); ok {
+		ev.InputTokens = t
+	}
+	if t, ok := env.Result["output_tokens"].(int); ok {
+		ev.OutputTokens = t
 	}
 	return ev
+}
+
+// StepOutput returns the textual output of a step envelope. Tool, merge, and
+// vote executors persist their output to the OutputRef JSON file rather than
+// the envelope itself; this reads it back and unwraps stream-JSON results the
+// same way ${steps.X.stdout} resolution does (see Context.Resolve). A
+// Result["stdout"] string, if present, takes precedence.
+func StepOutput(env *envelope.Envelope) string {
+	if env == nil {
+		return ""
+	}
+	if s, ok := env.Result["stdout"].(string); ok && s != "" {
+		return extractStreamingResult(s)
+	}
+	if env.OutputRef == "" {
+		return ""
+	}
+	data, err := os.ReadFile(env.OutputRef)
+	if err != nil {
+		return ""
+	}
+	var output map[string]interface{}
+	if err := json.Unmarshal(data, &output); err != nil {
+		return ""
+	}
+	// Key order matches executor conventions: tool steps write "stdout",
+	// merge steps "merged", vote steps "decision".
+	for _, key := range []string{"stdout", "merged", "decision"} {
+		if v, ok := output[key]; ok {
+			if s := fmt.Sprintf("%v", v); s != "" {
+				return extractStreamingResult(s)
+			}
+		}
+	}
+	return ""
 }
 
 func New(s *settings.Settings) *Orchestrator {
@@ -191,11 +239,19 @@ func (o *Orchestrator) getStepModel(toolName, stepModel string) string {
 	return ""
 }
 
+// Run executes a bundle without external cancellation (Ctrl+C only).
 func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelope.Envelope, error) {
+	return o.RunWithContext(context.Background(), b, inputs)
+}
+
+// RunWithContext executes a bundle; cancelling parent (e.g. an HTTP request
+// context or gRPC stream context) stops the run between steps and kills the
+// in-flight step's process.
+func (o *Orchestrator) RunWithContext(parent context.Context, b *bundle.Bundle, inputs map[string]string) (*envelope.Envelope, error) {
 	start := time.Now()
 
-	// Set up signal-aware context for graceful cancellation (Ctrl+C)
-	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// Signal-aware context: cancellation propagates from Ctrl+C or the parent.
+	sigCtx, stop := signal.NotifyContext(parent, os.Interrupt)
 	defer stop()
 
 	// Validate required inputs and apply defaults

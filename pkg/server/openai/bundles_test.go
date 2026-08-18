@@ -1,12 +1,14 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"rcodegen/pkg/bundle"
@@ -62,7 +64,7 @@ func TestRunBundle_SuccessWithArtifactsAndCorrelation(t *testing.T) {
 	workDir := t.TempDir()
 
 	var gotInputs map[string]string
-	fake := func(b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
+	fake := func(ctx context.Context, b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
 		gotInputs = inputs
 		// Simulate a bundle writing a report plus files that must be excluded.
 		if err := os.WriteFile(filepath.Join(inputs["output_dir"], "REPORT.md"), []byte("# Findings\nAll good."), 0o644); err != nil {
@@ -153,7 +155,7 @@ func TestRunBundle_PreexistingFilesNotReturned(t *testing.T) {
 		t.Fatalf("write preexisting: %v", err)
 	}
 
-	fake := func(b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
+	fake := func(ctx context.Context, b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
 		if err := os.WriteFile(filepath.Join(inputs["output_dir"], "NEW.md"), []byte("fresh"), 0o644); err != nil {
 			t.Fatalf("write new: %v", err)
 		}
@@ -188,7 +190,7 @@ func TestRunBundle_UnknownBundle(t *testing.T) {
 }
 
 func TestRunBundle_MissingInputMapsTo400(t *testing.T) {
-	fake := func(b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
+	fake := func(ctx context.Context, b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
 		return envelope.New().Failure("MISSING_INPUT", "Required input: task").Build(), nil
 	}
 	h := newBundleTestHandler(t, fake)
@@ -293,7 +295,7 @@ func TestGetBundleDetail(t *testing.T) {
 
 func TestRunBundle_OptionsForwarded(t *testing.T) {
 	var got bundleRunOpts
-	fake := func(b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
+	fake := func(ctx context.Context, b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
 		got = opts
 		return envelope.New().Success().Build(), nil
 	}
@@ -332,7 +334,7 @@ func emitTwoSteps(opts bundleRunOpts) {
 }
 
 func TestRunBundle_StepResultsAndOutput(t *testing.T) {
-	fake := func(b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
+	fake := func(ctx context.Context, b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
 		emitTwoSteps(opts)
 		return envelope.New().Success().WithResult("total_cost_usd", 1.5).Build(), nil
 	}
@@ -366,7 +368,7 @@ func TestRunBundle_StepResultsAndOutput(t *testing.T) {
 }
 
 func TestRunBundle_Streaming(t *testing.T) {
-	fake := func(b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
+	fake := func(ctx context.Context, b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
 		emitTwoSteps(opts)
 		return envelope.New().Success().Build(), nil
 	}
@@ -414,6 +416,76 @@ func TestRunBundle_Streaming(t *testing.T) {
 	}
 	if resp.CorrelationID != "wm-777" {
 		t.Errorf("correlation_id = %q, want wm-777", resp.CorrelationID)
+	}
+}
+
+func TestRunBundle_NonRegularFilesNotCollected(t *testing.T) {
+	workDir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.md")
+	if err := os.WriteFile(outside, []byte("SECRET"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	fake := func(ctx context.Context, b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
+		dir := inputs["output_dir"]
+		if err := os.WriteFile(filepath.Join(dir, "REPORT.md"), []byte("ok"), 0o644); err != nil {
+			t.Fatalf("write report: %v", err)
+		}
+		// A symlink pointing outside work_dir must not leak content.
+		if err := os.Symlink(outside, filepath.Join(dir, "LEAK.md")); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		// A FIFO must not be opened (opening would block the response).
+		_ = syscall.Mkfifo(filepath.Join(dir, "PIPE.md"), 0o644)
+		return envelope.New().Success().Build(), nil
+	}
+	h := newBundleTestHandler(t, fake)
+
+	body := `{"inputs":{"task":"x"},"work_dir":"` + workDir + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/bundles/ensemble", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var resp BundleRunResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(resp.Artifacts) != 1 || resp.Artifacts[0].Path != "REPORT.md" {
+		t.Fatalf("artifacts = %+v, want only REPORT.md", resp.Artifacts)
+	}
+	for _, a := range resp.Artifacts {
+		if strings.Contains(a.Content, "SECRET") {
+			t.Fatalf("symlink target content leaked into artifacts: %+v", a)
+		}
+	}
+}
+
+func TestRunBundle_WorkRootRestriction(t *testing.T) {
+	allowed := t.TempDir()
+	t.Setenv("RSERVE_WORK_ROOT", allowed)
+
+	fake := func(ctx context.Context, b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
+		return envelope.New().Success().Build(), nil
+	}
+	h := newBundleTestHandler(t, fake)
+
+	// Outside the root: rejected.
+	req := httptest.NewRequest(http.MethodPost, "/v1/bundles/ensemble",
+		strings.NewReader(`{"inputs":{"task":"x"},"work_dir":"/tmp/definitely-elsewhere"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for work_dir outside root, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Inside the root: accepted.
+	inside := filepath.Join(allowed, "job1")
+	req = httptest.NewRequest(http.MethodPost, "/v1/bundles/ensemble",
+		strings.NewReader(`{"inputs":{"task":"x"},"work_dir":"`+inside+`"}`))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for work_dir under root, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

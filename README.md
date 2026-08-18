@@ -565,7 +565,9 @@ curl -X POST http://127.0.0.1:14261/v1/bundles/ensemble \
 - **Inline artifacts:** text files (`.md`, `.txt`, `.json`, `.csv`, `.html`, `.xml`, `.yaml`, `.log`) created or modified under `work_dir` during the run are returned inline in the response (512KB/file, 2MB/response caps), so remote callers can review and publish reports without filesystem access to this host.
 - **`X-Correlation-ID`:** pass an external run identifier (e.g. a Windmill job UUID); it is echoed in the response body and header, and attached to the run registry entry so `GetStatus` shows which external run owns each slot.
 - **`GET /v1/bundles/{name}`** returns the bundle's full step DAG (parallel groups, vote/merge nodes, `if/then/else`) for introspection or rendering by external UIs.
-- Status mapping: missing required input → 400, unknown bundle → 404, concurrency full → 503, bundle-logic failure → 200 with `"status": "failure"`. In streaming mode all post-start outcomes (including errors) arrive as the `bundle_completed` event.
+- **Cancellation:** disconnecting the HTTP request (or calling gRPC `CancelRun`) cancels the run — the orchestrator stops between steps and the in-flight step's CLI process is killed. Processes spawned *by* that CLI may survive.
+- **Bounds:** the artifact scan tracks at most 10,000 files and returns at most 100 artifacts. Set `RSERVE_WORK_ROOT` to require every `work_dir` to live under one directory; symlinks, FIFOs, and other non-regular files are never collected.
+- Status mapping: missing required input → 400, unknown bundle → 404, bundle-logic failure → 200 with `"status": "failure"`. When all run slots are busy the request **queues** for a free slot; 503 is returned only if the client cancels or disconnects while waiting. In streaming mode all post-start outcomes (including errors) arrive as the `bundle_completed` event.
 
 ### Authentication
 
@@ -648,6 +650,6 @@ Only use on trusted codebases in controlled environments. Lock files are stored 
 
 ## Version
 
-Current version: **4.2.5**
+Current version: **4.2.6**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.

@@ -283,9 +283,8 @@ func (s *Server) RunBundle(req *pb.RunBundleRequest, stream pb.RServe_RunBundleS
 		inputs[k] = v
 	}
 
-	// Create orchestrator
-	// NOTE: orchestrator.Run creates its own signal context internally.
-	// Proper context propagation requires orchestrator API changes (future work).
+	// Create orchestrator; the stream context cancels the run (and kills the
+	// in-flight step's process) if the client disconnects.
 	orch := orchestrator.New(s.settings)
 	orch.SetLiveMode(false) // No animated display for gRPC
 	if req.OpusOnly {
@@ -295,7 +294,7 @@ func (s *Server) RunBundle(req *pb.RunBundleRequest, stream pb.RServe_RunBundleS
 		orch.SetFlashOnly(true)
 	}
 
-	env, runErr := orch.Run(b, inputs)
+	env, runErr := orch.RunWithContext(stream.Context(), b, inputs)
 
 	// Send result
 	resultEvent := &pb.ResultEvent{

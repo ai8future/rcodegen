@@ -1,6 +1,9 @@
 package orchestrator
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"rcodegen/pkg/bundle"
@@ -86,6 +89,95 @@ func TestRun_EmitsStepEvents(t *testing.T) {
 	}
 	if c.Model != "stub-model" {
 		t.Errorf("completed model = %q, want stub-model", c.Model)
+	}
+}
+
+// stubFuncExecutor adapts a function to the StepExecutor interface.
+type stubFuncExecutor func(step *bundle.Step) (*envelope.Envelope, error)
+
+func (f stubFuncExecutor) Execute(step *bundle.Step, ctx *Context, ws *workspace.Workspace) (*envelope.Envelope, error) {
+	return f(step)
+}
+
+func TestRunWithContext_CancelStopsBetweenSteps(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	calls := 0
+	old := DispatcherFactory
+	DispatcherFactory = func(tools map[string]runner.Tool) StepExecutor {
+		return stubFuncExecutor(func(step *bundle.Step) (*envelope.Envelope, error) {
+			calls++
+			cancel() // simulate client disconnect during step 1
+			return envelope.New().Success().Build(), nil
+		})
+	}
+	defer func() { DispatcherFactory = old }()
+
+	o := New(&settings.Settings{})
+	b := &bundle.Bundle{
+		Name: "cancel-bundle",
+		Steps: []bundle.Step{
+			{Name: "a", Tool: "claude", Task: "t1"},
+			{Name: "b", Tool: "claude", Task: "t2"},
+		},
+	}
+	env, err := o.RunWithContext(ctx, b, map[string]string{})
+	if err == nil {
+		t.Fatal("expected error from cancelled run")
+	}
+	if calls != 1 {
+		t.Errorf("executor calls = %d, want 1 (step 2 must not run)", calls)
+	}
+	if env == nil || env.Error == nil || env.Error.Code != "INTERRUPTED" {
+		t.Errorf("envelope = %+v, want INTERRUPTED error", env)
+	}
+}
+
+func TestStepOutput(t *testing.T) {
+	if got := StepOutput(nil); got != "" {
+		t.Errorf("nil envelope: got %q, want empty", got)
+	}
+
+	// Result["stdout"] takes precedence (also the synthetic-test path).
+	env := envelope.New().Success().WithResult("stdout", "plain text").Build()
+	if got := StepOutput(env); got != "plain text" {
+		t.Errorf("result stdout: got %q", got)
+	}
+
+	// Stream-JSON in stdout is unwrapped to the final result.
+	streamed := `{"type":"assistant","message":{}}` + "\n" + `{"type":"result","result":"the answer"}`
+	env = envelope.New().Success().WithResult("stdout", streamed).Build()
+	if got := StepOutput(env); got != "the answer" {
+		t.Errorf("stream-json stdout: got %q", got)
+	}
+
+	// Production path: stdout persisted in the OutputRef file.
+	dir := t.TempDir()
+	ref := filepath.Join(dir, "step.json")
+	if err := os.WriteFile(ref, []byte(`{"stdout":"from file","stderr":""}`), 0o644); err != nil {
+		t.Fatalf("write ref: %v", err)
+	}
+	env = envelope.New().Success().Build()
+	env.OutputRef = ref
+	if got := StepOutput(env); got != "from file" {
+		t.Errorf("output_ref stdout: got %q", got)
+	}
+
+	// Merge steps persist under "merged".
+	if err := os.WriteFile(ref, []byte(`{"merged":"combined output","input_count":2}`), 0o644); err != nil {
+		t.Fatalf("write ref: %v", err)
+	}
+	if got := StepOutput(env); got != "combined output" {
+		t.Errorf("output_ref merged: got %q", got)
+	}
+
+	// Missing file degrades to empty, not an error.
+	env.OutputRef = filepath.Join(dir, "gone.json")
+	if got := StepOutput(env); got != "" {
+		t.Errorf("missing ref: got %q, want empty", got)
 	}
 }
 

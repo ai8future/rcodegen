@@ -9,6 +9,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,17 +38,19 @@ type bundleRunOpts struct {
 
 // bundleRunFunc executes a loaded bundle with resolved inputs. It is a field on
 // Handler so tests can substitute a fake without spawning real AI tools.
-type bundleRunFunc func(b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error)
+// Cancelling ctx (client disconnect or CancelRun) stops the run and kills the
+// in-flight step's process.
+type bundleRunFunc func(ctx context.Context, b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error)
 
 // defaultBundleRun returns the production bundleRunFunc backed by the orchestrator.
 func defaultBundleRun(s *settings.Settings) bundleRunFunc {
-	return func(b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
+	return func(ctx context.Context, b *bundle.Bundle, inputs map[string]string, opts bundleRunOpts) (*envelope.Envelope, error) {
 		orch := orchestrator.New(s)
 		orch.SetLiveMode(false) // no animated display for HTTP
 		orch.SetOpusOnly(opts.opusOnly)
 		orch.SetFlashOnly(opts.flashOnly)
 		orch.SetStepCallback(opts.onStep)
-		return orch.Run(b, inputs)
+		return orch.RunWithContext(ctx, b, inputs)
 	}
 }
 
@@ -271,6 +274,17 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 			return
 		}
 		workDir = filepath.Clean(req.WorkDir)
+		// Optional containment: when RSERVE_WORK_ROOT is set, work_dir must be
+		// inside it — prevents callers from pointing runs at arbitrary paths.
+		if root := os.Getenv("RSERVE_WORK_ROOT"); root != "" {
+			rootClean := filepath.Clean(root)
+			if workDir != rootClean && !strings.HasPrefix(workDir, rootClean+string(filepath.Separator)) {
+				writeJSON(w, http.StatusBadRequest, NewErrorResponse(
+					"work_dir must be under "+rootClean, "invalid_request_error", "invalid_work_dir",
+				))
+				return
+			}
+		}
 		if err := os.MkdirAll(workDir, 0o755); err != nil {
 			writeJSON(w, http.StatusInternalServerError, NewErrorResponse(
 				"failed to create work_dir: "+err.Error(), "server_error", "work_dir_failed",
@@ -288,7 +302,7 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 		task = b.Name + " corr=" + corrID
 	}
 
-	runID, _, cancel, err := h.registry.Acquire(r.Context(), "bundle", task)
+	runID, runCtx, cancel, err := h.registry.Acquire(r.Context(), "bundle", task)
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, NewErrorResponse(
 			"failed to acquire run slot: "+err.Error(), "server_error", "concurrency_limit",
@@ -322,7 +336,7 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 
 	before := snapshotWorkDir(workDir)
 	start := time.Now()
-	env, runErr := h.runBundleFn(b, inputs, opts)
+	env, runErr := h.runBundleFn(runCtx, b, inputs, opts)
 
 	if env == nil {
 		msg := "bundle execution failed"
@@ -449,14 +463,15 @@ func (c *stepCollector) observe(ev orchestrator.StepEvent) {
 		r.InputTokens = ev.InputTokens
 		r.OutputTokens = ev.OutputTokens
 		r.DurationMs = ev.DurationMs
-		if ev.Envelope != nil {
-			if stdout, ok := ev.Envelope.Result["stdout"].(string); ok && stdout != "" {
-				if len(stdout) > stepOutputCap {
-					r.Output = trimPartialRune(stdout[:stepOutputCap])
-					r.OutputTruncated = true
-				} else {
-					r.Output = stdout
-				}
+		// StepOutput reads the OutputRef file (where executors persist stdout /
+		// merged / decision output) and unwraps stream-JSON, matching how
+		// ${steps.X.stdout} resolves in bundle prompts.
+		if out := orchestrator.StepOutput(ev.Envelope); out != "" {
+			if len(out) > stepOutputCap {
+				r.Output = trimPartialRune(out[:stepOutputCap])
+				r.OutputTruncated = true
+			} else {
+				r.Output = out
 			}
 		}
 	}
@@ -492,8 +507,9 @@ func (c *stepCollector) finalOutput() string {
 }
 
 // sseEventWriter writes named Server-Sent Events, flushing after each one.
-// After a write error (client gone) subsequent events are dropped; the bundle
-// run itself continues server-side (orchestrator cancellation is future work).
+// After a write error subsequent events are dropped; a genuine client
+// disconnect also cancels the request context, which stops the bundle run and
+// kills the in-flight step's process.
 type sseEventWriter struct {
 	w      http.ResponseWriter
 	f      http.Flusher
@@ -566,6 +582,8 @@ func resultInt(v interface{}) int {
 const (
 	artifactFileCap  = 512 << 10 // max bytes of content per artifact
 	artifactTotalCap = 2 << 20   // max total bytes of content per response
+	artifactMaxCount = 100       // max artifact entries per response
+	snapshotMaxFiles = 10000     // max files tracked per work_dir scan
 )
 
 var artifactTextExts = map[string]bool{
@@ -578,8 +596,11 @@ type artifactMeta struct {
 	modNano int64
 }
 
-// snapshotWorkDir records size+mtime for every visible file under root.
-// Returns nil for an empty root. Hidden files and directories are skipped.
+// snapshotWorkDir records size+mtime for every visible regular file under root.
+// Returns nil for an empty root. Hidden files/directories and non-regular files
+// (symlinks, FIFOs, sockets, devices) are skipped — symlinks could leak content
+// from outside work_dir and opening a FIFO would block the response. The scan
+// stops after snapshotMaxFiles entries to bound work on oversized directories.
 func snapshotWorkDir(root string) map[string]artifactMeta {
 	if root == "" {
 		return nil
@@ -589,13 +610,16 @@ func snapshotWorkDir(root string) map[string]artifactMeta {
 		if err != nil {
 			return nil // best-effort: unreadable entries are simply not tracked
 		}
+		if len(snap) >= snapshotMaxFiles {
+			return filepath.SkipAll
+		}
 		if d.IsDir() {
 			if path != root && strings.HasPrefix(d.Name(), ".") {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if strings.HasPrefix(d.Name(), ".") {
+		if strings.HasPrefix(d.Name(), ".") || !d.Type().IsRegular() {
 			return nil
 		}
 		info, err := d.Info()
@@ -631,6 +655,9 @@ func collectBundleArtifacts(root string, before map[string]artifactMeta) []Bundl
 		paths = append(paths, rel)
 	}
 	sort.Strings(paths)
+	if len(paths) > artifactMaxCount {
+		paths = paths[:artifactMaxCount]
+	}
 
 	var artifacts []BundleArtifact
 	budget := artifactTotalCap

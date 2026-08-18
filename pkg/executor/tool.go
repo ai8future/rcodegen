@@ -4,9 +4,11 @@ package executor
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -82,7 +84,7 @@ func (e *ToolExecutor) Execute(step *bundle.Step, ctx *orchestrator.Context, ws 
 		cmd.Stderr = &stderr
 	}
 
-	err := cmd.Run()
+	err := runWithContext(ctx.Ctx(), cmd)
 	duration := time.Since(start)
 
 	// Extract and store session ID for future reuse
@@ -103,6 +105,11 @@ func (e *ToolExecutor) Execute(step *bundle.Step, ctx *orchestrator.Context, ws 
 		WithDuration(duration.Milliseconds())
 
 	if err != nil {
+		// Distinguish cancellation (client disconnect, CancelRun, Ctrl+C) from
+		// genuine failures; the non-nil error stops the orchestrator loop.
+		if runCtx := ctx.Ctx(); runCtx != nil && runCtx.Err() != nil {
+			return builder.Failure("CANCELLED", "execution cancelled: "+err.Error()).Build(), runCtx.Err()
+		}
 		return builder.Failure("EXEC_FAILED", err.Error()).Build(), nil
 	}
 
@@ -118,6 +125,30 @@ func (e *ToolExecutor) Execute(step *bundle.Step, ctx *orchestrator.Context, ws 
 		WithResult("cache_write_tokens", usage.CacheWriteTokens).
 		WithResult("model", cfg.Model).
 		Build(), nil
+}
+
+// runWithContext runs cmd to completion, killing the process if runCtx is
+// cancelled (client disconnect, CancelRun, or Ctrl+C). Only the direct child
+// is killed; processes it spawned may survive.
+func runWithContext(runCtx context.Context, cmd *exec.Cmd) error {
+	if runCtx == nil {
+		return cmd.Run()
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-runCtx.Done():
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		<-done // reap the process; Wait's error is superseded by cancellation
+		return runCtx.Err()
+	}
 }
 
 // UsageInfo holds token and cost information

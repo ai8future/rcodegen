@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.2.6 — 2026-08-18
+- Fixes for all six findings from an external review of the 4.2.3–4.2.5 bundle HTTP API (details in `_bugs_fixed/2026-08-18-bundle-api-review-fixes.md`):
+- **Per-step/top-level output now works in production** — new `orchestrator.StepOutput` reads the OutputRef file (where executors actually persist stdout/merged/decision output) and unwraps stream-JSON exactly like `${steps.X.stdout}` resolution; the collector previously read a `Result["stdout"]` key that only synthetic test envelopes had
+- **Artifact scan hardened** — symlinks, FIFOs, sockets, and devices are skipped (symlinks could leak files from outside work_dir; FIFOs would block the response); scan bounded to 10,000 files, artifacts to 100 entries; optional `RSERVE_WORK_ROOT` env confines all work_dir values to one parent
+- **Cancellation now real** — new `Orchestrator.RunWithContext`; HTTP passes the registry run context, gRPC `RunBundle` passes the stream context; client disconnect or `CancelRun` stops the loop between steps and `executor.runWithContext` kills the in-flight step's CLI process (envelope code `CANCELLED`). Direct child only; grandchildren may survive
+- **Docs corrected** — concurrency-full requests queue for a slot (503 only if the caller cancels while waiting), matching actual `Acquire` semantics
+- **Conditional/error step events carry metrics** — `stepCompletedEvent` now extracts cost/model/tokens from the envelope
+- 8 new tests: StepOutput (5 paths incl. stream-JSON unwrap + merge key), loop cancellation, subprocess kill-on-cancel (×3), symlink/FIFO exclusion, work-root restriction
+- Agent: Claude:Opus 4.8
+
 ## 4.2.5 — 2026-08-17
 - Self-review fixes from a verification pass over 4.2.3/4.2.4:
 - **Added missing `rserve -v` flag** — README documented `-v | Show version and exit` but the binary never had the flag (pre-existing doc-code mismatch, discovered during smoke testing); now prints the embedded version and exits, consistent with the other binaries
