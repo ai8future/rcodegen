@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.2.11 — 2026-08-18
+- **Ephemeral work directories for chat completions**: new optional `"clone_work_dirs": true` on `POST /v1/chat/completions` copies each `work_dirs` entry into a per-run scratch root (`$TMPDIR/rserve-clone-{run_id}-*`, 0700) and runs the CLI against the copy, so agent state such as `.omc/` never lands in — or collides inside — a shared source tree when concurrent workers target the same repo
+- **Copy-on-write on APFS**: cloning uses `cp -Rc` (clonefile-backed, near-instant, no extra disk until written, dotfiles included) and falls back to a plain recursive copy when the filesystem rejects it; each clone logs `src`, `dst`, and `method=cow|copy`
+- **Cleanup on every exit path**: the scratch root is removed in the same teardown stack as run cancel/release, so success, failure, and client disconnect all clean up; a cleanup failure is logged, never fatal to the run
+- Default `false` keeps existing behavior byte-for-byte; a no-op without `work_dirs`; missing or non-directory sources return 400 `invalid_work_dir`; responses report `"cloned_work_dirs": {n}` on the completion object and on the final streaming chunk. Bundle `work_dir` semantics untouched
+- 11 new tests (clone isolation incl. dotfiles, cow + fallback methods, cleanup, 4 concurrent clones of one source, shared-basename disambiguation, validation, and 4 handler-level paths); full race suite green; README and API docs updated
+- Agent: Claude:Opus 5
+
 ## 4.2.10 — 2026-08-18
 - **Fixed dynamic OpenCode/KiloCode HTTP models**: empty `ValidModels()` lists now correctly mean dynamic namespaces, so arbitrary `provider/model` overrides are accepted instead of rejected as invalid
 - **Made model discovery configuration-aware**: `/v1/models` now flags the actual configured default, publishes effort levels per model, and marks dynamic namespaces while listing their configured default

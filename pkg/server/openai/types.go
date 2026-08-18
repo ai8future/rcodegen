@@ -13,6 +13,9 @@ type ChatCompletionRequest struct {
 	Stream    bool      `json:"stream,omitempty"`
 	WorkDirs  []string  `json:"work_dirs,omitempty"`
 	SessionID string    `json:"session_id,omitempty"`
+	// CloneWorkDirs runs the tool against throwaway copies of work_dirs so
+	// concurrent runs never write state into the same source tree.
+	CloneWorkDirs bool `json:"clone_work_dirs,omitempty"`
 }
 
 // Message represents a single chat message with a role and content.
@@ -27,13 +30,14 @@ type Message struct {
 
 // ChatCompletionResponse represents an OpenAI-compatible chat completion response.
 type ChatCompletionResponse struct {
-	ID        string   `json:"id"`
-	Object    string   `json:"object"`
-	Created   int64    `json:"created"`
-	Model     string   `json:"model"`
-	Choices   []Choice `json:"choices"`
-	Usage     *Usage   `json:"usage,omitempty"`
-	SessionID string   `json:"session_id,omitempty"`
+	ID             string   `json:"id"`
+	Object         string   `json:"object"`
+	Created        int64    `json:"created"`
+	Model          string   `json:"model"`
+	Choices        []Choice `json:"choices"`
+	Usage          *Usage   `json:"usage,omitempty"`
+	SessionID      string   `json:"session_id,omitempty"`
+	ClonedWorkDirs int      `json:"cloned_work_dirs,omitempty"`
 }
 
 // Choice represents a single completion choice.
@@ -56,13 +60,14 @@ type Usage struct {
 
 // ChatCompletionChunk represents a single chunk in a streaming response.
 type ChatCompletionChunk struct {
-	ID        string         `json:"id"`
-	Object    string         `json:"object"`
-	Created   int64          `json:"created"`
-	Model     string         `json:"model"`
-	Choices   []StreamChoice `json:"choices"`
-	Usage     *Usage         `json:"usage,omitempty"`
-	SessionID string         `json:"session_id,omitempty"`
+	ID             string         `json:"id"`
+	Object         string         `json:"object"`
+	Created        int64          `json:"created"`
+	Model          string         `json:"model"`
+	Choices        []StreamChoice `json:"choices"`
+	Usage          *Usage         `json:"usage,omitempty"`
+	SessionID      string         `json:"session_id,omitempty"`
+	ClonedWorkDirs int            `json:"cloned_work_dirs,omitempty"`
 }
 
 // StreamChoice represents a single choice within a streaming chunk.

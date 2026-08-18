@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -255,17 +256,40 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 	defer h.registry.Release(runID)
 
+	// Clone work_dirs into per-run scratch copies when asked. The cleanup defer
+	// sits in the same teardown stack as cancel/Release, so a client disconnect
+	// removes the scratch root too.
+	var clone *workDirClone
+	if req.CloneWorkDirs && len(req.WorkDirs) > 0 {
+		cloneLogger := logz.New("info")
+		clone, err = cloneWorkDirs(runCtx, runID, req.WorkDirs, cloneLogger)
+		if err != nil {
+			if errors.Is(err, errInvalidWorkDir) {
+				writeJSON(w, http.StatusBadRequest, NewErrorResponse(
+					err.Error(), "invalid_request_error", "invalid_work_dir",
+				))
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, NewErrorResponse(
+				err.Error(), "server_error", "clone_failed",
+			))
+			return
+		}
+		defer clone.cleanup(cloneLogger)
+		cfg.WorkDirs = clone.dirs
+	}
+
 	oaiModel := req.Model // echo back the original model string
 
 	if req.Stream {
-		h.handleStreaming(w, runCtx, runID, oaiModel, toolName, tool, cfg, showToolUse, cancel)
+		h.handleStreaming(w, runCtx, runID, oaiModel, toolName, tool, cfg, showToolUse, cancel, clone.count())
 	} else {
-		h.handleNonStreaming(w, runCtx, tool, cfg, oaiModel, toolName, runID)
+		h.handleNonStreaming(w, runCtx, tool, cfg, oaiModel, toolName, runID, clone.count())
 	}
 }
 
 // handleStreaming handles a streaming chat completion request.
-func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, runID, model, toolName string, tool runner.Tool, cfg *runner.Config, showToolUse bool, cancel context.CancelFunc) {
+func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, runID, model, toolName string, tool runner.Tool, cfg *runner.Config, showToolUse bool, cancel context.CancelFunc, clonedWorkDirs int) {
 	sse := NewSSEWriter(w)
 	sse.SetHeaders()
 
@@ -349,11 +373,12 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, ru
 
 	// Send final chunk with finish_reason and optional usage
 	finalChunk := ChatCompletionChunk{
-		ID:        "chatcmpl-" + runID,
-		Object:    "chat.completion.chunk",
-		Created:   nowUnix(),
-		Model:     model,
-		SessionID: sessionID,
+		ID:             "chatcmpl-" + runID,
+		Object:         "chat.completion.chunk",
+		Created:        nowUnix(),
+		Model:          model,
+		SessionID:      sessionID,
+		ClonedWorkDirs: clonedWorkDirs,
 		Choices: []StreamChoice{
 			{
 				Index:        0,
@@ -377,7 +402,7 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, ru
 }
 
 // handleNonStreaming handles a non-streaming chat completion request.
-func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context, tool runner.Tool, cfg *runner.Config, model, toolName, runID string) {
+func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context, tool runner.Tool, cfg *runner.Config, model, toolName, runID string, clonedWorkDirs int) {
 	var buf bytes.Buffer
 	if !tool.UsesStreamOutput() {
 		cfg.Output = &buf
@@ -407,11 +432,12 @@ func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context,
 	}
 
 	resp := ChatCompletionResponse{
-		ID:        "chatcmpl-" + runID,
-		Object:    "chat.completion",
-		Created:   nowUnix(),
-		Model:     model,
-		SessionID: sessionID,
+		ID:             "chatcmpl-" + runID,
+		Object:         "chat.completion",
+		Created:        nowUnix(),
+		Model:          model,
+		SessionID:      sessionID,
+		ClonedWorkDirs: clonedWorkDirs,
 		Choices: []Choice{
 			{
 				Index:        0,

@@ -639,7 +639,7 @@ The gRPC listener is plaintext and has no authentication layer. Keep it on loopb
 
 ### OpenAI-Compatible HTTP API
 
-The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs` and `session_id` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, or `gemini:gemini-3.1-pro-preview`), with an optional **`-{effort}` suffix** on either form: `claude:opus-max`, `codex:gpt-5.6-luna-high`, or bare `codex-ultra` (the configured default model at that effort). The suffix is only treated as an effort when that specific model supports it, so hyphenated names like `gpt-5.6-luna` are never mangled; chat requests reject unsupported combinations such as `gpt-5.6-luna-ultra`. Supported suffixes also work on `model` fields in bundle step definitions. `/v1/models` enumerates fixed `tool:model` combinations for tools found on the server's `PATH`, flags the configured default with `"default": true`, and lists model-specific suffixes in `"efforts"`. OpenCode and KiloCode advertise `"dynamic": true`, list their configured default, and continue accepting arbitrary `provider/model` identifiers. Unknown models in fixed namespaces receive a 400 listing valid options. Chat request bodies are limited to 10MB; bundle run request bodies are limited to 1MB.
+The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs`, `clone_work_dirs`, and `session_id` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, or `gemini:gemini-3.1-pro-preview`), with an optional **`-{effort}` suffix** on either form: `claude:opus-max`, `codex:gpt-5.6-luna-high`, or bare `codex-ultra` (the configured default model at that effort). The suffix is only treated as an effort when that specific model supports it, so hyphenated names like `gpt-5.6-luna` are never mangled; chat requests reject unsupported combinations such as `gpt-5.6-luna-ultra`. Supported suffixes also work on `model` fields in bundle step definitions. `/v1/models` enumerates fixed `tool:model` combinations for tools found on the server's `PATH`, flags the configured default with `"default": true`, and lists model-specific suffixes in `"efforts"`. OpenCode and KiloCode advertise `"dynamic": true`, list their configured default, and continue accepting arbitrary `provider/model` identifiers. Unknown models in fixed namespaces receive a 400 listing valid options. Chat request bodies are limited to 10MB; bundle run request bodies are limited to 1MB.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -669,6 +669,24 @@ curl http://127.0.0.1:14261/v1/chat/completions \
 curl http://127.0.0.1:14261/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"claude","messages":[{"role":"user","content":"audit this code"}],"work_dirs":["/path/to/project"]}'
+
+# Against a throwaway copy, leaving the source tree untouched
+curl http://127.0.0.1:14261/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude","messages":[{"role":"user","content":"audit this code"}],"work_dirs":["/path/to/project"],"clone_work_dirs":true}'
+```
+
+### Ephemeral Work Directories
+
+Chat requests accept `"clone_work_dirs": true`, which copies every `work_dirs` entry into a private scratch root under `$TMPDIR` (`rserve-clone-{run_id}-*`, mode 0700) and runs the tool against the copy. Agent state such as `.omc/` therefore lands in the throwaway tree instead of the shared source, which is what keeps concurrent workers pointed at the same repo from colliding. The scratch root is deleted when the run ends — success, failure, or client disconnect — and a cleanup failure is logged rather than failing the run. On macOS the copy is an APFS copy-on-write clone (`cp -Rc`): near-instant, no extra disk until something is written, dotfiles included; filesystems that reject it fall back to a real recursive copy, and the choice is logged per directory as `method=cow` or `method=copy`. The flag defaults to `false` (unchanged behaviour: the tool runs in the caller's directories) and is a no-op when `work_dirs` is absent. A missing or non-directory source is rejected with `400 invalid_work_dir`. When cloning happens the response carries `"cloned_work_dirs": {n}` — on the completion object, or on the final chunk when streaming. Bundle `work_dir` semantics are unchanged.
+
+```json
+{
+  "model": "claude:opus",
+  "messages": [{"role": "user", "content": "audit this code"}],
+  "work_dirs": ["/path/to/project"],
+  "clone_work_dirs": true
+}
 ```
 
 For streaming requests, `X-Show-Tool-Use: true` includes Claude/Gemini tool-use summaries as text chunks. Claude and Gemini expose structured streaming events; Codex, OpenCode, and KiloCode stdout is forwarded as raw content chunks.

@@ -167,9 +167,12 @@ Chat completion endpoint. Supports both streaming (SSE) and non-streaming modes.
   ],
   "stream": false,
   "work_dirs": ["/path/to/project"],
+  "clone_work_dirs": false,
   "session_id": "optional-session-id"
 }
 ```
+
+**Ephemeral work directories:** set `"clone_work_dirs": true` and each `work_dirs` entry is copied into a private scratch root (`$TMPDIR/rserve-clone-{run_id}-*`, mode 0700) before the CLI starts; the tool runs against the copy and the scratch root is removed when the run ends -- on success, on failure, and on client disconnect. Use it when concurrent runs share source trees, so agent state such as `.omc/` never lands in (or collides inside) the original directory. On macOS the copy is an APFS copy-on-write clone (`cp -Rc`), which is near-instant and consumes no extra space until written to; if the filesystem rejects that, rserve falls back to a real recursive copy. Dotfiles and dot-directories are included. The field defaults to `false` (the tool runs directly in the caller's directories), and is a no-op when `work_dirs` is absent. A source that does not exist or is not a directory returns `400` with code `invalid_work_dir`. Responses report `"cloned_work_dirs": {n}` when cloning happened -- on the completion object for non-streaming requests, and on the final chunk for streaming ones. Bundle `work_dir` semantics are unaffected.
 
 **Model format:** `{tool}` or `{tool}:{model}` -- e.g., `claude`, `claude:opus`, `codex:gpt-5.6-sol`, `gemini`, `gemini:gemini-3-flash-preview`. Claude and Codex also accept a supported `-{effort}` suffix, such as `claude:opus-max`, `codex:gpt-5.6-luna-max`, or bare `codex-ultra` for the configured default model. OpenCode and KiloCode accept dynamic `provider/model` identifiers.
 
@@ -197,7 +200,8 @@ Chat completion endpoint. Supports both streaming (SSE) and non-streaming modes.
     "completion_tokens": 3500,
     "total_tokens": 4700
   },
-  "session_id": "abc123"
+  "session_id": "abc123",
+  "cloned_work_dirs": 1
 }
 ```
 
@@ -215,8 +219,9 @@ Response headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, 
 
 | HTTP Status | Meaning |
 |-------------|---------|
-| `400` | Bad request, unknown tool, invalid fixed model, or unsupported model/effort combination |
+| `400` | Bad request, unknown tool, invalid fixed model, unsupported model/effort combination, or a `work_dirs` entry that is missing or not a directory |
 | `405` | Method not allowed |
+| `500` | Work-directory clone failed |
 | `503` | Request cancelled or disconnected while queued for a run slot |
 
 ### GET /v1/models
