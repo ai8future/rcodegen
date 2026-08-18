@@ -3,14 +3,18 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -413,6 +417,11 @@ func TestAsyncSubmit_RejectsStreamAndCallbackTogether(t *testing.T) {
 func TestAsyncSubmit_RejectsUnusableCallbackURLs(t *testing.T) {
 	chassis.RequireMajor(11)
 	installFakeOpenCode(t, "never runs")
+	// example.com is resolved by the plaintext check, so the answer comes from
+	// here rather than from whatever DNS the test machine happens to have.
+	stubCallbackDNS(t, func(string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
+	})
 	h := asyncHandler(t, server.NewRunRegistry(1), openCodeFactory())
 
 	cases := []struct {
@@ -460,6 +469,12 @@ func TestAsyncSubmit_RejectsUnusableCallbackURLs(t *testing.T) {
 }
 
 func TestAsyncSubmit_AcceptsHTTPSAndPrivateHTTPTargets(t *testing.T) {
+	// None of these reach the resolver — they are IP literals or the localhost
+	// name — so the stub is here to prove that, by failing loudly if one does.
+	stubCallbackDNS(t, func(host string) ([]net.IP, error) {
+		t.Errorf("resolved %q; IP literals and localhost answer for themselves", host)
+		return nil, errors.New("unexpected lookup")
+	})
 	for _, raw := range []string{
 		"https://windmill.example.com/api/w/aows/jobs_u/resume/1/2/sig",
 		"http://127.0.0.1:9000/resume",
@@ -468,15 +483,17 @@ func TestAsyncSubmit_AcceptsHTTPSAndPrivateHTTPTargets(t *testing.T) {
 		"http://192.168.1.10:8080/resume",
 		"http://172.16.4.4/resume",
 	} {
-		if _, err := newCallbackTarget(raw, nil); err != nil {
+		if _, err := newCallbackTarget(context.Background(), raw, nil); err != nil {
 			t.Errorf("newCallbackTarget(%q) = %v, want accepted", raw, err)
 		}
 	}
 	for _, raw := range []string{
 		"http://8.8.8.8/resume",
-		"http://172.32.0.1/resume", // just outside RFC1918's 172.16/12
+		"http://172.32.0.1/resume",      // just outside RFC1918's 172.16/12
+		"http://169.254.169.254/resume", // the cloud metadata endpoint
+		"http://0.0.0.0/resume",         // not a receiver at all
 	} {
-		if _, err := newCallbackTarget(raw, nil); err == nil {
+		if _, err := newCallbackTarget(context.Background(), raw, nil); err == nil {
 			t.Errorf("newCallbackTarget(%q) accepted a public plaintext target", raw)
 		}
 	}
@@ -559,6 +576,273 @@ func TestAsyncSubmit_ValidatesTheRequestBeforeAccepting(t *testing.T) {
 				t.Errorf("code = %q, want %s", errResp.Error.Code, c.code)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Plaintext callback host policy
+// ---------------------------------------------------------------------------
+
+// stubCallbackDNS answers callback host lookups from resolve instead of the
+// machine's resolver, so a test can stand a name in front of a local receiver.
+//
+// Call it before asyncHandler: cleanups run last-registered-first, so the
+// handler's shutdown — which drains any delivery still in flight — has to be
+// registered after this one to finish before the hook is put back.
+func stubCallbackDNS(t *testing.T, resolve func(host string) ([]net.IP, error)) {
+	t.Helper()
+	restore := callbackLookupIP
+	callbackLookupIP = func(_ context.Context, host string) ([]net.IP, error) {
+		return resolve(host)
+	}
+	t.Cleanup(func() { callbackLookupIP = restore })
+}
+
+// recordCallbackDials wraps the delivery dialer and returns an accessor for the
+// addresses it was asked to connect to — which is how a test proves that a
+// refused delivery never reached the network at all.
+func recordCallbackDials(t *testing.T) func() []string {
+	t.Helper()
+	var mu sync.Mutex
+	var dialed []string
+	restore := callbackDialIP
+	callbackDialIP = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		mu.Lock()
+		dialed = append(dialed, addr)
+		mu.Unlock()
+		return restore(ctx, network, addr)
+	}
+	t.Cleanup(func() { callbackDialIP = restore })
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), dialed...)
+	}
+}
+
+// receiverHost rewrites a receiver's URL to be reached through name instead of
+// the loopback literal httptest bound to, keeping the port.
+func receiverHost(t *testing.T, rawURL, name string) (target string, port string) {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse receiver URL: %v", err)
+	}
+	port = u.Port()
+	u.Host = net.JoinHostPort(name, port)
+	u.Path = "/resume"
+	return u.String(), port
+}
+
+// The blocker this policy exists for: a Windmill resume URL at
+// http://windmill.10.0.4.224.nip.io/... — a name, not a literal, that resolves
+// inside the private network. It has to be accepted at submit and delivered.
+func TestAsyncCallback_DeliversToAPrivateResolvingHostname(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "nip.io callback output")
+	receiver := newCallbackReceiver(t, http.StatusOK)
+
+	const name = "windmill.10.0.4.224.nip.io"
+	target, port := receiverHost(t, receiver.server.URL, name)
+	loopback := net.ParseIP("127.0.0.1")
+	stubCallbackDNS(t, func(host string) ([]net.IP, error) {
+		if host != name {
+			return nil, fmt.Errorf("unexpected host %q", host)
+		}
+		return []net.IP{loopback}, nil
+	})
+	dials := recordCallbackDials(t)
+	h := asyncHandler(t, server.NewRunRegistry(1), openCodeFactory())
+
+	submitted := submitAsync(t, h, callBody(target, ""), "wm-nipio")
+	payload := receiver.await(t, 1)
+
+	if payload.RunID != submitted.RunID {
+		t.Errorf("callback run_id = %q, want %q", payload.RunID, submitted.RunID)
+	}
+	if payload.Status != runStatusSuccess {
+		t.Errorf("callback status = %q, want success", payload.Status)
+	}
+	if len(payload.Choices) != 1 || payload.Choices[0].Message == nil {
+		t.Fatalf("callback choices = %+v", payload.Choices)
+	}
+	if got := payload.Choices[0].Message.Content; got != "nip.io callback output" {
+		t.Errorf("callback content = %q, want the CLI's output", got)
+	}
+
+	// The dialer pinned the vetted address rather than handing the name back to
+	// the transport, so the connection went to the IP the policy approved.
+	want := net.JoinHostPort("127.0.0.1", port)
+	if got := dials(); len(got) != 1 || got[0] != want {
+		t.Errorf("dialed %v, want exactly [%s]", got, want)
+	}
+}
+
+// The control this fix is really about: a host that passes validation and then
+// answers with a public address before the callback is delivered. The run is
+// long enough to make that window real, so it is closed at the dialer.
+func TestAsyncCallback_RebindingToAPublicAddressIsRefusedAtDialTime(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "rebinding callback output")
+	receiver := newCallbackReceiver(t, http.StatusOK)
+
+	const name = "rebind.internal.example"
+	target, _ := receiverHost(t, receiver.server.URL, name)
+	var lookups atomic.Int32
+	stubCallbackDNS(t, func(host string) ([]net.IP, error) {
+		if host != name {
+			return nil, fmt.Errorf("unexpected host %q", host)
+		}
+		// The first answer is the one submit-time validation sees; every answer
+		// after it — the delivery attempts — has rebound to a public address.
+		if lookups.Add(1) == 1 {
+			return []net.IP{net.ParseIP("127.0.0.1")}, nil
+		}
+		return []net.IP{net.ParseIP("203.0.113.10")}, nil
+	})
+	dials := recordCallbackDials(t)
+	h := asyncHandler(t, server.NewRunRegistry(1), openCodeFactory())
+
+	submitted := submitAsync(t, h, callBody(target, ""), "wm-rebind")
+	pollUntil(t, h, submitted.RunID, runStatusSuccess)
+
+	// One lookup validated the submission and one more per delivery attempt was
+	// refused; waiting for them all is what makes the assertions below settled
+	// rather than merely early.
+	attempts := len(h.async.backoff) + 1
+	deadline := time.Now().Add(20 * time.Second)
+	for int(lookups.Load()) < attempts+1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("delivery made %d lookups, want %d", lookups.Load(), attempts+1)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if got := dials(); len(got) != 0 {
+		t.Errorf("a refused delivery still dialed %v", got)
+	}
+	if got := receiver.count(); got != 0 {
+		t.Errorf("receiver took %d callbacks; the rebound delivery reached the network", got)
+	}
+
+	// The run itself succeeded and its result stays pollable: the refusal is a
+	// delivery failure, not a run failure.
+	rec := do(t, h, http.MethodGet, "/v1/runs/"+submitted.RunID+"/result")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("result status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var retained AsyncCompletion
+	if err := json.NewDecoder(rec.Body).Decode(&retained); err != nil {
+		t.Fatalf("decode retained result: %v", err)
+	}
+	if retained.Status != runStatusSuccess {
+		t.Errorf("retained status = %q, want success", retained.Status)
+	}
+}
+
+func TestAsyncSubmit_RejectsHostnamesThatDoNotResolvePrivately(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "never runs")
+
+	cases := []struct {
+		name    string
+		host    string
+		resolve func() ([]net.IP, error)
+	}{
+		{
+			name:    "resolves to a public address",
+			host:    "public.example",
+			resolve: func() ([]net.IP, error) { return []net.IP{net.ParseIP("203.0.113.10")}, nil },
+		},
+		{
+			name: "resolves to a private and a public address",
+			host: "split.example",
+			resolve: func() ([]net.IP, error) {
+				return []net.IP{net.ParseIP("10.0.4.224"), net.ParseIP("203.0.113.10")}, nil
+			},
+		},
+		{
+			name:    "does not resolve",
+			host:    "nxdomain.example",
+			resolve: func() ([]net.IP, error) { return nil, errors.New("no such host") },
+		},
+		{
+			name:    "resolves to nothing",
+			host:    "empty.example",
+			resolve: func() ([]net.IP, error) { return nil, nil },
+		},
+		{
+			name:    "resolves to the metadata endpoint",
+			host:    "metadata.example",
+			resolve: func() ([]net.IP, error) { return []net.IP{net.ParseIP("169.254.169.254")}, nil },
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			stubCallbackDNS(t, func(string) ([]net.IP, error) { return c.resolve() })
+			h := asyncHandler(t, server.NewRunRegistry(1), openCodeFactory())
+
+			body := callBody("http://"+c.host+"/resume", "")
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			var errResp ErrorResponse
+			if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if errResp.Error.Code != codeInvalidCallbackURL {
+				t.Errorf("code = %q, want %s", errResp.Error.Code, codeInvalidCallbackURL)
+			}
+			// The message has to name the shape that would have worked, or the
+			// caller reads it as "hostnames are never allowed".
+			if !strings.Contains(errResp.Error.Message, "resolves to one") {
+				t.Errorf("message does not offer private-resolving hostnames: %s", errResp.Error.Message)
+			}
+		})
+	}
+}
+
+// A private receiver that answers a callback with a redirect to a public one
+// would launder the payload past the policy. The client refuses to follow it.
+func TestAsyncCallback_DoesNotFollowRedirects(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "redirected callback output")
+
+	elsewhere := newCallbackReceiver(t, http.StatusOK)
+	var redirects atomic.Int32
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirects.Add(1)
+		http.Redirect(w, r, elsewhere.server.URL+"/resume", http.StatusFound)
+	}))
+	t.Cleanup(redirector.Close)
+
+	h := asyncHandler(t, server.NewRunRegistry(1), openCodeFactory())
+	submitted := submitAsync(t, h, callBody(redirector.URL+"/resume", ""), "wm-redirect")
+	pollUntil(t, h, submitted.RunID, runStatusSuccess)
+
+	// Delivery is over once every attempt has been refused — or, if the redirect
+	// were followed, as soon as the target takes the payload. Either ends the
+	// wait, so the leak is what gets reported rather than a timeout.
+	attempts := len(h.async.backoff) + 1
+	deadline := time.Now().Add(20 * time.Second)
+	for int(redirects.Load()) < attempts && elsewhere.count() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("redirecting receiver saw %d attempts, want %d", redirects.Load(), attempts)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	if got := elsewhere.count(); got != 0 {
+		t.Errorf("the redirect target took %d callbacks; the payload was handed on", got)
+	}
+	// A 302 is a failed attempt, retried and then given up on — never followed.
+	if got := int(redirects.Load()); got != attempts {
+		t.Errorf("redirecting receiver saw %d attempts, want %d", got, attempts)
 	}
 }
 

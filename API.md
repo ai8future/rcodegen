@@ -316,7 +316,18 @@ Send `callback_url` on a chat completion and rserve:
 
 `callback_url` cannot be combined with `"stream": true` (`400 callback_stream_conflict`) — a callback delivers the completion once, a stream delivers it incrementally.
 
-**Callback URL rules.** `https` is accepted for any host. Plain `http` is accepted only when the host is a loopback or RFC1918 address (`127.0.0.0/8`, `::1`, `localhost`, `10/8`, `172.16/12`, `192.168/16`, IPv6 unique-local), where the network itself is the boundary. Anything else is `400 invalid_callback_url`. `callback_headers` are applied verbatim to the POST (a bearer token for a receiver that needs one); names must be valid HTTP field names and values must not contain line breaks, else `400 invalid_callback_headers`. **Header values are never logged, and neither is the callback URL's path or query** — a Windmill resume URL is a secret in path form, so logs name only its scheme and host.
+**Callback URL rules.** `https` is accepted for any host. Plain `http` is accepted only where the network itself is the boundary: a loopback or RFC1918 address (`127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`, IPv6 unique-local), the reserved `localhost` name, **or a hostname that resolves to one of those addresses** — which is what makes ingress-style URLs like `http://windmill.10.0.4.224.nip.io/api/w/.../resume/...` usable. Anything else is `400 invalid_callback_url`.
+
+A hostname is checked twice, and the second check is the one that counts:
+
+1. **At submit**, the name is resolved under a 2-second budget. If it fails to resolve, resolves to nothing, or answers with *any* address outside the accepted ranges, the submission is rejected with `400 invalid_callback_url` on the connection that sent it. This is fast feedback for a mistyped or public callback URL, nothing more.
+2. **At delivery**, the name is resolved again inside the connection dialer, every address it answers with must still be acceptable, and rserve connects to a vetted address directly instead of re-resolving the name a third time. A host that passed validation and then answers with a public address — the DNS-rebinding shape, and an async run holds that window open for the length of the run — has its connection refused before any bytes leave the process. The delivery is logged as undelivered and the result stays pollable, exactly as an unreachable receiver would be.
+
+Link-local addresses (`169.254.0.0/16`, `fe80::/10`) are **not** accepted, even though they are unroutable: `169.254.169.254` is the cloud instance-metadata endpoint, which is precisely what an attacker-chosen callback URL would aim at. Neither are the unspecified (`0.0.0.0`, `::`) or multicast ranges. An address literal in the URL is judged directly and never resolved, and `localhost`/`*.localhost` are accepted at submit without a lookup — but both still pass through the delivery dialer's check.
+
+**Redirects are never followed**, on `http` or `https`. A receiver that answers a callback with a `3xx` gets that attempt counted as a failure and retried; the payload, the artifacts, and the caller's own `callback_headers` are not handed to the redirect target. A resume URL does not redirect, so nothing legitimate is lost.
+
+`callback_headers` are applied verbatim to the POST (a bearer token for a receiver that needs one); names must be valid HTTP field names and values must not contain line breaks, else `400 invalid_callback_headers`. **Header values are never logged, and neither is the callback URL's path or query** — a Windmill resume URL is a secret in path form, so logs name only its scheme and host.
 
 **Callback payload.** The synchronous completion object plus `run_id` and `status`:
 

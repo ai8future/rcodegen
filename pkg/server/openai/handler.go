@@ -220,7 +220,9 @@ func (h *Handler) planChatCompletion(r *http.Request, req *ChatCompletionRequest
 				"invalid_request_error", codeCallbackStreamConflict,
 			))
 		}
-		cb, err := newCallbackTarget(req.CallbackURL, req.CallbackHeaders)
+		// The request's own context bounds the plaintext hostname lookup, so a
+		// caller that hangs up during validation stops paying for it.
+		cb, err := newCallbackTarget(r.Context(), req.CallbackURL, req.CallbackHeaders)
 		if err != nil {
 			return rejected(http.StatusBadRequest, NewErrorResponse(
 				err.Error(), "invalid_request_error", callbackErrorCode(err),

@@ -58,6 +58,12 @@ const (
 
 	// callbackAttemptTimeout bounds one delivery attempt.
 	callbackAttemptTimeout = 10 * time.Second
+
+	// callbackResolveTimeout bounds the submit-time lookup of a plaintext
+	// callback hostname. That lookup is feedback rather than enforcement — the
+	// delivery dialer is what actually holds the line — so it fails fast rather
+	// than making the caller wait out a slow resolver.
+	callbackResolveTimeout = 2 * time.Second
 )
 
 // callbackBackoff is the wait before each retry, so a callback receiver that is
@@ -74,7 +80,39 @@ var (
 	errCallbackURL = errors.New("invalid callback_url")
 	// errCallbackHeaders marks callback headers that cannot be sent as given.
 	errCallbackHeaders = errors.New("invalid callback_headers")
+	// errCallbackRedirect ends a delivery whose receiver answered with a
+	// redirect. Following one would let a host that passed the plaintext policy
+	// hand the payload to a host that never did, and no resume URL redirects.
+	errCallbackRedirect = errors.New("callback receiver answered with a redirect, which is not followed")
+	// errCallbackPublicAddress ends a plaintext delivery whose host resolved,
+	// at the moment of connection, to an address outside the private network.
+	errCallbackPublicAddress = errors.New("callback host resolves outside the private network; " +
+		"refusing to send plain http to it")
 )
+
+// callbackLookupIP resolves a callback host to the addresses a delivery could
+// reach. It is a variable so tests can put a name in front of a local receiver
+// without touching the machine's resolver, and can make one host answer
+// differently at validation time than at delivery time.
+var callbackLookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	ips := make([]net.IP, 0, len(addrs))
+	for _, addr := range addrs {
+		ips = append(ips, addr.IP)
+	}
+	return ips, nil
+}
+
+// callbackDialIP opens the connection to an address the plaintext policy has
+// already vetted. Tests replace it to observe exactly which address the dialer
+// chose — the assertion that a refused delivery never reached the network.
+var callbackDialIP = func(ctx context.Context, network, addr string) (net.Conn, error) {
+	var d net.Dialer
+	return d.DialContext(ctx, network, addr)
+}
 
 // callbackTarget is a validated callback destination. headers are the caller's,
 // applied verbatim to the POST and never logged: a receiver's bearer token
@@ -84,12 +122,20 @@ type callbackTarget struct {
 	url     string
 	headers map[string]string
 	target  string
+	// plaintext selects the delivery client: an http target is dialed under the
+	// private-address policy, an https one over ordinary TLS.
+	plaintext bool
 }
 
 // newCallbackTarget validates a callback URL and its headers. https is accepted
-// anywhere; plain http only for a loopback or RFC1918 host, where the network
-// itself is the boundary.
-func newCallbackTarget(raw string, headers map[string]string) (*callbackTarget, error) {
+// anywhere; plain http only where the network itself is the boundary — a
+// loopback or RFC1918 address, or a hostname that resolves to one.
+//
+// The hostname check here is the caller's feedback, not the control. DNS can
+// answer differently by the time the run finishes, so the delivery dialer
+// checks again against the address it is about to connect to; see
+// dialPlaintextCallback.
+func newCallbackTarget(ctx context.Context, raw string, headers map[string]string) (*callbackTarget, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		// A parse error names the URL it failed on, and the URL may carry a
@@ -100,22 +146,26 @@ func newCallbackTarget(raw string, headers map[string]string) (*callbackTarget, 
 	if host == "" {
 		return nil, fmt.Errorf("%w: no host", errCallbackURL)
 	}
-	switch strings.ToLower(u.Scheme) {
+	scheme := strings.ToLower(u.Scheme)
+	switch scheme {
 	case "https":
 	case "http":
-		if !isPrivateOrLoopbackHost(host) {
-			return nil, fmt.Errorf("%w: plain http is accepted only for a loopback or RFC1918 host, "+
-				"not %s — use https", errCallbackURL, host)
+		if err := checkPlaintextHost(ctx, host); err != nil {
+			return nil, err
 		}
 	default:
-		return nil, fmt.Errorf("%w: scheme %q is not supported; use https, or http for a "+
-			"loopback or RFC1918 host", errCallbackURL, u.Scheme)
+		return nil, fmt.Errorf("%w: scheme %q is not supported; use https, or http for a loopback or "+
+			"RFC1918 host, or a hostname that resolves to one", errCallbackURL, u.Scheme)
 	}
 	if err := checkCallbackHeaders(headers); err != nil {
 		return nil, err
 	}
 
-	cb := &callbackTarget{url: u.String(), target: u.Scheme + "://" + u.Host}
+	cb := &callbackTarget{
+		url:       u.String(),
+		target:    u.Scheme + "://" + u.Host,
+		plaintext: scheme == "http",
+	}
 	if len(headers) > 0 {
 		cb.headers = make(map[string]string, len(headers))
 		for name, value := range headers {
@@ -125,19 +175,141 @@ func newCallbackTarget(raw string, headers map[string]string) (*callbackTarget, 
 	return cb, nil
 }
 
-// isPrivateOrLoopbackHost reports whether http without TLS is defensible for
-// this host: a loopback address, an RFC1918 (or IPv6 unique-local) address, or
-// the localhost name.
-func isPrivateOrLoopbackHost(host string) bool {
-	h := strings.ToLower(host)
-	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
-		return true
+// checkPlaintextHost decides, at submit time, whether plain http may be sent to
+// this host. An IP literal answers for itself and localhost is taken on faith;
+// any other name is resolved under a short budget, and every address it answers
+// with has to be one the private network already protects. A name that resolves
+// to nothing, or fails to resolve at all, is refused for the same reason a
+// public one is: the server cannot show that the payload would stay inside.
+//
+// This exists so a mistyped or public callback URL comes back as a 400 on the
+// submitting connection rather than as a warning in a log an hour later. What
+// makes it safe is dialPlaintextCallback, not this.
+func checkPlaintextHost(ctx context.Context, host string) error {
+	if isLocalhostName(host) {
+		return nil
 	}
-	ip := net.ParseIP(h)
-	if ip == nil {
+	if ip := net.ParseIP(host); ip != nil {
+		if isPrivateOrLoopbackIP(ip) {
+			return nil
+		}
+		return plaintextHostError(host, "is not a loopback or RFC1918 address")
+	}
+
+	lookupCtx, cancel := context.WithTimeout(ctx, callbackResolveTimeout)
+	defer cancel()
+	ips, err := callbackLookupIP(lookupCtx, host)
+	if err != nil {
+		return plaintextHostError(host, "did not resolve")
+	}
+	if len(ips) == 0 {
+		return plaintextHostError(host, "resolved to no addresses")
+	}
+	for _, ip := range ips {
+		if !isPrivateOrLoopbackIP(ip) {
+			return plaintextHostError(host, "resolves to an address outside the private network")
+		}
+	}
+	return nil
+}
+
+// plaintextHostError phrases every plaintext rejection the same way, so the
+// caller always learns which hosts would have been accepted.
+func plaintextHostError(host, why string) error {
+	return fmt.Errorf("%w: plain http is accepted only for a loopback or RFC1918 host, or a hostname "+
+		"that resolves to one — %s %s; use https", errCallbackURL, host, why)
+}
+
+// isLocalhostName reports whether a host is the reserved localhost name or one
+// of its subdomains, which RFC 6761 says never leaves the machine.
+func isLocalhostName(host string) bool {
+	h := strings.ToLower(host)
+	return h == "localhost" || strings.HasSuffix(h, ".localhost")
+}
+
+// isPrivateOrLoopbackIP reports whether http without TLS is defensible for an
+// address: loopback, or RFC1918 / IPv6 unique-local.
+//
+// Link-local is deliberately excluded even though it is unroutable off the
+// segment — 169.254.169.254 is the cloud instance-metadata endpoint, which is
+// exactly the address an attacker-chosen callback URL would want to reach. So
+// are the unspecified and multicast ranges, which are not a receiver at all.
+func isPrivateOrLoopbackIP(ip net.IP) bool {
+	if ip == nil || ip.IsUnspecified() || ip.IsMulticast() ||
+		ip.IsLinkLocalUnicast() || ip.IsInterfaceLocalMulticast() {
 		return false
 	}
 	return ip.IsLoopback() || ip.IsPrivate()
+}
+
+// dialPlaintextCallback is the dialer of the plaintext delivery client, and the
+// place the http policy is actually enforced.
+//
+// It resolves the callback host itself, at the moment of connection, refuses
+// unless every address the host answers with is one plain http may reach, and
+// then connects to a vetted address directly rather than handing the name back
+// to the transport to resolve a second time. The name still rides the request,
+// so the receiver sees the Host header it expects.
+//
+// Resolving here rather than trusting the submit-time check is the whole point:
+// a host that answered 10.0.4.224 when the run was submitted and answers a
+// public address half an hour later, when the callback is delivered, never gets
+// a connection. That window — validate now, connect later — is exactly what DNS
+// rebinding exploits, and an async run holds it open for the length of the run.
+func dialPlaintextCallback(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, errors.New("callback address is not host:port")
+	}
+	// The resolver's own error is dropped rather than wrapped: it quotes the
+	// name it failed on, and a resume URL's host is the least secret part of it
+	// but still not worth putting in a log line that already names the target.
+	ips, err := callbackLookupIP(ctx, host)
+	if err != nil {
+		return nil, errors.New("callback host did not resolve")
+	}
+	if len(ips) == 0 {
+		return nil, errors.New("callback host resolved to no addresses")
+	}
+	// Every answer has to pass, not just the one that would be dialed: a host
+	// answering with a private and a public address is the rebinding shape
+	// itself, and which one a dial picks is not the server's decision to make.
+	for _, ip := range ips {
+		if !isPrivateOrLoopbackIP(ip) {
+			return nil, errCallbackPublicAddress
+		}
+	}
+	var lastErr error
+	for _, ip := range ips {
+		conn, err := callbackDialIP(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// newCallbackClient builds a delivery client. dial, when non-nil, replaces the
+// transport's dialer with the plaintext address policy.
+//
+// Neither client follows redirects. A receiver that answers a callback with a
+// 302 is either broken or hostile, and following it would hand the payload —
+// completion, artifacts, and the caller's own headers — to a host that passed
+// none of the checks the original target did. A Windmill resume URL never
+// redirects, so nothing legitimate is lost.
+func newCallbackClient(dial func(context.Context, string, string) (net.Conn, error)) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if dial != nil {
+		transport.DialContext = dial
+	}
+	return &http.Client{
+		Timeout:   callbackAttemptTimeout,
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errCallbackRedirect
+		},
+	}
 }
 
 // checkCallbackHeaders rejects header names and values that cannot go on the
@@ -224,22 +396,38 @@ type asyncRuns struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	client  *http.Client
-	backoff []time.Duration
+	// client delivers to https targets; plainClient delivers to http ones under
+	// the private-address dialer. Every delivery goes through one of them —
+	// a finished run's callback and a shutdown notice alike — so the policy has
+	// no path around it.
+	client      *http.Client
+	plainClient *http.Client
+	backoff     []time.Duration
 }
 
 func newAsyncRuns() *asyncRuns {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &asyncRuns{
-		runs:    make(map[string]*asyncRun),
-		cap:     asyncResultCap,
-		ttl:     asyncResultTTL,
-		now:     time.Now,
-		ctx:     ctx,
-		cancel:  cancel,
-		client:  &http.Client{Timeout: callbackAttemptTimeout},
-		backoff: callbackBackoff,
+		runs:        make(map[string]*asyncRun),
+		cap:         asyncResultCap,
+		ttl:         asyncResultTTL,
+		now:         time.Now,
+		ctx:         ctx,
+		cancel:      cancel,
+		client:      newCallbackClient(nil),
+		plainClient: newCallbackClient(dialPlaintextCallback),
+		backoff:     callbackBackoff,
 	}
+}
+
+// clientFor picks the delivery client for a target: an http target gets the one
+// whose dialer re-checks the address at connection time, https the ordinary one
+// with default certificate verification.
+func (a *asyncRuns) clientFor(cb *callbackTarget) *http.Client {
+	if cb.plaintext {
+		return a.plainClient
+	}
+	return a.client
 }
 
 // asyncLogger builds the logger for one run's own output. It is built where it
@@ -707,7 +895,7 @@ func (a *asyncRuns) postOnce(ctx context.Context, cb *callbackTarget, body []byt
 		req.Header.Set(name, value)
 	}
 
-	resp, err := a.client.Do(req)
+	resp, err := a.clientFor(cb).Do(req)
 	if err != nil {
 		var uerr *url.Error
 		if errors.As(err, &uerr) {
