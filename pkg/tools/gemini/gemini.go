@@ -59,9 +59,11 @@ func (t *Tool) DefaultModel() string {
 	return "gemini-3.1-pro-preview"
 }
 
-// DefaultModelSetting returns the default model from settings
+// DefaultModelSetting returns the default model from settings.
 func (t *Tool) DefaultModelSetting() string {
-	// Gemini doesn't have settings support yet, return default
+	if t.settings != nil && t.settings.Defaults.Gemini.Model != "" {
+		return t.settings.Defaults.Gemini.Model
+	}
 	return t.DefaultModel()
 }
 
@@ -219,7 +221,10 @@ func (t *Tool) ToolSpecificFlags() []runner.FlagDef {
 
 // ApplyToolDefaults applies Gemini-specific defaults from settings
 func (t *Tool) ApplyToolDefaults(cfg *runner.Config) {
-	// Set default model if not specified
+	if t.settings != nil && t.settings.Defaults.Gemini.Model != "" {
+		cfg.Model = t.settings.Defaults.Gemini.Model
+		return
+	}
 	if cfg.Model == "" {
 		cfg.Model = t.DefaultModel()
 	}

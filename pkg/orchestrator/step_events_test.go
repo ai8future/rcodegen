@@ -134,6 +134,12 @@ func TestRunWithContext_CancelStopsBetweenSteps(t *testing.T) {
 	if env == nil || env.Error == nil || env.Error.Code != "INTERRUPTED" {
 		t.Errorf("envelope = %+v, want INTERRUPTED error", env)
 	}
+	if got := env.Result["input_tokens"]; got != 0 {
+		t.Errorf("input_tokens = %v, want aggregate zero on cancellation", got)
+	}
+	if got := env.Result["output_tokens"]; got != 0 {
+		t.Errorf("output_tokens = %v, want aggregate zero on cancellation", got)
+	}
 }
 
 func TestStepOutput(t *testing.T) {
@@ -174,6 +180,14 @@ func TestStepOutput(t *testing.T) {
 		t.Errorf("output_ref merged: got %q", got)
 	}
 
+	// Vote steps persist their verdict under "decision".
+	if err := os.WriteFile(ref, []byte(`{"decision":"candidate-b","strategy":"majority"}`), 0o644); err != nil {
+		t.Fatalf("write ref: %v", err)
+	}
+	if got := StepOutput(env); got != "candidate-b" {
+		t.Errorf("output_ref decision: got %q", got)
+	}
+
 	// Missing file degrades to empty, not an error.
 	env.OutputRef = filepath.Join(dir, "gone.json")
 	if got := StepOutput(env); got != "" {
@@ -212,5 +226,108 @@ func TestRun_EmitsSkippedForFalseCondition(t *testing.T) {
 	last := events[3]
 	if last.Type != StepEventSkipped || last.Name != "second" {
 		t.Errorf("last event = %s/%s, want skipped/second", last.Type, last.Name)
+	}
+}
+
+func TestRun_ConditionalElseExecutesAndContributesTotals(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	var executed *bundle.Step
+	old := DispatcherFactory
+	DispatcherFactory = func(map[string]runner.Tool) StepExecutor {
+		return stubFuncExecutor(func(step *bundle.Step) (*envelope.Envelope, error) {
+			executed = step
+			return envelope.New().
+				Success().
+				WithResult("stdout", "fallback result").
+				WithResult("cost_usd", 0.25).
+				WithResult("input_tokens", 3).
+				WithResult("output_tokens", 4).
+				WithResult("model", "fallback-model").
+				Build(), nil
+		})
+	}
+	defer func() { DispatcherFactory = old }()
+
+	o := New(&settings.Settings{})
+	var events []StepEvent
+	o.SetStepCallback(func(ev StepEvent) { events = append(events, ev) })
+	b := &bundle.Bundle{
+		Name: "conditional-bundle",
+		Steps: []bundle.Step{{
+			Name: "choice",
+			If:   "false",
+			Then: &bundle.Step{Name: "primary", Tool: "claude", Task: "primary"},
+			Else: &bundle.Step{Name: "fallback", Tool: "gemini", Task: "fallback"},
+		}},
+	}
+
+	env, err := o.Run(b, map[string]string{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if executed == nil || executed.Name != "fallback" || executed.Tool != "gemini" {
+		t.Fatalf("executed step = %+v, want fallback Gemini branch", executed)
+	}
+	if got := env.Result["total_cost_usd"]; got != 0.25 {
+		t.Errorf("total_cost_usd = %v, want 0.25", got)
+	}
+	if got := env.Result["input_tokens"]; got != 3 {
+		t.Errorf("input_tokens = %v, want 3", got)
+	}
+	if got := env.Result["output_tokens"]; got != 4 {
+		t.Errorf("output_tokens = %v, want 4", got)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %+v, want started + completed", events)
+	}
+	completed := events[1]
+	if completed.Name != "choice" || completed.Tool != "gemini" || completed.Model != "fallback-model" {
+		t.Errorf("completed event identity = %+v", completed)
+	}
+	if completed.CostUSD != 0.25 || completed.InputTokens != 3 || completed.OutputTokens != 4 {
+		t.Errorf("completed event metrics = %+v", completed)
+	}
+}
+
+func TestRun_FailedStepPreservesAggregateTotals(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	calls := 0
+	old := DispatcherFactory
+	DispatcherFactory = func(map[string]runner.Tool) StepExecutor {
+		return stubFuncExecutor(func(*bundle.Step) (*envelope.Envelope, error) {
+			calls++
+			status := envelope.New().Success()
+			if calls == 2 {
+				status = envelope.New().Failure("FAILED", "boom")
+			}
+			return status.
+				WithResult("cost_usd", 0.5).
+				WithResult("input_tokens", 2).
+				WithResult("output_tokens", 3).
+				WithResult("model", "stub-model").
+				Build(), nil
+		})
+	}
+	defer func() { DispatcherFactory = old }()
+
+	o := New(&settings.Settings{})
+	b := &bundle.Bundle{Name: "failure-bundle", Steps: []bundle.Step{
+		{Name: "one", Tool: "claude", Task: "one"},
+		{Name: "two", Tool: "gemini", Task: "two"},
+	}}
+	env, err := o.Run(b, map[string]string{})
+	if err == nil {
+		t.Fatal("expected failed bundle error")
+	}
+	if got := env.Result["total_cost_usd"]; got != 1.0 {
+		t.Errorf("failed total_cost_usd = %v, want 1.0", got)
+	}
+	if got := env.Result["input_tokens"]; got != 4 {
+		t.Errorf("failed input_tokens = %v, want 4", got)
+	}
+	if got := env.Result["output_tokens"]; got != 6 {
+		t.Errorf("failed output_tokens = %v, want 6", got)
 	}
 }

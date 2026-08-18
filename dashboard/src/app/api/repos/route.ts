@@ -2,10 +2,7 @@ import { NextResponse } from 'next/server'
 import fs from 'fs/promises'
 import fsSync from 'fs'
 import path from 'path'
-import os from 'os'
-
-// Configurable code directory via environment variable
-const CODE_DIR = process.env.RCODEGEN_CODE_DIR || path.join(os.homedir(), 'Desktop/_code')
+import { CODE_DIR } from '@/lib/code-dir'
 
 const PRIMARY_TASKS = ['audit', 'test', 'fix', 'refactor'] as const
 
@@ -188,7 +185,7 @@ function migrateRepoGrades(rcodgenDir: string): number {
 }
 
 // Known tool names for format detection
-const KNOWN_TOOLS = ['claude', 'gemini', 'codex']
+const KNOWN_TOOLS = ['claude', 'gemini', 'codex', 'opencode', 'kilocode']
 
 // Supports various filename formats with flexible date patterns:
 // Standard: {codebase}-{tool}-{task}-{YYYY-MM-DD_HHMM}.md

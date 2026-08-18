@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.2.7 — 2026-08-18
+- Audited the 4.2.3–4.2.6 HTTP bundle changes and closed incomplete fixes: gRPC `CancelRun` now reaches the bundle execution context, conditional `else` branches execute, vote `OutputRef` results surface correctly, and conditional/failing/cancelled runs preserve accurate step and aggregate usage metrics
+- Hardened bundle artifacts with `os.Root`: `RSERVE_WORK_ROOT` rejects symlink-component escapes, reads remain rooted, all inspected directory entries count toward the 10,000-entry scan bound, and only regular text artifacts are collected
+- Restored Codex/OpenCode/KiloCode stdout across gRPC and HTTP streaming/non-streaming task APIs instead of discarding output from tools without structured stream events
+- Fixed configured Gemini defaults (including the invalid `gemini-3` fallback), and propagated local/remote `rbatch` session IDs while honoring documented flags after positional manifest/checkpoint paths
+- Fixed dashboard repository routes to honor `RCODEGEN_CODE_DIR`, recognize OpenCode/KiloCode report names, and pass ESLint without weakening the TanStack Table types
+- Expanded README/API coverage for all eight binaries, rbatch, rserve bounds/auth/sessions/uploads, Gemini image mode, dashboard/scheduler setup and security, configuration, flags, and current limitations
+- Synchronized the local chassis dependency baseline with Go 1.26.5 and refreshed module checksums; verified with full race tests, `go vet`, dashboard lint/build, scheduler syntax validation, and all-binary compilation
+- Details: `_bugs_fixed/2026-08-18-recent-fixes-verification-gaps.md`
+- Agent: Codex:gpt-5.6-sol-high
+
 ## 4.2.6 — 2026-08-18
 - Fixes for all six findings from an external review of the 4.2.3–4.2.5 bundle HTTP API (details in `_bugs_fixed/2026-08-18-bundle-api-review-fixes.md`):
 - **Per-step/top-level output now works in production** — new `orchestrator.StepOutput` reads the OutputRef file (where executors actually persist stdout/merged/decision output) and unwraps stream-JSON exactly like `${steps.X.stdout}` resolution; the collector previously read a `Result["stdout"]` key that only synthetic test envelopes had

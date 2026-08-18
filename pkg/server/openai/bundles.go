@@ -266,6 +266,7 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 
 	// Resolve and prepare work_dir; it doubles as the default output_dir input.
 	workDir := ""
+	var workRoot *os.Root
 	if req.WorkDir != "" {
 		if !filepath.IsAbs(req.WorkDir) {
 			writeJSON(w, http.StatusBadRequest, NewErrorResponse(
@@ -274,23 +275,21 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 			return
 		}
 		workDir = filepath.Clean(req.WorkDir)
-		// Optional containment: when RSERVE_WORK_ROOT is set, work_dir must be
-		// inside it — prevents callers from pointing runs at arbitrary paths.
-		if root := os.Getenv("RSERVE_WORK_ROOT"); root != "" {
-			rootClean := filepath.Clean(root)
-			if workDir != rootClean && !strings.HasPrefix(workDir, rootClean+string(filepath.Separator)) {
+		var err error
+		workRoot, err = prepareBundleWorkDir(workDir, os.Getenv("RSERVE_WORK_ROOT"))
+		if err != nil {
+			if errors.Is(err, errUnsafeWorkDir) {
 				writeJSON(w, http.StatusBadRequest, NewErrorResponse(
-					"work_dir must be under "+rootClean, "invalid_request_error", "invalid_work_dir",
+					err.Error(), "invalid_request_error", "invalid_work_dir",
 				))
 				return
 			}
-		}
-		if err := os.MkdirAll(workDir, 0o755); err != nil {
 			writeJSON(w, http.StatusInternalServerError, NewErrorResponse(
-				"failed to create work_dir: "+err.Error(), "server_error", "work_dir_failed",
+				"failed to prepare work_dir: "+err.Error(), "server_error", "work_dir_failed",
 			))
 			return
 		}
+		defer workRoot.Close()
 		if _, ok := inputs["output_dir"]; !ok {
 			inputs["output_dir"] = workDir
 		}
@@ -334,7 +333,7 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 		}
 	}
 
-	before := snapshotWorkDir(workDir)
+	before := snapshotWorkDir(workRoot)
 	start := time.Now()
 	env, runErr := h.runBundleFn(runCtx, b, inputs, opts)
 
@@ -374,7 +373,7 @@ func (h *Handler) handleBundleRun(w http.ResponseWriter, r *http.Request, name s
 		Error:         env.Error,
 		Steps:         collector.results(),
 		Output:        collector.finalOutput(),
-		Artifacts:     collectBundleArtifacts(workDir, before),
+		Artifacts:     collectBundleArtifacts(workRoot, before),
 	}
 	if jobID, ok := env.Result["job_id"].(string); ok {
 		resp.JobID = jobID
@@ -580,10 +579,10 @@ func resultInt(v interface{}) int {
 // run are returned inline, size-capped, so callers (e.g. Windmill flows) can
 // review and publish reports without filesystem access to this host.
 const (
-	artifactFileCap  = 512 << 10 // max bytes of content per artifact
-	artifactTotalCap = 2 << 20   // max total bytes of content per response
-	artifactMaxCount = 100       // max artifact entries per response
-	snapshotMaxFiles = 10000     // max files tracked per work_dir scan
+	artifactFileCap    = 512 << 10 // max bytes of content per artifact
+	artifactTotalCap   = 2 << 20   // max total bytes of content per response
+	artifactMaxCount   = 100       // max artifact entries per response
+	snapshotMaxEntries = 10000     // max directory entries inspected per work_dir scan
 )
 
 var artifactTextExts = map[string]bool{
@@ -596,50 +595,109 @@ type artifactMeta struct {
 	modNano int64
 }
 
-// snapshotWorkDir records size+mtime for every visible regular file under root.
-// Returns nil for an empty root. Hidden files/directories and non-regular files
-// (symlinks, FIFOs, sockets, devices) are skipped — symlinks could leak content
-// from outside work_dir and opening a FIFO would block the response. The scan
-// stops after snapshotMaxFiles entries to bound work on oversized directories.
-func snapshotWorkDir(root string) map[string]artifactMeta {
-	if root == "" {
-		return nil
+var errUnsafeWorkDir = errors.New("unsafe work_dir")
+
+// prepareBundleWorkDir creates workDir and returns a rooted filesystem handle
+// used for artifact collection. When configuredRoot is set, os.Root ensures a
+// symlink in any path component cannot redirect creation outside that root.
+func prepareBundleWorkDir(workDir, configuredRoot string) (*os.Root, error) {
+	if configuredRoot == "" {
+		if err := os.MkdirAll(workDir, 0o755); err != nil {
+			return nil, err
+		}
+		return os.OpenRoot(workDir)
 	}
-	snap := make(map[string]artifactMeta)
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil // best-effort: unreadable entries are simply not tracked
-		}
-		if len(snap) >= snapshotMaxFiles {
-			return filepath.SkipAll
-		}
-		if d.IsDir() {
-			if path != root && strings.HasPrefix(d.Name(), ".") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasPrefix(d.Name(), ".") || !d.Type().IsRegular() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return nil
-		}
-		snap[rel] = artifactMeta{size: info.Size(), modNano: info.ModTime().UnixNano()}
-		return nil
-	})
+
+	if !filepath.IsAbs(configuredRoot) {
+		return nil, fmt.Errorf("RSERVE_WORK_ROOT must be an absolute path")
+	}
+	rootPath := filepath.Clean(configuredRoot)
+	rel, err := filepath.Rel(rootPath, workDir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return nil, fmt.Errorf("%w: work_dir must be under %s", errUnsafeWorkDir, rootPath)
+	}
+	if err := os.MkdirAll(rootPath, 0o755); err != nil {
+		return nil, fmt.Errorf("create RSERVE_WORK_ROOT: %w", err)
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, fmt.Errorf("open RSERVE_WORK_ROOT: %w", err)
+	}
+	defer root.Close()
+
+	if err := root.MkdirAll(rel, 0o755); err != nil {
+		return nil, fmt.Errorf("%w: work_dir is not safely contained by %s: %v", errUnsafeWorkDir, rootPath, err)
+	}
+	workRoot, err := root.OpenRoot(rel)
+	if err != nil {
+		return nil, fmt.Errorf("%w: open contained work_dir: %v", errUnsafeWorkDir, err)
+	}
+	return workRoot, nil
+}
+
+// snapshotWorkDir records size+mtime for visible regular files under root.
+// Hidden entries and non-regular files (symlinks, FIFOs, sockets, devices) are
+// skipped. The custom traversal reads directories in bounded chunks and stops
+// after snapshotMaxEntries total entries, including skipped entries.
+func snapshotWorkDir(root *os.Root) map[string]artifactMeta {
+	snap, _ := snapshotWorkDirLimited(root, snapshotMaxEntries)
 	return snap
+}
+
+func snapshotWorkDirLimited(root *os.Root, maxEntries int) (map[string]artifactMeta, int) {
+	if root == nil || maxEntries <= 0 {
+		return nil, 0
+	}
+
+	const readBatch = 256
+	snap := make(map[string]artifactMeta)
+	visited := 0
+	dirs := []string{"."}
+	for len(dirs) > 0 && visited < maxEntries {
+		dirPath := dirs[len(dirs)-1]
+		dirs = dirs[:len(dirs)-1]
+		dir, err := root.Open(dirPath)
+		if err != nil {
+			continue
+		}
+		for visited < maxEntries {
+			limit := readBatch
+			if remaining := maxEntries - visited; remaining < limit {
+				limit = remaining
+			}
+			entries, readErr := dir.ReadDir(limit)
+			for _, d := range entries {
+				visited++
+				if strings.HasPrefix(d.Name(), ".") {
+					continue
+				}
+				rel := filepath.Join(dirPath, d.Name())
+				if d.IsDir() {
+					dirs = append(dirs, rel)
+					continue
+				}
+				if d.Type()&os.ModeSymlink != 0 {
+					continue
+				}
+				info, err := d.Info()
+				if err != nil || !info.Mode().IsRegular() {
+					continue
+				}
+				snap[rel] = artifactMeta{size: info.Size(), modNano: info.ModTime().UnixNano()}
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		dir.Close()
+	}
+	return snap, visited
 }
 
 // collectBundleArtifacts returns text files that are new or changed relative to
 // the before snapshot, sorted by path, with content inlined up to the caps.
-func collectBundleArtifacts(root string, before map[string]artifactMeta) []BundleArtifact {
-	if root == "" {
+func collectBundleArtifacts(root *os.Root, before map[string]artifactMeta) []BundleArtifact {
+	if root == nil {
 		return nil
 	}
 	after := snapshotWorkDir(root)
@@ -669,7 +727,7 @@ func collectBundleArtifacts(root string, before map[string]artifactMeta) []Bundl
 			cap = budget
 		}
 		if cap > 0 {
-			content, err := readFileCapped(filepath.Join(root, rel), cap)
+			content, err := readFileCapped(root, rel, cap)
 			if err == nil {
 				a.Content = content
 				a.Truncated = int64(len(content)) < meta.size
@@ -686,8 +744,8 @@ func collectBundleArtifacts(root string, before map[string]artifactMeta) []Bundl
 // readFileCapped reads at most max bytes of a file. A read that hits the cap
 // may end mid-rune; the trailing partial rune is trimmed so JSON output stays
 // valid UTF-8.
-func readFileCapped(path string, max int) (string, error) {
-	f, err := os.Open(path)
+func readFileCapped(root *os.Root, path string, max int) (string, error) {
+	f, err := root.Open(path)
 	if err != nil {
 		return "", err
 	}

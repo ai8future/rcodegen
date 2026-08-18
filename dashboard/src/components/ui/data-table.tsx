@@ -36,7 +36,7 @@ export function useRowExpansion() {
 }
 
 interface DataTableProps<TData> {
-  columns: ColumnDef<TData, any>[]
+  columns: ColumnDef<TData>[]
   data: TData[]
   renderExpandedRow?: (row: Row<TData>, onCollapse: () => void) => ReactNode
 }
@@ -53,6 +53,9 @@ export function DataTable<TData>({
     setExpandedRowId(prev => prev === rowId ? null : rowId)
   }
 
+  // TanStack Table returns intentionally stateful functions; React Compiler
+  // correctly leaves this hook call unmemoized.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data,
     columns,

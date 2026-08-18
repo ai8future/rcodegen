@@ -4,11 +4,27 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"rcodegen/pkg/runner"
 	"rcodegen/pkg/server"
+	"rcodegen/pkg/tools/opencode"
+
+	chassis "github.com/ai8future/chassis-go/v11"
 )
+
+func installFakeOpenCode(t *testing.T, output string) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := filepath.Join(binDir, "opencode")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s' '"+output+"'\n"), 0o755); err != nil {
+		t.Fatalf("write fake opencode: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
 
 func TestHandleModels(t *testing.T) {
 	h := NewHandler(nil, nil, server.NewRunRegistry(5), []string{"claude", "gemini"}, nil, nil)
@@ -80,5 +96,49 @@ func TestHandleChatCompletions_UnknownTool(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleChatCompletions_NonStreamToolReturnsStdout(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "plain CLI output")
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp ChatCompletionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := resp.Choices[0].Message.Content; got != "plain CLI output" {
+		t.Fatalf("content = %q, want plain CLI output", got)
+	}
+}
+
+func TestHandleChatCompletions_NonStreamToolWritesSSE(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "streamed CLI output")
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "streamed CLI output") {
+		t.Fatalf("SSE body does not contain CLI output: %s", rec.Body.String())
 	}
 }

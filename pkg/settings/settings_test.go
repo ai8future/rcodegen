@@ -138,6 +138,13 @@ func TestClaudeDefaults_AppliedFromLoadFallback(t *testing.T) {
 	}
 }
 
+func TestDefaultSettings_UsesSupportedGeminiModel(t *testing.T) {
+	s := GetDefaultSettings()
+	if got := s.Defaults.Gemini.Model; got != "gemini-3.1-pro-preview" {
+		t.Fatalf("Gemini.Model = %q, want gemini-3.1-pro-preview", got)
+	}
+}
+
 func TestKiloCodeDefaults_AppliedFromLoadFallback(t *testing.T) {
 	s, _, err := LoadWithFallback()
 	if err != nil {

@@ -12,7 +12,7 @@
       "effort": "xhigh"
     },
     "gemini": {
-      "model": "gemini-3-pro-preview"
+      "model": "gemini-3.1-pro-preview"
     },
     "opencode": {
       "model": "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",

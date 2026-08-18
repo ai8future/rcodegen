@@ -31,6 +31,10 @@ type Handler struct {
 	runBundleFn    bundleRunFunc // bundle execution, replaceable in tests
 }
 
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
 // NewHandler creates a new Handler and registers routes on its internal mux.
 // If fileStore is non-nil, file upload/download endpoints are enabled.
 func NewHandler(s *settings.Settings, toolFactories map[string]server.ToolFactory, registry *server.RunRegistry, availableTools []string, fileStore *FileStore, sessions *server.SessionStore) *Handler {
@@ -216,6 +220,22 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, ru
 	})
 
 	var mu sync.Mutex
+	if !tool.UsesStreamOutput() {
+		cfg.Output = writerFunc(func(p []byte) (int, error) {
+			chunk := ChatCompletionChunk{
+				ID: "chatcmpl-" + runID, Object: "chat.completion.chunk", Created: nowUnix(), Model: model,
+				Choices: []StreamChoice{{Index: 0, Delta: Delta{Content: string(p)}}},
+			}
+			mu.Lock()
+			err := sse.WriteChunk(chunk)
+			mu.Unlock()
+			if err != nil {
+				cancel()
+				return 0, err
+			}
+			return len(p), nil
+		})
+	}
 	cfg.OnStreamEvent = func(event *runner.StreamEvent) {
 		if event.Type != "assistant" || event.Message == nil {
 			return
@@ -295,6 +315,9 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, ru
 // handleNonStreaming handles a non-streaming chat completion request.
 func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context, tool runner.Tool, cfg *runner.Config, model, toolName, runID string) {
 	var buf bytes.Buffer
+	if !tool.UsesStreamOutput() {
+		cfg.Output = &buf
+	}
 	cfg.OnStreamEvent = func(event *runner.StreamEvent) {
 		if event.Type != "assistant" || event.Message == nil {
 			return

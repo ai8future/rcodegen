@@ -50,6 +50,7 @@ func (r *RemoteExecutor) Execute(ctx context.Context, job *JobDef, sessionID str
 		Model:     job.Model,
 		MaxBudget: job.MaxBudget,
 		WorkDirs:  workDirs,
+		SessionId: sessionID,
 	}
 
 	start := time.Now()
@@ -61,6 +62,7 @@ func (r *RemoteExecutor) Execute(ctx context.Context, job *JobDef, sessionID str
 
 	var cost float64
 	var exitCode int32
+	nextSessionID := sessionID
 
 	for {
 		event, err := stream.Recv()
@@ -74,19 +76,19 @@ func (r *RemoteExecutor) Execute(ctx context.Context, job *JobDef, sessionID str
 		if result := event.GetResult(); result != nil {
 			cost = result.GetTotalCostUsd()
 			exitCode = result.GetExitCode()
+			if result.GetSessionId() != "" {
+				nextSessionID = result.GetSessionId()
+			}
 		}
 	}
 
 	elapsed := time.Since(start)
 
-	// TODO: Extract new session ID from RunTask response for proper session chaining.
-	// Currently returns the incoming sessionID unchanged because the gRPC response
-	// does not include the new session ID from the tool.
 	return &JobResult{
 		ExitCode:  int(exitCode),
 		Cost:      cost,
 		Duration:  elapsed.Truncate(time.Millisecond).String(),
-		SessionID: sessionID,
+		SessionID: nextSessionID,
 	}, nil
 }
 

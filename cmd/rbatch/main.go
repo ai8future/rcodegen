@@ -82,6 +82,13 @@ func cmdRun(args []string) int {
 		fs.PrintDefaults()
 	}
 
+	args = reorderSubcommandArgs(args, map[string]bool{
+		"-concurrency": true, "--concurrency": true,
+		"-threshold": true, "--threshold": true,
+		"-on-budget": true, "--on-budget": true,
+		"-max-wait": true, "--max-wait": true,
+		"-server": true, "--server": true,
+	})
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -166,6 +173,7 @@ func cmdSpool(args []string) int {
 		fs.PrintDefaults()
 	}
 
+	args = reorderSubcommandArgs(args, map[string]bool{"-server": true, "--server": true})
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -276,6 +284,10 @@ func cmdResume(args []string) int {
 		fs.PrintDefaults()
 	}
 
+	args = reorderSubcommandArgs(args, map[string]bool{
+		"-server": true, "--server": true,
+		"-concurrency": true, "--concurrency": true,
+	})
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -668,4 +680,39 @@ Examples:
   %s status
 `, strings.Join([]string{"claude", "codex", "gemini", "opencode", "kilocode"}, ", "),
 		name, name, name, name, name, name)
+}
+
+// reorderSubcommandArgs lets rbatch honor its documented
+// "command <positional> [flags]" syntax even though Go's flag package stops at
+// the first positional argument. valueFlags identifies flags whose following
+// argument must move with the flag; --flag=value needs no special handling.
+func reorderSubcommandArgs(args []string, valueFlags map[string]bool) []string {
+	flags := make([]string, 0, len(args))
+	positionals := make([]string, 0, len(args))
+	hasTerminator := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			hasTerminator = true
+			positionals = append(positionals, args[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			positionals = append(positionals, arg)
+			continue
+		}
+		flags = append(flags, arg)
+		name := arg
+		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			name = name[:eq]
+		}
+		if valueFlags[name] && !strings.Contains(arg, "=") && i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	if hasTerminator {
+		flags = append(flags, "--")
+	}
+	return append(flags, positionals...)
 }

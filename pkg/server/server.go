@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
 	rcodegenpkg "rcodegen"
 	"rcodegen/pkg/bundle"
+	"rcodegen/pkg/envelope"
 	_ "rcodegen/pkg/executor" // Register dispatcher factory via init()
 	"rcodegen/pkg/orchestrator"
 	"rcodegen/pkg/runner"
@@ -23,6 +25,11 @@ import (
 // ToolFactory creates a fresh tool instance to avoid shared mutable state.
 type ToolFactory func() runner.Tool
 
+// BundleRunFunc executes a bundle for the gRPC service. Keeping this boundary
+// injectable lets cancellation and stream behavior be tested without spawning
+// external AI CLIs.
+type BundleRunFunc func(context.Context, *bundle.Bundle, map[string]string, bool, bool) (*envelope.Envelope, error)
+
 // Server implements the RServe gRPC service.
 type Server struct {
 	pb.UnimplementedRServeServer
@@ -30,6 +37,7 @@ type Server struct {
 	toolFactories map[string]ToolFactory
 	registry      *RunRegistry
 	sessions      *SessionStore
+	runBundle     BundleRunFunc
 }
 
 // NewServer creates a new gRPC server instance.
@@ -40,6 +48,17 @@ func NewServer(s *settings.Settings, toolFactories map[string]ToolFactory, regis
 		toolFactories: toolFactories,
 		registry:      registry,
 		sessions:      sessions,
+		runBundle:     runBundleWithOrchestrator(s),
+	}
+}
+
+func runBundleWithOrchestrator(s *settings.Settings) BundleRunFunc {
+	return func(ctx context.Context, b *bundle.Bundle, inputs map[string]string, opusOnly, flashOnly bool) (*envelope.Envelope, error) {
+		orch := orchestrator.New(s)
+		orch.SetLiveMode(false) // No animated display for gRPC.
+		orch.SetOpusOnly(opusOnly)
+		orch.SetFlashOnly(flashOnly)
+		return orch.RunWithContext(ctx, b, inputs)
 	}
 }
 
@@ -87,7 +106,7 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 			cfg.Vars[k] = v
 		}
 	}
-	cfg.Output = io.Discard // CLI-formatted output suppressed; events go via callback
+	cfg.Output = io.Discard // Stream-aware tools publish structured events via callback.
 	cfg.Logger = logz.New("warn")
 
 	// Resume existing session if session_id provided (validate tool matches)
@@ -100,6 +119,12 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	// Capture stderr so we can report errors to the client
 	var stderrBuf bytes.Buffer
 	cfg.Stderr = &stderrBuf
+	var stdoutBuf bytes.Buffer
+	if !tool.UsesStreamOutput() {
+		// Codex, OpenCode, and KiloCode emit ordinary stdout rather than the
+		// stream-json events handled below. Preserve it for their clients.
+		cfg.Output = &stdoutBuf
+	}
 
 	// Look up task shortcut if task matches a known shortcut name
 	if s.settings != nil && s.settings.Tasks != nil {
@@ -152,6 +177,15 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 
 	// Run with context for cancellation support
 	result := r.RunWithContext(runCtx, cfg)
+	if stdoutBuf.Len() > 0 {
+		if err := safeSend(&pb.RunEvent{
+			RunId:       runID,
+			TimestampMs: time.Now().UnixMilli(),
+			Event:       &pb.RunEvent_Text{Text: &pb.TextEvent{Content: stdoutBuf.String()}},
+		}); err != nil {
+			return err
+		}
+	}
 
 	// Store session ID for multi-turn reuse
 	sessionID := ""
@@ -166,8 +200,14 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 		TotalCostUsd: result.TotalCostUSD,
 		SessionId:    sessionID,
 	}
+	if stdoutBuf.Len() > 0 {
+		resultEvent.Output = stdoutBuf.String()
+	}
 	if stderrBuf.Len() > 0 {
-		resultEvent.Output = stderrBuf.String()
+		if resultEvent.Output != "" && !strings.HasSuffix(resultEvent.Output, "\n") {
+			resultEvent.Output += "\n"
+		}
+		resultEvent.Output += stderrBuf.String()
 	}
 	if result.TokenUsage != nil {
 		resultEvent.Usage = &pb.TokenUsage{
@@ -255,7 +295,7 @@ func streamEventToProto(runID string, event *runner.StreamEvent) []*pb.RunEvent 
 // RunBundle executes a multi-step bundle and streams progress events.
 func (s *Server) RunBundle(req *pb.RunBundleRequest, stream pb.RServe_RunBundleServer) error {
 	// Acquire concurrency slot
-	runID, _, cancel, err := s.registry.Acquire(stream.Context(), "bundle", req.Bundle)
+	runID, runCtx, cancel, err := s.registry.Acquire(stream.Context(), "bundle", req.Bundle)
 	if err != nil {
 		return cerrors.Errorf(cerrors.RateLimitError, "failed to acquire run slot: %v", err).GRPCStatus().Err()
 	}
@@ -283,18 +323,10 @@ func (s *Server) RunBundle(req *pb.RunBundleRequest, stream pb.RServe_RunBundleS
 		inputs[k] = v
 	}
 
-	// Create orchestrator; the stream context cancels the run (and kills the
-	// in-flight step's process) if the client disconnects.
-	orch := orchestrator.New(s.settings)
-	orch.SetLiveMode(false) // No animated display for gRPC
-	if req.OpusOnly {
-		orch.SetOpusOnly(true)
-	}
-	if req.FlashOnly {
-		orch.SetFlashOnly(true)
-	}
-
-	env, runErr := orch.RunWithContext(stream.Context(), b, inputs)
+	// runCtx is derived from the stream context and is also registered with
+	// CancelRun, so either a client disconnect or an explicit cancellation stops
+	// the orchestrator and its in-flight CLI process.
+	env, runErr := s.runBundle(runCtx, b, inputs, req.OpusOnly, req.FlashOnly)
 
 	// Send result
 	resultEvent := &pb.ResultEvent{

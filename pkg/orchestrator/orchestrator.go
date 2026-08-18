@@ -126,9 +126,8 @@ func (o *Orchestrator) emitStep(ev StepEvent) {
 	}
 }
 
-// stepCompletedEvent builds a completed StepEvent for branches outside the main
-// stats-extraction path (conditional steps, dispatcher errors), pulling cost,
-// tokens, and model from the envelope when present.
+// stepCompletedEvent builds a completed StepEvent, pulling cost, tokens, and
+// the actual model from the envelope when present.
 func stepCompletedEvent(i int, step bundle.Step, env *envelope.Envelope, d time.Duration) StepEvent {
 	ev := StepEvent{
 		Type:       StepEventCompleted,
@@ -156,6 +155,20 @@ func stepCompletedEvent(i int, step bundle.Step, env *envelope.Envelope, d time.
 		ev.OutputTokens = t
 	}
 	return ev
+}
+
+func annotateRunTotals(env *envelope.Envelope, cost float64, inputTokens, outputTokens, cacheRead, cacheWrite int) {
+	if env == nil {
+		return
+	}
+	if env.Result == nil {
+		env.Result = make(map[string]interface{})
+	}
+	env.Result["total_cost_usd"] = cost
+	env.Result["input_tokens"] = inputTokens
+	env.Result["output_tokens"] = outputTokens
+	env.Result["cache_read_tokens"] = cacheRead
+	env.Result["cache_write_tokens"] = cacheWrite
 }
 
 // StepOutput returns the textual output of a step envelope. Tool, merge, and
@@ -202,6 +215,11 @@ func New(s *settings.Settings) *Orchestrator {
 		"kilocode": kilocode.New(),
 		"opencode": opencode.New(),
 	}
+	for _, tool := range tools {
+		if aware, ok := tool.(runner.SettingsAware); ok {
+			aware.SetSettings(s)
+		}
+	}
 
 	var dispatcher StepExecutor
 	if DispatcherFactory != nil {
@@ -232,9 +250,9 @@ func (o *Orchestrator) getStepModel(toolName, stepModel string) string {
 	if stepModel != "" {
 		return stepModel
 	}
-	// Use tool's default model
+	// Use the configured tool default.
 	if tool, ok := o.tools[toolName]; ok {
-		return tool.DefaultModel()
+		return tool.DefaultModelSetting()
 	}
 	return ""
 }
@@ -339,105 +357,98 @@ func (o *Orchestrator) RunWithContext(parent context.Context, b *bundle.Bundle, 
 		// Check for cancellation (e.g., Ctrl+C) before starting each step
 		if sigCtx.Err() != nil {
 			fmt.Fprintf(os.Stderr, "\n%sInterrupted — skipping remaining steps%s\n", colorYellow, colorReset)
-			return envelope.New().
+			env := envelope.New().
 				Failure("INTERRUPTED", "execution cancelled by signal").
 				WithResult("steps_completed", i).
-				WithResult("total_cost_usd", totalCost).
-				Build(), sigCtx.Err()
+				Build()
+			annotateRunTotals(env, totalCost, totalInputTokens, totalOutputTokens, totalCacheRead, totalCacheWrite)
+			return env, sigCtx.Err()
 		}
 
 		stepStart := time.Now()
-		display.SetStepRunning(i)
-		// Set model immediately so it shows while running
-		display.SetStepModel(i, o.getStepModel(step.Tool, step.Model))
-		o.emitStep(StepEvent{
-			Type:  StepEventStarted,
-			Index: i,
-			Name:  step.Name,
-			Tool:  step.Tool,
-			Model: o.getStepModel(step.Tool, step.Model),
-		})
+		execStep := &step
+		skip := false
 
-		// Check condition
-		if step.If != "" && !EvaluateCondition(step.If, ctx) {
-			display.SetStepSkipped(i)
-			ctx.SetResult(step.Name, &envelope.Envelope{Status: envelope.StatusSkipped})
-			o.emitStep(StepEvent{Type: StepEventSkipped, Index: i, Name: step.Name})
-			continue
-		}
-
-		// Handle conditional step
+		// A step with then/else is a conditional container. A plain step with
+		// only "if" is either executed directly or skipped.
 		if step.Then != nil {
 			if EvaluateCondition(step.If, ctx) {
-				env, err := o.dispatcher.Execute(step.Then, ctx, ws)
-				ctx.SetResult(step.Name, env)
-				o.emitStep(stepCompletedEvent(i, step, env, time.Since(stepStart)))
-				if err != nil {
-					return env, err
-				}
+				execStep = step.Then
 			} else if step.Else != nil {
-				env, err := o.dispatcher.Execute(step.Else, ctx, ws)
-				ctx.SetResult(step.Name, env)
-				o.emitStep(stepCompletedEvent(i, step, env, time.Since(stepStart)))
-				if err != nil {
-					return env, err
-				}
+				execStep = step.Else
 			} else {
-				o.emitStep(StepEvent{Type: StepEventSkipped, Index: i, Name: step.Name})
+				skip = true
 			}
-			continue
+		} else if step.If != "" && !EvaluateCondition(step.If, ctx) {
+			skip = true
 		}
 
-		// Apply model overrides
-		execStep := &step
-		if o.opusOnly && step.Tool == "claude" {
-			// Create a copy with opus model
-			stepCopy := step
+		// Apply model overrides to the actual branch, not just top-level tool
+		// steps. Copy before changing so the loaded bundle remains immutable.
+		if o.opusOnly && execStep.Tool == "claude" {
+			stepCopy := *execStep
 			stepCopy.Model = "opus"
 			execStep = &stepCopy
 		}
-		if o.flashOnly && step.Tool == "gemini" {
-			// Create a copy with flash preview model
-			stepCopy := step
+		if o.flashOnly && execStep.Tool == "gemini" {
+			stepCopy := *execStep
 			stepCopy.Model = "gemini-3-flash-preview"
 			execStep = &stepCopy
 		}
 
-		// Execute step
-		env, err := o.dispatcher.Execute(execStep, ctx, ws)
-		if err != nil {
-			o.emitStep(stepCompletedEvent(i, step, env, time.Since(stepStart)))
-			return env, err
+		display.SetStepRunning(i)
+		display.SetStepModel(i, o.getStepModel(execStep.Tool, execStep.Model))
+		o.emitStep(StepEvent{
+			Type:  StepEventStarted,
+			Index: i,
+			Name:  step.Name,
+			Tool:  execStep.Tool,
+			Model: o.getStepModel(execStep.Tool, execStep.Model),
+		})
+
+		if skip {
+			display.SetStepSkipped(i)
+			ctx.SetResult(step.Name, &envelope.Envelope{Status: envelope.StatusSkipped})
+			o.emitStep(StepEvent{Type: StepEventSkipped, Index: i, Name: step.Name, Tool: execStep.Tool})
+			continue
 		}
 
-		ctx.SetResult(step.Name, env)
+		// Execute step
+		env, err := o.dispatcher.Execute(execStep, ctx, ws)
+		if env != nil {
+			ctx.SetResult(step.Name, env)
+		}
 
 		// Extract and display cost info
 		stepCost := 0.0
 		stepIn, stepOut := 0, 0
-		if c, ok := env.Result["cost_usd"].(float64); ok {
-			stepCost = c
-			totalCost += c
-		}
-		if t, ok := env.Result["input_tokens"].(int); ok {
-			stepIn = t
-			totalInputTokens += t
-		}
-		if t, ok := env.Result["output_tokens"].(int); ok {
-			stepOut = t
-			totalOutputTokens += t
-		}
-		if t, ok := env.Result["cache_read_tokens"].(int); ok {
-			totalCacheRead += t
-		}
-		if t, ok := env.Result["cache_write_tokens"].(int); ok {
-			totalCacheWrite += t
+		if env != nil {
+			if c, ok := env.Result["cost_usd"].(float64); ok {
+				stepCost = c
+				totalCost += c
+			}
+			if t, ok := env.Result["input_tokens"].(int); ok {
+				stepIn = t
+				totalInputTokens += t
+			}
+			if t, ok := env.Result["output_tokens"].(int); ok {
+				stepOut = t
+				totalOutputTokens += t
+			}
+			if t, ok := env.Result["cache_read_tokens"].(int); ok {
+				totalCacheRead += t
+			}
+			if t, ok := env.Result["cache_write_tokens"].(int); ok {
+				totalCacheWrite += t
+			}
 		}
 
 		// Extract model used
 		stepModel := ""
-		if m, ok := env.Result["model"].(string); ok {
-			stepModel = m
+		if env != nil {
+			if m, ok := env.Result["model"].(string); ok {
+				stepModel = m
+			}
 		}
 
 		// Track step stats for report
@@ -445,7 +456,7 @@ func (o *Orchestrator) RunWithContext(parent context.Context, b *bundle.Bundle, 
 		isParallel := len(step.Parallel) > 0
 		stepStats = append(stepStats, StepStats{
 			Name:         step.Name,
-			Tool:         step.Tool,
+			Tool:         execStep.Tool,
 			Model:        stepModel,
 			Parallel:     isParallel,
 			Cost:         stepCost,
@@ -454,26 +465,26 @@ func (o *Orchestrator) RunWithContext(parent context.Context, b *bundle.Bundle, 
 			Duration:     stepDuration,
 		})
 
-		o.emitStep(StepEvent{
-			Type:         StepEventCompleted,
-			Index:        i,
-			Name:         step.Name,
-			Tool:         step.Tool,
-			Model:        stepModel,
-			Status:       string(env.Status),
-			CostUSD:      stepCost,
-			InputTokens:  stepIn,
-			OutputTokens: stepOut,
-			DurationMs:   stepDuration.Milliseconds(),
-			Envelope:     env,
-		})
+		eventStep := *execStep
+		eventStep.Name = step.Name
+		o.emitStep(stepCompletedEvent(i, eventStep, env, stepDuration))
 
 		// Update display
 		display.SetStepModel(i, stepModel)
-		success := env.Status != envelope.StatusFailure
+		success := env != nil && env.Status != envelope.StatusFailure && err == nil
 		display.SetStepComplete(i, stepCost, stepDuration, stepIn+stepOut, success)
 
+		if err != nil {
+			annotateRunTotals(env, totalCost, totalInputTokens, totalOutputTokens, totalCacheRead, totalCacheWrite)
+			return env, err
+		}
+		if env == nil {
+			env = envelope.New().Failure("STEP_ERROR", "step returned no result").Build()
+			annotateRunTotals(env, totalCost, totalInputTokens, totalOutputTokens, totalCacheRead, totalCacheWrite)
+			return env, fmt.Errorf("step %s returned no result", step.Name)
+		}
 		if env.Status == envelope.StatusFailure {
+			annotateRunTotals(env, totalCost, totalInputTokens, totalOutputTokens, totalCacheRead, totalCacheWrite)
 			return env, fmt.Errorf("step %s failed", step.Name)
 		}
 	}

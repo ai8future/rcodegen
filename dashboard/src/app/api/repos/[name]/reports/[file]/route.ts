@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server'
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
-
-const CODE_DIR = path.resolve(os.homedir(), 'Desktop/_code')
+import { CODE_DIR } from '@/lib/code-dir'
 
 function resolveWithin(baseDir: string, ...segments: string[]): string | null {
   const resolvedBase = path.resolve(baseDir)

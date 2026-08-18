@@ -489,14 +489,80 @@ func TestRunBundle_WorkRootRestriction(t *testing.T) {
 	}
 }
 
+func TestRunBundle_WorkRootRejectsSymlinkEscape(t *testing.T) {
+	allowed := t.TempDir()
+	outside := t.TempDir()
+	t.Setenv("RSERVE_WORK_ROOT", allowed)
+	if err := os.Symlink(outside, filepath.Join(allowed, "escape")); err != nil {
+		t.Fatalf("create escape symlink: %v", err)
+	}
+
+	fake := func(context.Context, *bundle.Bundle, map[string]string, bundleRunOpts) (*envelope.Envelope, error) {
+		t.Fatal("bundle runner must not be called for an escaping work_dir")
+		return nil, nil
+	}
+	h := newBundleTestHandler(t, fake)
+	escaped := filepath.Join(allowed, "escape", "job")
+	req := httptest.NewRequest(http.MethodPost, "/v1/bundles/ensemble",
+		strings.NewReader(`{"inputs":{"task":"x"},"work_dir":"`+escaped+`"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for symlink escape, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(outside, "job")); !os.IsNotExist(err) {
+		t.Fatalf("escaping work_dir was created outside RSERVE_WORK_ROOT: %v", err)
+	}
+}
+
+func TestSnapshotWorkDir_EntryLimitCountsSkippedDirectories(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a", "b", "c", "d", "e"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	_, visited := snapshotWorkDirLimited(root, 3)
+	if visited != 3 {
+		t.Fatalf("visited entries = %d, want exact limit 3", visited)
+	}
+}
+
+func TestReadFileCapped_RootRejectsOutsideSymlink(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.md")
+	if err := os.WriteFile(outside, []byte("SECRET"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "leak.md")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	if content, err := readFileCapped(root, "leak.md", 100); err == nil {
+		t.Fatalf("readFileCapped followed an outside symlink and returned %q", content)
+	}
+}
+
 func TestTrimPartialRune(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"ascii untouched", "hello", "hello"},
 		{"complete rune untouched", "café", "café"},
-		{"split 2-byte rune", "ab\xc3", "ab"},          // é cut after first byte
-		{"split 3-byte rune", "ab\xe2\x82", "ab"},      // € cut after two bytes
-		{"split 4-byte rune", "ab\xf0\x9f\x98", "ab"},  // emoji cut after three bytes
-		{"lone invalid byte trimmed", "ab\xff", "ab"},  // indistinguishable from a split start byte
+		{"split 2-byte rune", "ab\xc3", "ab"},         // é cut after first byte
+		{"split 3-byte rune", "ab\xe2\x82", "ab"},     // € cut after two bytes
+		{"split 4-byte rune", "ab\xf0\x9f\x98", "ab"}, // emoji cut after three bytes
+		{"lone invalid byte trimmed", "ab\xff", "ab"}, // indistinguishable from a split start byte
 		{"empty", "", ""},
 	}
 	for _, c := range cases {

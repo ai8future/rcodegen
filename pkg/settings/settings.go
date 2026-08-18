@@ -241,7 +241,7 @@ func GetDefaultSettings() *Settings {
 				Effort: DefaultClaudeEffort,
 			},
 			Gemini: GeminiDefaults{
-				Model: "gemini-3",
+				Model: "gemini-3.1-pro-preview",
 			},
 			OpenCode: OpenCodeDefaults{
 				Model:    DefaultOpenCodeModel,
@@ -280,7 +280,7 @@ func LoadWithFallback() (*Settings, bool, error) {
 		settings.Defaults.Claude.Effort = DefaultClaudeEffort
 	}
 	if settings.Defaults.Gemini.Model == "" {
-		settings.Defaults.Gemini.Model = "gemini-3"
+		settings.Defaults.Gemini.Model = "gemini-3.1-pro-preview"
 	}
 	if settings.Defaults.OpenCode.Model == "" {
 		settings.Defaults.OpenCode.Model = DefaultOpenCodeModel

@@ -19,9 +19,10 @@ rserve -bind 0.0.0.0                      # listen on all interfaces
 | `-port` | gRPC listen port (HTTP is port+1) | `14260` |
 | `-bind` | Bind address | `127.0.0.1` |
 | `-max-concurrent` | Max simultaneous runs | `3` |
+| `-session-ttl` | Session inactivity TTL in minutes (`0` disables expiry) | `30` |
 | `-v` | Show version and exit | |
 
-No authentication is required. Concurrency is controlled by a shared semaphore.
+Concurrency is controlled by a shared semaphore and requests queue until a slot is available. `RSERVE_TOKEN` optionally protects HTTP endpoints except `/health`; the plaintext gRPC listener has no authentication. Keep both listeners on loopback or put them behind authenticated TLS transport before exposing them to another host.
 
 ---
 
@@ -46,7 +47,7 @@ rpc RunTask(RunTaskRequest) returns (stream RunEvent);
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `tool` | string | yes | `"claude"`, `"codex"`, or `"gemini"` |
+| `tool` | string | yes | `"claude"`, `"codex"`, `"gemini"`, `"opencode"`, or `"kilocode"` |
 | `task` | string | yes | Task text or shortcut name (`audit`, `test`, `fix`, `refactor`, `quick`, `grade`, `study`) |
 | `model` | string | no | Model override (e.g., `"opus"`, `"gpt-5.5"`) |
 | `max_budget` | string | no | USD budget string (e.g., `"10.00"`) |
@@ -147,7 +148,7 @@ grpcurl -plaintext 127.0.0.1:14260 rserve.RServe/ListTasks
 ## OpenAI-Compatible HTTP API
 
 **Default port:** `14261` (gRPC port + 1)
-**No authentication required.**
+**Authentication:** none by default. If `RSERVE_TOKEN` is set, send `Authorization: Bearer <token>` on every endpoint except `/health`.
 
 Any OpenAI SDK client can connect to this API by pointing the base URL to `http://host:14261`.
 
@@ -216,7 +217,7 @@ Response headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, 
 |-------------|---------|
 | `400` | Bad request or unknown tool |
 | `405` | Method not allowed |
-| `503` | Concurrency limit exceeded |
+| `503` | Request cancelled or disconnected while queued for a run slot |
 
 ### GET /v1/models
 
@@ -238,7 +239,7 @@ List available tools (only those whose CLI binary is found on PATH).
 ```json
 {
   "status": "ok",
-  "version": "4.0.14",
+  "version": "<current server version>",
   "active_runs": 1,
   "max_concurrent": 3
 }
@@ -246,7 +247,7 @@ List available tools (only those whose CLI binary is found on PATH).
 
 ### POST /v1/files
 
-Upload a file (multipart form). Max 50 MB. Files stored in `/tmp/rserve-files/` with 24-hour expiry.
+Upload a file (multipart form). Max 50 MB. Files are stored beneath `rserve-files` in the operating system's temporary directory (`os.TempDir()`) with 24-hour expiry.
 
 **Form fields:**
 
@@ -265,7 +266,7 @@ Upload a file (multipart form). Max 50 MB. Files stored in `/tmp/rserve-files/` 
   "created_at": 1711800000,
   "filename": "data.csv",
   "purpose": "user_data",
-  "path": "/tmp/rserve-files/file-a1b2c3/data.csv"
+  "path": "<os-temp>/rserve-files/file-a1b2c3-data.csv"
 }
 ```
 
@@ -287,7 +288,7 @@ Delete a file.
 
 ### Multi-Turn Sessions
 
-Both gRPC and HTTP APIs support multi-turn conversations. The first response includes a `session_id`; pass it back in subsequent requests to resume the conversation. Sessions expire after 30 minutes of inactivity. Sessions are stored in-memory (not persisted across restarts).
+Both gRPC and HTTP APIs accept `session_id`. When the selected tool reports a native session identifier, the final response includes an opaque client-facing ID; pass it back with the same tool to resume. Automatic session discovery currently works for Claude and Gemini. Sessions expire after 30 minutes of inactivity by default, are stored in memory, and are not persisted across restarts.
 
 ```bash
 # First request -- get session_id from response
@@ -301,7 +302,7 @@ curl http://127.0.0.1:14261/v1/chat/completions \
   -d '{"model":"claude","messages":[{"role":"user","content":"now add tests"}],"session_id":"abc123"}'
 ```
 
-Under the hood, `session_id` maps to the underlying tool's native session resume mechanism (`claude --resume`, `gemini --resume`, etc.).
+Unknown, expired, or tool-mismatched IDs are ignored and start a fresh run. Adjust expiry with `rserve -session-ttl`.
 
 ### OpenAI SDK Example (Python)
 
@@ -407,10 +408,11 @@ Wraps the `gemini` CLI.
 | Flag | Description |
 |------|-------------|
 | `--flash` | Use gemini-3-flash-preview model |
+| `-i, --image <files>` | Comma-separated input images for direct image generation |
 | `-s, --status` | Track usage before/after task |
 | `-S, --no-status` | Disable usage tracking |
 
-**Valid models:** `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`
+**Valid models:** `gemini-3.1-pro-preview`, `gemini-3.1-flash-image-preview` (alias: `banana`), `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`
 
 ```bash
 rgemini -c myproject audit
@@ -514,7 +516,7 @@ Jobs sharing a `session` identifier are executed sequentially with session IDs c
   "defaults": {
     "codex": { "model": "gpt-5.5", "effort": "xhigh" },
     "claude": { "model": "sonnet", "budget": "10.00" },
-    "gemini": { "model": "gemini-3-pro-preview" }
+    "gemini": { "model": "gemini-3.1-pro-preview" }
   },
   "tasks": {
     "my-custom-task": {
@@ -532,10 +534,10 @@ Jobs sharing a `session` identifier are executed sequentially with session IDs c
 | `RCODEGEN_OUTPUT_DIR` | Override `output_dir` |
 | `RCODEGEN_MODEL` | Override model for all tools |
 | `RCODEGEN_BUDGET` | Override Claude budget |
-| `RCODEGEN_EFFORT` | Override Codex effort |
+| `RCODEGEN_EFFORT` | Override Claude/Codex effort (`max` is Claude-only) |
 | `RCODEGEN_LOG_LEVEL` | Log level (`warn`, `debug`, etc.) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry collector endpoint (enables tracing/metrics) |
-| `KAFKAKIT_BOOTSTRAP_SERVERS` | Kafka brokers (enables event publishing to `ai8.codegen.run.completed`) |
+| `KAFKAKIT_BOOTSTRAP_SERVERS` | Kafka brokers for the optional kafkakit/lifecycle integration |
 | `KAFKAKIT_TENANT_ID` | Kafka tenant ID (default: `ai8`) |
 | `XYOPS_BASE_URL` | xyops monitoring API base URL |
 | `XYOPS_API_KEY` | xyops monitoring API key |
@@ -552,7 +554,7 @@ Jobs sharing a `session` identifier are executed sequentially with session IDs c
 | Variable | Expands To |
 |----------|------------|
 | `{report_file}` | Auto-generated report filename |
-| `{report_dir}` | `_rcodegen` |
+| `{report_dir}` | Configured report directory (default: `_rcodegen`) |
 | `{codebase}` | Codebase name from `-c` |
 | `{timestamp}` | Current timestamp |
 | `{variable}` | Custom value from `-x variable=value` |
