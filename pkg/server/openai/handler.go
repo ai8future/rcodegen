@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -140,6 +141,7 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Status:        "ok",
 		Version:       ToolVersion(),
 		ActiveRuns:    h.registry.ActiveCount(),
+		Queued:        h.registry.QueuedCount(),
 		MaxConcurrent: h.registry.MaxConcurrent(),
 	})
 }
@@ -274,14 +276,36 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	corrID := correlationID(r)
-	run, err := h.registry.AcquireWith(r.Context(), toolName, task, server.AcquireOptions{
-		CorrelationID: corrID,
-	})
+
+	// A request that waits for a busy slot looks exactly like a slow one from
+	// outside. Streaming callers are told as it happens; non-streaming callers
+	// get the total afterwards in X-Queue-Wait-Ms. The stream is opened only
+	// if a wait actually occurs, so an unqueued request is byte-for-byte what
+	// it was before.
+	var sse *SSEWriter
+	acquireOpts := server.AcquireOptions{CorrelationID: corrID}
+	if req.Stream {
+		acquireOpts.OnQueued = func(position int) {
+			sse = NewSSEWriter(w)
+			sse.SetHeaders()
+			_ = sse.WriteEvent(queueEvent{Type: "queued", Position: position})
+		}
+	}
+
+	run, err := h.registry.AcquireWith(r.Context(), toolName, task, acquireOpts)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, NewErrorResponse(
+		h.writeChatError(w, sse, http.StatusServiceUnavailable, NewErrorResponse(
 			"failed to acquire run slot: "+err.Error(), "server_error", codeConcurrencyLimit,
 		))
 		return
+	}
+	if sse != nil {
+		_ = sse.WriteEvent(queueEvent{Type: "started"})
+	}
+	if !req.Stream {
+		if ms := run.QueueWait.Milliseconds(); ms > 0 {
+			w.Header().Set("X-Queue-Wait-Ms", strconv.FormatInt(ms, 10))
+		}
 	}
 	runID, runCtx, cancel := run.RunID, run.Ctx, run.Cancel
 	defer cancel()
@@ -298,7 +322,7 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			// These sources passed validation before the slot was acquired, so a
 			// failure here is a source that changed underneath the wait or a copy
 			// that broke — a server-side failure, not a bad request.
-			writeJSON(w, http.StatusInternalServerError, NewErrorResponse(
+			h.writeChatError(w, sse, http.StatusInternalServerError, NewErrorResponse(
 				err.Error(), "server_error", codeCloneFailed,
 			))
 			return
@@ -316,10 +340,22 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if req.Stream {
-		h.handleStreaming(w, runCtx, tool, cfg, meta, showToolUse, cancel)
+		h.handleStreaming(w, runCtx, tool, cfg, meta, showToolUse, cancel, sse)
 	} else {
 		h.handleNonStreaming(w, runCtx, tool, cfg, meta)
 	}
+}
+
+// writeChatError reports a chat completion failure. Once queue events have
+// gone out the status line is long gone, so the envelope rides the event
+// stream instead of a JSON body.
+func (h *Handler) writeChatError(w http.ResponseWriter, sse *SSEWriter, status int, resp ErrorResponse) {
+	if sse == nil {
+		writeJSON(w, status, resp)
+		return
+	}
+	_ = sse.WriteEvent(resp)
+	sse.WriteDone()
 }
 
 // completionMeta carries the per-run values that ride on a completion response
@@ -332,11 +368,15 @@ type completionMeta struct {
 	clonedWorkDirs int
 }
 
-// handleStreaming handles a streaming chat completion request.
-func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, tool runner.Tool, cfg *runner.Config, meta completionMeta, showToolUse bool, cancel context.CancelFunc) {
+// handleStreaming handles a streaming chat completion request. sse is non-nil
+// when the stream is already open because the request reported a queue wait on
+// it; otherwise the stream starts here.
+func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, tool runner.Tool, cfg *runner.Config, meta completionMeta, showToolUse bool, cancel context.CancelFunc, sse *SSEWriter) {
 	runID, model := meta.runID, meta.model
-	sse := NewSSEWriter(w)
-	sse.SetHeaders()
+	if sse == nil {
+		sse = NewSSEWriter(w)
+		sse.SetHeaders()
+	}
 
 	// Send initial role chunk
 	_ = sse.WriteChunk(ChatCompletionChunk{
@@ -433,13 +473,7 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, to
 			},
 		},
 	}
-	if result.TokenUsage != nil {
-		finalChunk.Usage = &Usage{
-			PromptTokens:     result.TokenUsage.InputTokens,
-			CompletionTokens: result.TokenUsage.OutputTokens,
-			TotalTokens:      result.TokenUsage.InputTokens + result.TokenUsage.OutputTokens,
-		}
-	}
+	finalChunk.Usage, finalChunk.CostUSD, finalChunk.UsageSource = runUsage(tool, result)
 	mu.Lock()
 	_ = sse.WriteChunk(finalChunk)
 	mu.Unlock()
@@ -493,13 +527,7 @@ func (h *Handler) handleNonStreaming(w http.ResponseWriter, ctx context.Context,
 			},
 		},
 	}
-	if result.TokenUsage != nil {
-		resp.Usage = &Usage{
-			PromptTokens:     result.TokenUsage.InputTokens,
-			CompletionTokens: result.TokenUsage.OutputTokens,
-			TotalTokens:      result.TokenUsage.InputTokens + result.TokenUsage.OutputTokens,
-		}
-	}
+	resp.Usage, resp.CostUSD, resp.UsageSource = runUsage(tool, result)
 
 	writeJSON(w, http.StatusOK, resp)
 }

@@ -695,6 +695,20 @@ For streaming requests, `X-Show-Tool-Use: true` includes Claude/Gemini tool-use 
 
 Chat requests also accept `X-Correlation-ID` — an external run identifier such as a Windmill job UUID. It is sanitized to `[A-Za-z0-9._-]` and capped at 128 characters, echoed back as the `X-Correlation-ID` response header and as `"correlation_id"` in the body (on the completion object, or the final chunk when streaming), and attached to the run registry entry so `GetStatus` shows which external job owns each slot. This is the same handling bundle runs have always had; the header echo now happens for every endpoint, including error responses.
 
+### Cost, usage, and queue visibility
+
+Chat completions report where their numbers came from. `"usage_source": "cli"` means the tool's CLI reported usage: `usage` is populated, and `"cost_usd"` too when the CLI reports a cost (Claude does; Gemini reports tokens only, so `cost_usd` is omitted rather than sent as zero). `"usage_source": "unreported"` means the CLI publishes none — Codex's JSON carries `usage: null`, and OpenCode and KiloCode have no usage channel at all — and then `usage` and `cost_usd` are omitted entirely. rserve never invents these numbers: an omitted `cost_usd` means "not measured", not "free", so anything summing costs across runs must treat `unreported` as unknown. Each tool adapter implements `runner.UsageReporter`, so a CLI that starts reporting usage is a one-adapter change.
+
+When every run slot is busy, a request waits — which from outside is indistinguishable from a slow run. Streaming requests that wait now get told, before any completion chunk and only when a wait actually happened:
+
+```
+data: {"type": "queued", "position": 1}
+
+data: {"type": "started"}
+```
+
+Non-streaming requests get the total afterwards as the `X-Queue-Wait-Ms` response header, omitted when there was no wait. `/health` gains `"queued": N` alongside `active_runs`, counting waiters from every entry point, so a saturated server is visible as saturated rather than as slow.
+
 ### Error retryability
 
 Every error response carries `"retryable"` alongside `message`, `type`, and `code`:

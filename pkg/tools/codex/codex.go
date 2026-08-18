@@ -361,6 +361,14 @@ func (t *Tool) UsesStreamOutput() bool {
 	return false
 }
 
+// ReportedUsage always reports nothing: the Codex CLI's JSON output carries
+// "usage": null, and its terminal output carries no token or cost figures at
+// all. Callers surface that as "unreported" — inventing a zero here would
+// publish a measurement that was never taken.
+func (t *Tool) ReportedUsage(res *runner.RunResult) (runner.RunUsage, bool) {
+	return runner.RunUsage{}, false
+}
+
 // RunLogFields returns Codex-specific fields for the .runlog.md file
 func (t *Tool) RunLogFields(cfg *runner.Config) []string {
 	return []string{

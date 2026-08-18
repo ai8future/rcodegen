@@ -320,6 +320,24 @@ func (t *Tool) UsesStreamOutput() bool {
 	return true
 }
 
+// ReportedUsage reads the token counts from the Gemini CLI's stream-json
+// stats. Gemini reports no cost, so CostUSD stays zero and callers omit it
+// rather than publishing a free run.
+func (t *Tool) ReportedUsage(res *runner.RunResult) (runner.RunUsage, bool) {
+	if res == nil || res.TokenUsage == nil {
+		return runner.RunUsage{}, false
+	}
+	usage := runner.RunUsage{
+		InputTokens:  res.TokenUsage.InputTokens,
+		OutputTokens: res.TokenUsage.OutputTokens,
+		CostUSD:      res.TotalCostUSD,
+	}
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.CostUSD == 0 {
+		return runner.RunUsage{}, false
+	}
+	return usage, true
+}
+
 // RunLogFields returns Gemini-specific fields for the .runlog.md file
 func (t *Tool) RunLogFields(cfg *runner.Config) []string {
 	return []string{

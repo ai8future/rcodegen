@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -469,6 +470,375 @@ func TestHandleChatCompletions_StreamingReportsClonedWorkDirs(t *testing.T) {
 			t.Errorf("chunk %d reports cloned_work_dirs = %d before the final chunk", i, c.ClonedWorkDirs)
 		}
 	}
+}
+
+// A tool whose CLI reports nothing says so, rather than publishing zeros that
+// look like a measured free run.
+func TestHandleChatCompletions_UnreportedUsage(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "no usage here")
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp ChatCompletionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.UsageSource != usageSourceUnreported {
+		t.Errorf("usage_source = %q, want %s", resp.UsageSource, usageSourceUnreported)
+	}
+	if resp.Usage != nil {
+		t.Errorf("usage = %+v, want none for an unreporting tool", resp.Usage)
+	}
+	if strings.Contains(rec.Body.String(), "cost_usd") {
+		t.Errorf("cost_usd present for an unreporting tool: %s", rec.Body.String())
+	}
+}
+
+// reportingTool stands in for a CLI that publishes usage, so the "cli"
+// provenance path can be exercised without one.
+type reportingTool struct {
+	runner.Tool
+	usage runner.RunUsage
+}
+
+func (t *reportingTool) ReportedUsage(*runner.RunResult) (runner.RunUsage, bool) {
+	return t.usage, true
+}
+
+func TestHandleChatCompletions_ReportedUsageAndCost(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "usage reported")
+	tool := &reportingTool{
+		Tool:  opencode.New(),
+		usage: runner.RunUsage{InputTokens: 1200, OutputTokens: 3500, CostUSD: 0.0432},
+	}
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return tool },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp ChatCompletionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.UsageSource != usageSourceCLI {
+		t.Errorf("usage_source = %q, want %s", resp.UsageSource, usageSourceCLI)
+	}
+	if resp.CostUSD != 0.0432 {
+		t.Errorf("cost_usd = %v, want 0.0432", resp.CostUSD)
+	}
+	if resp.Usage == nil {
+		t.Fatal("usage missing for a reporting tool")
+	}
+	if resp.Usage.PromptTokens != 1200 || resp.Usage.CompletionTokens != 3500 || resp.Usage.TotalTokens != 4700 {
+		t.Errorf("usage = %+v, want 1200/3500/4700", resp.Usage)
+	}
+}
+
+// A tool that reports tokens but no cost (gemini's shape) must not publish a
+// zero cost.
+func TestHandleChatCompletions_ReportedUsageWithoutCostOmitsCost(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "tokens only")
+	tool := &reportingTool{
+		Tool:  opencode.New(),
+		usage: runner.RunUsage{InputTokens: 800, OutputTokens: 250},
+	}
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return tool },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), "cost_usd") {
+		t.Errorf("cost_usd present when the tool reported none: %s", rec.Body.String())
+	}
+	var resp ChatCompletionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.UsageSource != usageSourceCLI {
+		t.Errorf("usage_source = %q, want %s", resp.UsageSource, usageSourceCLI)
+	}
+	if resp.Usage == nil || resp.Usage.TotalTokens != 1050 {
+		t.Errorf("usage = %+v, want 1050 total tokens", resp.Usage)
+	}
+}
+
+func TestHandleChatCompletions_StreamingReportsUsageOnFinalChunk(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "streamed with usage")
+	tool := &reportingTool{
+		Tool:  opencode.New(),
+		usage: runner.RunUsage{InputTokens: 10, OutputTokens: 20, CostUSD: 0.5},
+	}
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return tool },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	chunks := parseSSEChunks(t, rec.Body.String())
+	final := chunks[len(chunks)-1]
+	if final.UsageSource != usageSourceCLI {
+		t.Errorf("final chunk usage_source = %q, want %s", final.UsageSource, usageSourceCLI)
+	}
+	if final.CostUSD != 0.5 {
+		t.Errorf("final chunk cost_usd = %v, want 0.5", final.CostUSD)
+	}
+	if final.Usage == nil || final.Usage.TotalTokens != 30 {
+		t.Errorf("final chunk usage = %+v, want 30 total tokens", final.Usage)
+	}
+	for i, c := range chunks[:len(chunks)-1] {
+		if c.UsageSource != "" {
+			t.Errorf("chunk %d carries usage_source before the final chunk", i)
+		}
+	}
+}
+
+// A request that waits for a busy slot is indistinguishable from a slow one
+// unless the wait is announced. Streaming callers hear it as it happens.
+func TestHandleChatCompletions_StreamingAnnouncesQueuePosition(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "ran after waiting")
+	reg := server.NewRunRegistry(1)
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, reg, []string{"opencode"}, nil, nil)
+
+	heldID, _, heldCancel, err := reg.Acquire(context.Background(), "opencode", "held")
+	if err != nil {
+		t.Fatalf("acquire holding slot: %v", err)
+	}
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(rec, req)
+	}()
+
+	waitForQueued(t, reg, 1)
+	heldCancel()
+	reg.Release(heldID)
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("queued request never completed after the slot freed")
+	}
+
+	frames := parseSSEFrames(t, rec.Body.String())
+	if len(frames) < 2 {
+		t.Fatalf("expected queue events, got frames %v", frames)
+	}
+	var queued queueEvent
+	if err := json.Unmarshal([]byte(frames[0]), &queued); err != nil {
+		t.Fatalf("decode first frame %q: %v", frames[0], err)
+	}
+	if queued.Type != "queued" || queued.Position != 1 {
+		t.Errorf("first frame = %+v, want queued at position 1", queued)
+	}
+	var started queueEvent
+	if err := json.Unmarshal([]byte(frames[1]), &started); err != nil {
+		t.Fatalf("decode second frame %q: %v", frames[1], err)
+	}
+	if started.Type != "started" {
+		t.Errorf("second frame = %+v, want started", started)
+	}
+	if !strings.Contains(rec.Body.String(), "ran after waiting") {
+		t.Errorf("run output missing from the stream: %s", rec.Body.String())
+	}
+}
+
+// No wait, no events: an unqueued stream is byte-for-byte what it always was.
+func TestHandleChatCompletions_StreamingWithoutWaitHasNoQueueEvents(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "no waiting")
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), `"queued"`) || strings.Contains(rec.Body.String(), `"started"`) {
+		t.Errorf("queue events on a stream that never waited: %s", rec.Body.String())
+	}
+}
+
+// Non-streaming callers cannot be told mid-flight, so they get the total
+// afterwards — and only when there was one.
+func TestHandleChatCompletions_NonStreamingReportsQueueWaitHeader(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "ran after waiting")
+	reg := server.NewRunRegistry(1)
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, reg, []string{"opencode"}, nil, nil)
+
+	heldID, _, heldCancel, err := reg.Acquire(context.Background(), "opencode", "held")
+	if err != nil {
+		t.Fatalf("acquire holding slot: %v", err)
+	}
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(rec, req)
+	}()
+
+	waitForQueued(t, reg, 1)
+	// Hold it long enough that the wait cannot round down to zero.
+	time.Sleep(10 * time.Millisecond)
+	heldCancel()
+	reg.Release(heldID)
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("queued request never completed after the slot freed")
+	}
+
+	got := rec.Header().Get("X-Queue-Wait-Ms")
+	if got == "" {
+		t.Fatal("X-Queue-Wait-Ms missing after a queued request")
+	}
+	ms, err := strconv.Atoi(got)
+	if err != nil || ms <= 0 {
+		t.Errorf("X-Queue-Wait-Ms = %q, want a positive integer", got)
+	}
+}
+
+func TestHandleChatCompletions_NoQueueWaitHeaderWithoutAWait(t *testing.T) {
+	chassis.RequireMajor(11)
+	installFakeOpenCode(t, "no waiting")
+	h := NewHandler(nil, map[string]server.ToolFactory{
+		"opencode": func() runner.Tool { return opencode.New() },
+	}, server.NewRunRegistry(1), []string{"opencode"}, nil, nil)
+
+	body := `{"model":"opencode","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("X-Queue-Wait-Ms"); got != "" {
+		t.Errorf("X-Queue-Wait-Ms = %q on a request that never waited", got)
+	}
+}
+
+// A saturated server is a different condition from a busy one, and /health has
+// to be able to say which.
+func TestHandleHealth_ReportsQueuedRequests(t *testing.T) {
+	reg := server.NewRunRegistry(1)
+	h := NewHandler(nil, nil, reg, nil, nil, nil)
+
+	heldID, _, heldCancel, err := reg.Acquire(context.Background(), "opencode", "held")
+	if err != nil {
+		t.Fatalf("acquire holding slot: %v", err)
+	}
+	defer func() {
+		heldCancel()
+		reg.Release(heldID)
+	}()
+
+	waiterCtx, cancelWaiter := context.WithCancel(context.Background())
+	waiterDone := make(chan struct{})
+	go func() {
+		defer close(waiterDone)
+		_, _ = reg.AcquireWith(waiterCtx, "opencode", "waiter", server.AcquireOptions{})
+	}()
+	waitForQueued(t, reg, 1)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var hr HealthResponse
+	if err := json.NewDecoder(rec.Body).Decode(&hr); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if hr.ActiveRuns != 1 {
+		t.Errorf("active_runs = %d, want 1", hr.ActiveRuns)
+	}
+	if hr.Queued != 1 {
+		t.Errorf("queued = %d, want 1", hr.Queued)
+	}
+
+	cancelWaiter()
+	<-waiterDone
+}
+
+func TestHandleHealth_QueuedIsAlwaysPresent(t *testing.T) {
+	h := NewHandler(nil, nil, server.NewRunRegistry(5), nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if !strings.Contains(rec.Body.String(), `"queued":0`) {
+		t.Errorf("health body omits queued when idle: %s", rec.Body.String())
+	}
+}
+
+// waitForQueued blocks until the registry reports want waiters.
+func waitForQueued(t *testing.T, reg *server.RunRegistry, want int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if reg.QueuedCount() == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("queued count never reached %d (currently %d)", want, reg.QueuedCount())
+}
+
+// parseSSEFrames returns the raw payload of every "data:" frame except [DONE].
+func parseSSEFrames(t *testing.T, body string) []string {
+	t.Helper()
+	var frames []string
+	for _, line := range strings.Split(body, "\n") {
+		payload, ok := strings.CutPrefix(line, "data: ")
+		if !ok || payload == "[DONE]" {
+			continue
+		}
+		frames = append(frames, payload)
+	}
+	if len(frames) == 0 {
+		t.Fatalf("no SSE data frames in body: %s", body)
+	}
+	return frames
 }
 
 // parseSSEChunks decodes every "data:" frame of an SSE body except [DONE].

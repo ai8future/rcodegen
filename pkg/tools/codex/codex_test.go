@@ -51,3 +51,19 @@ func TestValidateConfig_ModelSpecificEffort(t *testing.T) {
 		})
 	}
 }
+
+// The Codex CLI publishes no usage at all ("usage": null), so the adapter
+// reports nothing even when the runner happens to hold numbers from elsewhere.
+func TestReportedUsage_AlwaysUnreported(t *testing.T) {
+	tool := New()
+	cases := []*runner.RunResult{
+		nil,
+		{},
+		{TokenUsage: &runner.TokenUsage{InputTokens: 100, OutputTokens: 200}, TotalCostUSD: 1.5},
+	}
+	for _, res := range cases {
+		if usage, ok := tool.ReportedUsage(res); ok {
+			t.Errorf("ReportedUsage(%+v) = %+v, want no report", res, usage)
+		}
+	}
+}

@@ -458,6 +458,24 @@ func (t *Tool) UsesStreamOutput() bool {
 	return true
 }
 
+// ReportedUsage reads the tokens and cost the Claude CLI publishes in its
+// stream-json result event. A run that produced no result event (a crash
+// before completion, say) reports nothing rather than zeros.
+func (t *Tool) ReportedUsage(res *runner.RunResult) (runner.RunUsage, bool) {
+	if res == nil {
+		return runner.RunUsage{}, false
+	}
+	usage := runner.RunUsage{CostUSD: res.TotalCostUSD}
+	if res.TokenUsage != nil {
+		usage.InputTokens = res.TokenUsage.InputTokens
+		usage.OutputTokens = res.TokenUsage.OutputTokens
+	}
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.CostUSD == 0 {
+		return runner.RunUsage{}, false
+	}
+	return usage, true
+}
+
 // RunLogFields returns Claude-specific fields for the .runlog.md file
 func (t *Tool) RunLogFields(cfg *runner.Config) []string {
 	fields := []string{

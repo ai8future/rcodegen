@@ -118,6 +118,26 @@ type ModelEffortProvider interface {
 	ValidEffortsForModel(model string) []string
 }
 
+// RunUsage is one run's usage as the tool's own CLI reported it. Zero fields
+// mean the CLI said nothing about them, never that the run was free.
+type RunUsage struct {
+	InputTokens  int
+	OutputTokens int
+	CostUSD      float64
+}
+
+// UsageReporter is the optional Tool interface for reading usage out of a
+// finished run. Each adapter knows what its CLI publishes and where, so the
+// knowledge lives with the tool rather than in the callers.
+//
+// ok is false when this run has nothing to report — the CLI publishes no usage
+// at all (codex), or this particular run produced none. Callers must then say
+// so rather than reporting zeros: a fabricated $0.00 is worse than an honest
+// "unreported", because it looks like a measurement.
+type UsageReporter interface {
+	ReportedUsage(res *RunResult) (RunUsage, bool)
+}
+
 // FlagDef defines a command-line flag
 type FlagDef struct {
 	Short       string // Short flag (e.g., "-e")

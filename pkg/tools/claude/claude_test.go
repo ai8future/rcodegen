@@ -110,3 +110,35 @@ func TestTool_ValidateConfig_Effort(t *testing.T) {
 		t.Fatalf("ValidateConfig expected invalid effort error")
 	}
 }
+
+// Claude's stream-json result event carries both tokens and cost, so a
+// completed run reports them.
+func TestReportedUsage_ReadsTokensAndCost(t *testing.T) {
+	tool := New()
+	res := &runner.RunResult{
+		TokenUsage:   &runner.TokenUsage{InputTokens: 1200, OutputTokens: 3500},
+		TotalCostUSD: 0.0432,
+	}
+
+	usage, ok := tool.ReportedUsage(res)
+	if !ok {
+		t.Fatal("ReportedUsage said nothing for a run that reported tokens and cost")
+	}
+	if usage.InputTokens != 1200 || usage.OutputTokens != 3500 {
+		t.Errorf("tokens = %d/%d, want 1200/3500", usage.InputTokens, usage.OutputTokens)
+	}
+	if usage.CostUSD != 0.0432 {
+		t.Errorf("cost = %v, want 0.0432", usage.CostUSD)
+	}
+}
+
+// A run that never produced a result event has nothing to report. Zeros would
+// be published as a measurement, which they are not.
+func TestReportedUsage_SaysNothingWhenTheRunReportedNothing(t *testing.T) {
+	tool := New()
+	for _, res := range []*runner.RunResult{nil, {}, {TokenUsage: &runner.TokenUsage{}}} {
+		if usage, ok := tool.ReportedUsage(res); ok {
+			t.Errorf("ReportedUsage(%+v) = %+v, want no report", res, usage)
+		}
+	}
+}

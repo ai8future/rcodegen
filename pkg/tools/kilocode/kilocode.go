@@ -169,6 +169,12 @@ func (t *Tool) UsesStreamOutput() bool {
 	return false
 }
 
+// ReportedUsage always reports nothing: the KiloCode CLI writes plain stdout
+// with no usage channel to read.
+func (t *Tool) ReportedUsage(res *runner.RunResult) (runner.RunUsage, bool) {
+	return runner.RunUsage{}, false
+}
+
 func (t *Tool) RunLogFields(cfg *runner.Config) []string {
 	return []string{
 		"Model: " + cfg.Model,

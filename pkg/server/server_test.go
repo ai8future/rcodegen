@@ -192,3 +192,150 @@ func TestGetStatus_RendersCorrelationIDIntoTheTaskString(t *testing.T) {
 		t.Errorf("uncorrelated task = %q, want %q", got, "audit this")
 	}
 }
+
+// waitForQueuedCount blocks until the registry reports want waiters.
+func waitForQueuedCount(t *testing.T, reg *RunRegistry, want int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if reg.QueuedCount() == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("queued count never reached %d (currently %d)", want, reg.QueuedCount())
+}
+
+// A saturated registry tells each waiter where it stands and how long it
+// waited — the difference between "queued behind other work" and "running
+// slowly", which look identical from outside.
+func TestAcquireWith_ReportsQueuePositionAndWait(t *testing.T) {
+	reg := NewRunRegistry(2)
+
+	var held []*Acquisition
+	for i := 0; i < 2; i++ {
+		a, err := reg.AcquireWith(context.Background(), "claude", "held", AcquireOptions{})
+		if err != nil {
+			t.Fatalf("hold slot %d: %v", i, err)
+		}
+		held = append(held, a)
+	}
+	if got := reg.QueuedCount(); got != 0 {
+		t.Fatalf("queued = %d before any waiter, want 0", got)
+	}
+
+	type outcome struct {
+		acq *Acquisition
+		err error
+	}
+	startWaiter := func(name string) (<-chan int, <-chan outcome) {
+		positions := make(chan int, 1)
+		results := make(chan outcome, 1)
+		go func() {
+			acq, err := reg.AcquireWith(context.Background(), "claude", name, AcquireOptions{
+				OnQueued: func(position int) { positions <- position },
+			})
+			results <- outcome{acq, err}
+		}()
+		return positions, results
+	}
+	awaitPosition := func(positions <-chan int) int {
+		t.Helper()
+		select {
+		case p := <-positions:
+			return p
+		case <-time.After(10 * time.Second):
+			t.Fatal("waiter was never told it was queued")
+			return 0
+		}
+	}
+
+	firstPos, firstResult := startWaiter("first")
+	if p := awaitPosition(firstPos); p != 1 {
+		t.Errorf("first waiter position = %d, want 1", p)
+	}
+	secondPos, secondResult := startWaiter("second")
+	if p := awaitPosition(secondPos); p != 2 {
+		t.Errorf("second waiter position = %d, want 2", p)
+	}
+	if got := reg.QueuedCount(); got != 2 {
+		t.Errorf("queued = %d with two waiters, want 2", got)
+	}
+
+	for _, a := range held {
+		a.Cancel()
+		reg.Release(a.RunID)
+	}
+
+	for _, results := range []<-chan outcome{firstResult, secondResult} {
+		select {
+		case got := <-results:
+			if got.err != nil {
+				t.Fatalf("waiter: %v", got.err)
+			}
+			if got.acq.QueueWait <= 0 {
+				t.Errorf("QueueWait = %v after waiting for a slot, want > 0", got.acq.QueueWait)
+			}
+			got.acq.Cancel()
+			reg.Release(got.acq.RunID)
+		case <-time.After(10 * time.Second):
+			t.Fatal("waiter never acquired a slot after one freed")
+		}
+	}
+	waitForQueuedCount(t, reg, 0)
+}
+
+// A slot that is free is taken without announcing a wait that never happened.
+func TestAcquireWith_NoQueueEventWhenASlotIsFree(t *testing.T) {
+	reg := NewRunRegistry(1)
+	queued := false
+	acq, err := reg.AcquireWith(context.Background(), "claude", "immediate", AcquireOptions{
+		OnQueued: func(int) { queued = true },
+	})
+	if err != nil {
+		t.Fatalf("AcquireWith: %v", err)
+	}
+	defer func() {
+		acq.Cancel()
+		reg.Release(acq.RunID)
+	}()
+
+	if queued {
+		t.Error("OnQueued fired for a request that never waited")
+	}
+	if acq.QueueWait != 0 {
+		t.Errorf("QueueWait = %v with a free slot, want 0", acq.QueueWait)
+	}
+}
+
+// A client that gives up while queued must not be counted as waiting forever.
+func TestAcquireWith_CancelledWaiterLeavesTheQueue(t *testing.T) {
+	reg := NewRunRegistry(1)
+	held, err := reg.AcquireWith(context.Background(), "claude", "held", AcquireOptions{})
+	if err != nil {
+		t.Fatalf("hold slot: %v", err)
+	}
+	defer func() {
+		held.Cancel()
+		reg.Release(held.RunID)
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errs := make(chan error, 1)
+	go func() {
+		_, err := reg.AcquireWith(ctx, "claude", "gives up", AcquireOptions{})
+		errs <- err
+	}()
+	waitForQueuedCount(t, reg, 1)
+
+	cancel()
+	select {
+	case err := <-errs:
+		if err == nil {
+			t.Fatal("cancelled waiter acquired a slot")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancelled waiter never returned")
+	}
+	waitForQueuedCount(t, reg, 0)
+}

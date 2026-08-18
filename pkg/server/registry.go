@@ -14,6 +14,7 @@ import (
 type RunRegistry struct {
 	mu            sync.Mutex
 	runs          map[string]*ActiveRun
+	waiting       int // requests blocked waiting for a slot
 	maxConcurrent int
 	semaphore     chan struct{}
 }
@@ -36,6 +37,12 @@ type AcquireOptions struct {
 	// CorrelationID is stored on the run entry as-is; callers sanitize
 	// externally supplied values before passing them.
 	CorrelationID string
+	// OnQueued is called once, on the caller's goroutine, when every slot is
+	// busy and the request is about to wait — never when a slot was free.
+	// position is this waiter's place in line at that moment, counting from 1.
+	// It lets a caller tell "queued behind other work" from "running slowly",
+	// which look identical from outside.
+	OnQueued func(position int)
 }
 
 // Acquisition is a held run slot: the run's ID, its cancellable context, and
@@ -44,6 +51,9 @@ type Acquisition struct {
 	RunID  string
 	Ctx    context.Context
 	Cancel context.CancelFunc
+	// QueueWait is how long the caller waited for a slot. Zero when one was
+	// free immediately.
+	QueueWait time.Duration
 }
 
 // NewRunRegistry creates a registry that allows up to max concurrent runs.
@@ -65,14 +75,39 @@ func (rr *RunRegistry) Acquire(ctx context.Context, tool, task string) (string, 
 	return a.RunID, a.Ctx, a.Cancel, nil
 }
 
-// AcquireWith is Acquire with per-run metadata attached to the registry entry.
+// AcquireWith is Acquire with per-run metadata attached to the registry entry
+// and the wait for a slot reported back to the caller.
 func (rr *RunRegistry) AcquireWith(ctx context.Context, tool, task string, opts AcquireOptions) (*Acquisition, error) {
-	// Block until a slot opens up
+	var queueWait time.Duration
+
+	// Try for a free slot without blocking first, so waiting is only announced
+	// when it actually happens.
 	select {
 	case rr.semaphore <- struct{}{}:
-		// got a slot
-	case <-ctx.Done():
-		return nil, ctx.Err()
+		// got a slot straight away
+	default:
+		rr.mu.Lock()
+		rr.waiting++
+		position := rr.waiting
+		rr.mu.Unlock()
+
+		if opts.OnQueued != nil {
+			opts.OnQueued(position)
+		}
+
+		start := time.Now()
+		select {
+		case rr.semaphore <- struct{}{}:
+			queueWait = time.Since(start)
+		case <-ctx.Done():
+			rr.mu.Lock()
+			rr.waiting--
+			rr.mu.Unlock()
+			return nil, ctx.Err()
+		}
+		rr.mu.Lock()
+		rr.waiting--
+		rr.mu.Unlock()
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -89,7 +124,7 @@ func (rr *RunRegistry) AcquireWith(ctx context.Context, tool, task string, opts 
 	}
 	rr.mu.Unlock()
 
-	return &Acquisition{RunID: runID, Ctx: runCtx, Cancel: cancel}, nil
+	return &Acquisition{RunID: runID, Ctx: runCtx, Cancel: cancel, QueueWait: queueWait}, nil
 }
 
 // Release frees the concurrency slot for a completed run.
@@ -134,6 +169,13 @@ func (rr *RunRegistry) ActiveCount() int {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
 	return len(rr.runs)
+}
+
+// QueuedCount returns the number of requests waiting for a run slot.
+func (rr *RunRegistry) QueuedCount() int {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	return rr.waiting
 }
 
 // MaxConcurrent returns the configured maximum concurrent runs.

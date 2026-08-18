@@ -1,6 +1,10 @@
 package openai
 
-import "time"
+import (
+	"time"
+
+	"rcodegen/pkg/runner"
+)
 
 // ---------------------------------------------------------------------------
 // Request types
@@ -41,6 +45,12 @@ type ChatCompletionResponse struct {
 	// CorrelationID echoes the request's X-Correlation-ID, mirroring bundle
 	// runs, so a caller can tie a completion back to its own job.
 	CorrelationID string `json:"correlation_id,omitempty"`
+	// CostUSD is what the tool's CLI said this run cost. Absent when the CLI
+	// reports no cost — never zero to mean "unknown".
+	CostUSD float64 `json:"cost_usd,omitempty"`
+	// UsageSource says where usage and cost came from: "cli" when the tool
+	// reported them, "unreported" when it publishes none.
+	UsageSource string `json:"usage_source,omitempty"`
 }
 
 // Choice represents a single completion choice.
@@ -55,6 +65,34 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+}
+
+// Usage provenance values for the usage_source field.
+const (
+	// usageSourceCLI means the tool's CLI reported the numbers.
+	usageSourceCLI = "cli"
+	// usageSourceUnreported means it published none. Usage and cost are then
+	// omitted entirely rather than sent as zeros.
+	usageSourceUnreported = "unreported"
+)
+
+// runUsage asks the tool adapter what its CLI reported for this run and
+// returns the completion fields to publish. Tools that do not implement
+// runner.UsageReporter report nothing.
+func runUsage(tool runner.Tool, res *runner.RunResult) (*Usage, float64, string) {
+	reporter, ok := tool.(runner.UsageReporter)
+	if !ok {
+		return nil, 0, usageSourceUnreported
+	}
+	reported, ok := reporter.ReportedUsage(res)
+	if !ok {
+		return nil, 0, usageSourceUnreported
+	}
+	return &Usage{
+		PromptTokens:     reported.InputTokens,
+		CompletionTokens: reported.OutputTokens,
+		TotalTokens:      reported.InputTokens + reported.OutputTokens,
+	}, reported.CostUSD, usageSourceCLI
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +112,10 @@ type ChatCompletionChunk struct {
 	// CorrelationID rides the final chunk only, alongside session_id and
 	// cloned_work_dirs.
 	CorrelationID string `json:"correlation_id,omitempty"`
+	// CostUSD and UsageSource ride the final chunk, same as the completion
+	// object's fields of those names.
+	CostUSD     float64 `json:"cost_usd,omitempty"`
+	UsageSource string  `json:"usage_source,omitempty"`
 }
 
 // StreamChoice represents a single choice within a streaming chunk.
@@ -116,10 +158,22 @@ type ModelInfo struct {
 
 // HealthResponse represents the server health check response.
 type HealthResponse struct {
-	Status        string `json:"status"`
-	Version       string `json:"version"`
-	ActiveRuns    int    `json:"active_runs"`
-	MaxConcurrent int    `json:"max_concurrent"`
+	Status  string `json:"status"`
+	Version string `json:"version"`
+	// ActiveRuns are running; Queued are waiting for a slot. A server that is
+	// saturated rather than slow shows it here.
+	ActiveRuns    int `json:"active_runs"`
+	Queued        int `json:"queued"`
+	MaxConcurrent int `json:"max_concurrent"`
+}
+
+// Queue progress events, written to a streaming response when — and only
+// when — the request had to wait for a run slot.
+type queueEvent struct {
+	Type string `json:"type"`
+	// Position is the waiter's place in line, counting from 1. Set on the
+	// "queued" event only.
+	Position int `json:"position,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

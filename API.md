@@ -210,6 +210,8 @@ Both messages name the offending path relative to the source root. Relative syml
     "completion_tokens": 3500,
     "total_tokens": 4700
   },
+  "usage_source": "cli",
+  "cost_usd": 0.0432,
   "session_id": "abc123",
   "cloned_work_dirs": 1,
   "correlation_id": "windmill-job-42"
@@ -218,13 +220,32 @@ Both messages name the offending path relative to the source root. Relative syml
 
 `correlation_id` is present only when the request carried `X-Correlation-ID`.
 
+**Usage and cost provenance:** `usage_source` says where the numbers came from and is always present on a completed response.
+
+| `usage_source` | Meaning | Tools |
+|----------------|---------|-------|
+| `cli` | The tool's CLI reported usage; `usage` is populated, and `cost_usd` too when the CLI reports a cost | Claude (tokens + cost), Gemini (tokens only -- `cost_usd` is omitted, not zero) |
+| `unreported` | The CLI publishes no usage at all. `usage` and `cost_usd` are **omitted entirely** | Codex (its JSON carries `usage: null`), OpenCode, KiloCode |
+
+rserve never fabricates these numbers. An omitted `cost_usd` means "not measured", never "free", so a caller summing costs across runs must treat `unreported` as unknown rather than as zero. Extraction lives with each tool adapter (`runner.UsageReporter`), so a CLI that starts reporting usage is a change in one adapter.
+
 **Streaming response** (`"stream": true`):
 
 Server-Sent Events format. Each event is `data: {json chunk}\n\n`. Final message is `data: [DONE]\n\n`.
 
 Response headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`.
 
-`session_id`, `cloned_work_dirs`, and `correlation_id` ride the final chunk (the one carrying `finish_reason`), not the content chunks.
+`session_id`, `cloned_work_dirs`, `correlation_id`, `usage`, `usage_source`, and `cost_usd` ride the final chunk (the one carrying `finish_reason`), not the content chunks.
+
+**Queue visibility:** when every run slot is busy a request waits for one, which from outside looks exactly like a slow run. Streaming requests that wait receive two extra frames before any completion chunk, and only when a wait actually happened:
+
+```
+data: {"type": "queued", "position": 1}
+
+data: {"type": "started"}
+```
+
+`position` counts from 1 and is this request's place in line at the moment it started waiting. A request that gets a slot immediately sees neither frame, so unqueued streams are unchanged. Non-streaming requests cannot be told mid-flight, so they get the total afterwards as the `X-Queue-Wait-Ms` response header, omitted when the wait was zero (including waits shorter than a millisecond). If the run fails after the queue frames have gone out, the error envelope arrives as a `data:` frame followed by `[DONE]` -- the HTTP status line is long gone by then.
 
 **Error responses:**
 
@@ -277,9 +298,12 @@ List available tools (only those whose CLI binary is found on PATH), configured 
   "status": "ok",
   "version": "<current server version>",
   "active_runs": 1,
+  "queued": 2,
   "max_concurrent": 3
 }
 ```
+
+`queued` is the number of requests waiting for a run slot — the difference between a server that is busy and one that is saturated. It counts waiters from every entry point (HTTP chat completions, HTTP bundles, and gRPC).
 
 ### POST /v1/files
 

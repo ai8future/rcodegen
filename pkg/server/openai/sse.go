@@ -34,13 +34,19 @@ func (s *SSEWriter) SetHeaders() {
 // WriteChunk marshals the chunk to JSON and writes it as a single SSE data
 // frame: "data: {json}\n\n".
 func (s *SSEWriter) WriteChunk(chunk ChatCompletionChunk) error {
-	data, err := json.Marshal(chunk)
+	return s.WriteEvent(chunk)
+}
+
+// WriteEvent writes any value as one SSE data frame. Completion chunks are the
+// usual payload; the stream also carries out-of-band events (queue progress)
+// that are not chunks.
+func (s *SSEWriter) WriteEvent(v any) error {
+	data, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("sse: marshal chunk: %w", err)
+		return fmt.Errorf("sse: marshal event: %w", err)
 	}
-	_, err = fmt.Fprintf(s.w, "data: %s\n\n", data)
-	if err != nil {
-		return fmt.Errorf("sse: write chunk: %w", err)
+	if _, err := fmt.Fprintf(s.w, "data: %s\n\n", data); err != nil {
+		return fmt.Errorf("sse: write event: %w", err)
 	}
 	if s.flusher != nil {
 		s.flusher.Flush()
