@@ -245,6 +245,15 @@ type HealthResponse struct {
 	ActiveRuns    int `json:"active_runs"`
 	Queued        int `json:"queued"`
 	MaxConcurrent int `json:"max_concurrent"`
+	// Async admission: AsyncLive is how many submitted async runs the server
+	// still holds — queued, running, or finishing — and AsyncBytes their
+	// estimated retained request payload. Submissions past either ceiling are
+	// refused with a retryable 503 rather than accepted, so these are the two
+	// numbers that explain an async_capacity refusal.
+	AsyncLive     int   `json:"async_live"`
+	AsyncMaxLive  int   `json:"async_max_live"`
+	AsyncBytes    int64 `json:"async_bytes"`
+	AsyncMaxBytes int64 `json:"async_max_bytes"`
 }
 
 // Queue progress events, written to a streaming response when — and only

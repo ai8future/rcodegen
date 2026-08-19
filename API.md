@@ -97,6 +97,8 @@ rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
 | `max_concurrent` | int32 | Concurrency limit |
 | `runs` | []ActiveRun | Active run details (run_id, tool, task, started_at_ms) |
 
+`runs` lists what currently **holds a run slot**, on either protocol. An async run that is still queued has been given a `run_id` but has not acquired a slot, so it does not appear here: the proto has no state to express it in. `GET /v1/runs` owns the full async lifecycle — queued, running, and terminal — and is the endpoint to poll for it.
+
 ### CancelRun (unary)
 
 ```protobuf
@@ -108,6 +110,8 @@ rpc CancelRun(CancelRunRequest) returns (CancelRunResponse);
 | `run_id` | string | Run ID to cancel |
 
 Returns `cancelled` (bool) and `message` (string).
+
+**Async run IDs are cancellable here from the moment they are issued**, including while the run is still queued and has no registry entry. The async store is asked first and answers for every ID it owns; anything else is an ordinary synchronous run and is cancelled through the registry as before. Cancelling an async run through gRPC is equivalent to `DELETE /v1/runs/{run_id}`: the CLI subprocess is killed, the scratch clone removed, the slot freed, and a `run_cancelled` **failure** callback delivered — never a success. A run that has already reached a terminal state returns `cancelled: false` with a message saying so, rather than claiming to have killed work that had already ended.
 
 ### Streaming Event Types (RunEvent)
 
@@ -206,9 +210,10 @@ Both messages name the offending path relative to the source root. Relative syml
 - **What counts as written.** A manifest of every visible file's path, size, and mtime is taken after the clone completes and before the CLI starts. Anything created, or whose size or mtime moved, is an artifact. Files the source tree already held are not, and neither are deletions. Hidden entries are out of scope at any depth — a clone's `.git` index and a tool's own dot-directory state churn on every run and are not what a caller asked for.
 - **Paths** are relative to the clone of the `work_dirs` entry that holds them. With more than one `work_dirs` entry they are prefixed with that clone's directory name (`alpha/notes.md`), since a bare relative path would be ambiguous across them.
 - **Text only,** decided from the first 8KB: a NUL byte or invalid UTF-8 means binary. A rune straddling the 8KB boundary is not held against the file.
-- **Caps** are the bundle artifact caps, reused verbatim: 512KB per file, 2MB of content per response, 100 artifacts. A file over the per-file cap is **skipped, not truncated** — an artifact that arrives is always the whole file. `artifacts_skipped` names everything found but not returned, with a reason: `binary`, `oversize`, `response_cap` (the 2MB budget was spent), `too_many_files`, `collection_error`, or `scan_limit` (the clone holds more entries than one walk visits, so a created-or-modified diff over it cannot be trusted). The skip report is itself capped at 100 entries; further skips are logged only.
+- **Caps** are the bundle artifact caps, reused verbatim: 512KB per file, 2MB of content per response, 100 artifacts. A file over the per-file cap is **skipped, not truncated** — an artifact that arrives is always the whole file. `artifacts_skipped` names everything found but not returned, with a reason: `binary`, `oversize`, `response_cap` (the 2MB budget was spent), `too_many_files`, `collection_error`, `scan_limit` (the clone holds more entries than one walk visits, so a created-or-modified diff over it cannot be trusted), or `inspection_cap` (below). The skip report is itself capped at 100 entries; further skips are logged only.
+- **Inspection is bounded separately from the response**: at most **1,000 candidate files opened** and **16MiB read** per run, counting text probes and returned content alike. The response caps bound the answer, not the work of producing it — a binary file consumes neither the artifact count nor the content budget, so a clone holding many binaries, or many hard links to one binary, would otherwise be read in full once per name while collection holds the run slot. Each candidate is charged its 8KB text probe first and a file the probe calls binary is never read further. A file reached after the budget is spent is reported as `inspection_cap` rather than dropped silently, and paths are inspected in sorted order so which files those are is deterministic. The run itself still succeeds.
 - **A failed run still reports its artifacts.** Half-written output is usually the most diagnostic thing a failed or cancelled run produced. The one exception is a failure where no clone was ever made — a rejected `work_dirs` entry, or a clone that could not be created — since there is then nothing to diff.
-- **Collection runs strictly before cleanup** and can never fail a run: a clone or a file that cannot be read becomes a `collection_error` entry and a log line, not an error response. Each clone directory is pinned by an open descriptor taken before the CLI starts, so a run that replaces its own clone directory with a symlink cannot redirect collection elsewhere.
+- **Collection runs strictly before cleanup** and can never fail a run: a clone or a file that cannot be read becomes a `collection_error` entry and a log line, not an error response. Each clone directory is pinned by an open descriptor taken before the CLI starts, so a run that replaces its own clone directory with a symlink cannot redirect collection elsewhere. Candidates are opened non-blocking and re-checked as regular files after opening, so a candidate that has become a FIFO or a device by the time it is read is refused instead of waiting for a writer that the run itself decides whether to provide.
 
 **Model format:** `{tool}` or `{tool}:{model}` -- e.g., `claude`, `claude:opus`, `codex:gpt-5.6-sol`, `gemini`, `gemini:gemini-3-flash-preview`. Claude and Codex also accept a supported `-{effort}` suffix, such as `claude:opus-max`, `codex:gpt-5.6-luna-max`, or bare `codex-ultra` for the configured default model. OpenCode and KiloCode accept dynamic `provider/model` identifiers.
 
@@ -287,7 +292,7 @@ data: {"type": "started"}
 | `retryable` | Codes | Why |
 |-------------|-------|-----|
 | `false` | `method_not_allowed`, `unauthorized`, `invalid_json`, `unknown_tool`, `empty_task`, `invalid_model`, `invalid_effort`, `invalid_work_dir`, `unsafe_symlink`, `unsupported_git_worktree`, `unknown_bundle`, `missing_input`, `invalid_upload`, `missing_file`, `invalid_id`, `not_found`, `no_file_store`, `invalid_callback_url`, `invalid_callback_headers`, `callback_stream_conflict`, `artifacts_require_clone`, `run_cancelled` | The request is malformed, names something that does not exist, or is refused on policy grounds. It will be refused identically every time until the caller changes it |
-| `true` | `concurrency_limit`, `clone_failed`, `work_dir_failed`, `bundle_failed`, `bundle_list_failed`, `save_failed`, `server_shutdown` | Transient: an interrupted slot wait, a filesystem failure, a CLI/provider failure (crash, unexpected exit, timeout, rate limit), or a server restart that caught the run in flight. The same request can succeed later |
+| `true` | `concurrency_limit`, `async_capacity`, `clone_failed`, `work_dir_failed`, `bundle_failed`, `bundle_list_failed`, `save_failed`, `server_shutdown` | Transient: an interrupted slot wait, an async submission refused because the server already holds its configured limit of live async work, a filesystem failure, a CLI/provider failure (crash, unexpected exit, timeout, rate limit), or a server restart that caught the run in flight. The same request can succeed later |
 
 | HTTP Status | Meaning |
 |-------------|---------|
@@ -296,7 +301,7 @@ data: {"type": "started"}
 | `404` | Unknown run ID, or one whose result has been evicted from retention |
 | `405` | Method not allowed |
 | `500` | Work-directory clone failed, including a source that changed after validation |
-| `503` | Request cancelled or disconnected while queued for a run slot |
+| `503` | Request cancelled or disconnected while queued for a run slot, or an async submission refused by admission (`async_capacity`, or `server_shutdown` once shutdown has begun). Both carry `Retry-After: 1` and no `run_id` |
 
 ### Async callback mode
 
@@ -305,16 +310,32 @@ A synchronous completion holds one HTTP connection for the whole run, couples th
 Send `callback_url` on a chat completion and rserve:
 
 1. validates the request **in full** — model, effort, `work_dirs` policies, the callback URL itself — so a bad request still fails on this connection with the same `400` it always did;
-2. answers `202` with the run's identity and releases the connection;
-3. runs it exactly as the synchronous path would (same queue accounting, same `clone_work_dirs` behaviour, same completion shape);
-4. POSTs the completion to `callback_url` when the run ends, success or failure;
-5. retains the result for polling, whether or not the callback was delivered.
+2. admits it against the async limits below, or refuses it with a retryable `503` and no `run_id`;
+3. answers `202` with the run's identity and releases the connection;
+4. runs it exactly as the synchronous path would (same queue accounting, same `clone_work_dirs` behaviour, same completion shape);
+5. POSTs the completion to `callback_url` when the run ends, success or failure;
+6. retains the result for polling, whether or not the callback was delivered.
 
 ```json
 {"run_id": "a1b2c3d4e5f60718", "status": "queued", "correlation_id": "windmill-job-42"}
 ```
 
 `callback_url` cannot be combined with `"stream": true` (`400 callback_stream_conflict`) — a callback delivers the completion once, a stream delivers it incrementally.
+
+**Admission.** Accepted async work outlives the connection that submitted it, so unlike a synchronous request it cannot be bounded by the caller hanging up. Two limits bound it instead, both checked under one lock **before** a `run_id` exists:
+
+| Limit | Default | Override |
+|-------|---------|----------|
+| Live async runs — submitted and not yet finished | `max(8, 4 × max_concurrent)` | `RSERVE_ASYNC_MAX_LIVE` |
+| Estimated retained request payload across those runs | 64MiB | `RSERVE_ASYNC_MAX_BYTES` |
+
+Both are needed: a count alone lets a few requests near the 10MB body limit hold far more memory than intended, and a byte budget alone lets an unbounded number of tiny requests hold an unbounded number of goroutines. The byte figure is a conservative estimate of the strings a submission keeps alive — task text, callback URL and headers, model/session names, work-directory paths — plus a fixed per-run allowance, not exact heap accounting.
+
+A submission past either limit is refused with `503`, `Retry-After: 1`, error code `async_capacity`, and `retryable: true`. **No `run_id` is issued and no goroutine is started**: there is nothing to poll, nothing to cancel, and no callback coming. A reservation is held until the run's execution goroutine lets go of the request, which is slightly longer than its terminal status — the memory is what is being bounded, not the lifecycle — and `/health` reports both the current usage and the configured ceilings. Once shutdown has begun, submissions are refused the same way with `server_shutdown`.
+
+An override that is not a positive integer **stops the server at startup** rather than being ignored: both variables exist to bound memory, and silently treating `0` as "unset" would leave a server running without the bound its operator believed they had set. The effective limits are logged in the startup record.
+
+Result retention is a separate budget (100 results or 1 hour) and is unchanged.
 
 **Callback URL rules.** `https` is accepted for any host. Plain `http` is accepted only where the network itself is the boundary: a loopback or RFC1918 address (`127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`, IPv6 unique-local), the reserved `localhost` name, **or a hostname that resolves to one of those addresses** — which is what makes ingress-style URLs like `http://windmill.10.0.4.224.nip.io/api/w/.../resume/...` usable. Anything else is `400 invalid_callback_url`.
 
@@ -324,6 +345,8 @@ A hostname is checked twice, and the second check is the one that counts:
 2. **At delivery**, the name is resolved again inside the connection dialer, every address it answers with must still be acceptable, and rserve connects to a vetted address directly instead of re-resolving the name a third time. A host that passed validation and then answers with a public address — the DNS-rebinding shape, and an async run holds that window open for the length of the run — has its connection refused before any bytes leave the process. The delivery is logged as undelivered and the result stays pollable, exactly as an unreachable receiver would be.
 
 Link-local addresses (`169.254.0.0/16`, `fe80::/10`) are **not** accepted, even though they are unroutable: `169.254.169.254` is the cloud instance-metadata endpoint, which is precisely what an attacker-chosen callback URL would aim at. Neither are the unspecified (`0.0.0.0`, `::`) or multicast ranges. An address literal in the URL is judged directly and never resolved, and `localhost`/`*.localhost` are accepted at submit without a lookup — but both still pass through the delivery dialer's check.
+
+**Plaintext callbacks are delivered directly and never through a proxy.** `HTTP_PROXY`, `http_proxy`, and `NO_PROXY` have no effect on `http` callback delivery. They cannot: when an ambient proxy is selected, the transport asks the dialer to connect to the proxy rather than to the callback host, so the address check above would vet the proxy while the absolute callback URL, the completion, and the caller's own `callback_headers` went to it — for it to resolve and forward as it saw fit. That is the same public-address and rebinding exposure the dialer exists to close. There is no fallback: a direct plaintext delivery that fails stays failed and the result stays pollable. **`https` callbacks keep ordinary proxy behaviour**, because their guarantee is the certificate, which a proxy cannot forge. A deployment that must route callbacks through a proxy should use an `https` callback URL.
 
 **Redirects are never followed**, on `http` or `https`. A receiver that answers a callback with a `3xx` gets that attempt counted as a failure and retried; the payload, the artifacts, and the caller's own `callback_headers` are not handed to the redirect target. A resume URL does not redirect, so nothing legitimate is lost.
 
@@ -366,6 +389,8 @@ A failure carries the same error envelope a synchronous caller would have receiv
 
 **Delivery.** POST with `Content-Type: application/json`, 10s per attempt, 3 attempts with backoff (2s, then 8s), then rserve gives up and logs a warning. Any non-2xx counts as a failed attempt. Delivery happens **after** the run slot is released, so a slow receiver never holds capacity. An undelivered callback costs the run nothing: the result stays available at `GET /v1/runs/{run_id}/result` for as long as retention holds it.
 
+**One ending per run.** A run's status, its retained result, and the callback its receiver gets are chosen together by a single atomic transition, and only whichever caller wins that transition delivers. A run that completes at the same moment the server begins shutting down therefore either reports its own outcome or reports `server_shutdown` — never stores one and delivers the other. Exactly one callback is sent per run, whatever raced.
+
 **Retention is in-memory and non-durable.** Results live in the rserve process, bounded to **100 results or 1 hour**, whichever binds first, with least-recently-used eviction; a run that is still queued or running is never evicted. Message content is capped at 64KB — the same discipline as bundle step output — and an oversize completion is truncated with `"output_truncated": true` rather than dropped. **A restart loses every pending run and every retained result.** Callers whose run was in flight get one best-effort `server_shutdown` failure callback if their receiver is up, and nothing at all if it is not. Durable run state belongs in the caller's own store (Postgres, in this fleet) or in the caller's timeout — for a Windmill flow, the suspend timeout is the guard.
 
 **Artifacts diverge between the callback and the retained copy, on purpose.** A callback is delivered once and then forgotten, so it carries artifacts in full, up to the same 2MB response budget the synchronous path uses. Retention has to hold results in this process's memory alongside 99 others, so it keeps the same 64KB discipline as message content: when a completion's artifact contents exceed 64KB in total, the **retained** copy drops them and lists every one in `artifacts_skipped` with reason `evicted_from_retention`, while the POST the receiver got carries the bytes.
@@ -391,7 +416,9 @@ Lifecycle status of an async run. Timestamps are Unix seconds and appear as the 
 
 ### GET /v1/runs/{run_id}/result
 
-The retained callback payload, byte for byte what the callback receiver was sent. `404 not_found` when the run is unknown, evicted, or has not finished yet (the message says which, and names the current status).
+The run's retained result: the same terminal outcome the callback carried — identical `status`, and identical `error.code` when it failed — chosen by one atomic transition, so status, retained result, and delivered callback can never describe different endings.
+
+It is **not** guaranteed to be byte-for-byte the callback body. Artifact content diverges above the 64KB retention budget by design (see below): the callback carries the bytes, the retained copy keeps the names with reason `evicted_from_retention`. `404 not_found` when the run is unknown, evicted, or has not finished yet (the message says which, and names the current status).
 
 ### GET /v1/runs
 
@@ -404,6 +431,8 @@ Run summaries, newest first. `?correlation_id=` filters to the runs one external
 ### DELETE /v1/runs/{run_id}
 
 Cancels a queued or running async run: the CLI subprocess is killed, the scratch clone removed, the run slot freed, and a `run_cancelled` failure callback delivered. This is what replaces "client disconnect cancels the run" once the connection is gone. Returns `204` for any known run — including one that already finished, so a caller cancelling twice sees the same answer — and `404` once the run has been evicted.
+
+The same run is equally cancellable through gRPC `CancelRun`, with the same outcome. Whichever arrives first owns the run's ending: the two cannot both win, and exactly one callback is sent. The error message names which API ended the run.
 
 ### Windmill pairing
 
@@ -465,11 +494,17 @@ List available tools (only those whose CLI binary is found on PATH), configured 
   "version": "<current server version>",
   "active_runs": 1,
   "queued": 2,
-  "max_concurrent": 3
+  "max_concurrent": 3,
+  "async_live": 5,
+  "async_max_live": 12,
+  "async_bytes": 41984,
+  "async_max_bytes": 67108864
 }
 ```
 
 `queued` is the number of requests waiting for a run slot — the difference between a server that is busy and one that is saturated. It counts waiters from every entry point (HTTP chat completions, HTTP bundles, and gRPC).
+
+`async_live` and `async_bytes` are what async admission currently holds, against the `async_max_live` and `async_max_bytes` ceilings. They are the two numbers that explain an `async_capacity` refusal, and the way to tell a genuinely full server from one whose limits were configured too low for its workload.
 
 ### POST /v1/files
 
@@ -765,6 +800,8 @@ Jobs sharing a `session` identifier are executed sequentially with session IDs c
 | `RSERVE_TOKEN` | Require bearer authentication on native HTTP except `/health` |
 | `RSERVE_WORK_ROOT` | Absolute root that confines HTTP bundle `work_dir` values |
 | `RSERVE_ALLOW_INSECURE_REMOTE` | Set to `1` to permit an explicitly unsafe non-loopback native bind |
+| `RSERVE_ASYNC_MAX_LIVE` | Max simultaneous live async runs (default `max(8, 4 × max_concurrent)`). Must be a positive integer or the server refuses to start |
+| `RSERVE_ASYNC_MAX_BYTES` | Max estimated retained request payload across live async runs (default 64MiB). Must be a positive integer or the server refuses to start |
 | `RCODEGEN_LOG_LEVEL` | Log level (`warn`, `debug`, etc.) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry collector endpoint (enables tracing/metrics) |
 | `KAFKAKIT_BOOTSTRAP_SERVERS` | Kafka brokers for the optional kafkakit/lifecycle integration |

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -372,6 +374,215 @@ func TestArtifacts_SkipReportIsBounded(t *testing.T) {
 	if len(skipped) != artifactSkipCap {
 		t.Errorf("skip report holds %d entries, want the cap of %d", len(skipped), artifactSkipCap)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Inspection budgets
+// ---------------------------------------------------------------------------
+
+// shrinkInspectionBudget makes the inspection bounds small enough to reach
+// without building a tree the size of the ones they exist for.
+func shrinkInspectionBudget(t *testing.T, candidates int, readBytes int64) {
+	t.Helper()
+	oldCandidates, oldBytes := artifactMaxCandidates, artifactMaxReadBytes
+	artifactMaxCandidates, artifactMaxReadBytes = candidates, readBytes
+	t.Cleanup(func() {
+		artifactMaxCandidates, artifactMaxReadBytes = oldCandidates, oldBytes
+	})
+}
+
+// hardLinkFanout writes one file and points n names at the same data blocks —
+// the shape that turns a small clone into an enormous amount of reading. The
+// storage cost is one copy; the cost of reading each name in full is n copies.
+func hardLinkFanout(t *testing.T, dir, name string, body []byte, n int) {
+	t.Helper()
+	first := putFile(t, dir, name+"-000", body)
+	for i := 1; i < n; i++ {
+		link := filepath.Join(dir, fmt.Sprintf("%s-%03d", name, i))
+		if err := os.Link(first, link); err != nil {
+			t.Fatalf("hard link %d: %v", i, err)
+		}
+	}
+}
+
+// The response caps bound what a caller receives; they do not bound what
+// producing it costs. A run that leaves 200,000 hard links to one binary file
+// used to be read in full, once per name, because a binary consumes neither the
+// artifact count nor the content budget — roughly 100GB of reading for a clone
+// holding 512KB. Collection holds a run slot while it does that.
+//
+// Inspection is therefore bounded on its own terms: a candidate count and a
+// read-byte budget, charged before the read rather than after it.
+func TestArtifacts_InspectionBudgetBoundsReadAmplification(t *testing.T) {
+	const (
+		links    = 300
+		fileSize = 64 << 10
+	)
+	shrinkInspectionBudget(t, 25, 512<<10)
+
+	clone := stageClone(t, "repo")
+	dir := clone.dirs[0]
+	binary := append([]byte{0x00, 0x01, 0x02}, make([]byte, fileSize-3)...)
+
+	c := newArtifactCollector(clone, quietLogger())
+	defer c.close()
+	hardLinkFanout(t, dir, "blob", binary, links)
+	artifacts, skipped := c.collect()
+
+	t.Logf("inspected %d candidates and read %d bytes across %d hard links of %d bytes "+
+		"(budgets: %d candidates, %d bytes)",
+		c.inspected, c.bytesRead, links, fileSize, artifactMaxCandidates, artifactMaxReadBytes)
+
+	if c.inspected > artifactMaxCandidates {
+		t.Errorf("inspected %d candidates, over the budget of %d", c.inspected, artifactMaxCandidates)
+	}
+	if c.bytesRead > artifactMaxReadBytes {
+		t.Errorf("read %d bytes, over the budget of %d", c.bytesRead, artifactMaxReadBytes)
+	}
+	// A binary candidate costs the text probe, not the whole file: classifying
+	// 25 of these must not cost 25 × 64KB.
+	if want := int64(artifactMaxCandidates) * artifactTextProbe; c.bytesRead > want {
+		t.Errorf("read %d bytes classifying binaries, want at most the probe per candidate (%d)",
+			c.bytesRead, want)
+	}
+	if len(artifacts) != 0 {
+		t.Errorf("binary hard links returned %d artifacts", len(artifacts))
+	}
+	// Nothing vanishes silently: every candidate is named, up to the skip cap.
+	if len(skipped) == 0 {
+		t.Error("no skips were reported for a clone full of unreturnable files")
+	}
+}
+
+// A budget that hid an artifact without saying so would be worse than no budget:
+// the caller would read "the agent wrote nothing". A text file behind a wall of
+// binaries is either returned or explicitly named as capped.
+func TestArtifacts_InspectionCapIsReportedNotSilent(t *testing.T) {
+	shrinkInspectionBudget(t, 10, 1<<20)
+
+	clone := stageClone(t, "repo")
+	dir := clone.dirs[0]
+
+	c := newArtifactCollector(clone, quietLogger())
+	defer c.close()
+	// Paths are collected in sorted order, so "z-report.md" is behind every one
+	// of these.
+	hardLinkFanout(t, dir, "blob", []byte{0x00, 0x01, 0x02, 0x03}, 30)
+	putFile(t, dir, "z-report.md", []byte("# the one file worth having"))
+	artifacts, skipped := c.collect()
+
+	switch {
+	case len(artifacts) == 1 && artifacts[0].Path == "z-report.md":
+		// Returned within budget: fine.
+	case skipReason(skipped, "z-report.md") == artifactSkipInspectionCap:
+		// Named as capped: also fine.
+	default:
+		t.Errorf("z-report.md was neither returned nor reported as %s: artifacts = %v, skipped = %v",
+			artifactSkipInspectionCap, artifactPaths(artifacts), skipped)
+	}
+	if c.inspected > artifactMaxCandidates {
+		t.Errorf("inspected %d candidates, over the budget of %d", c.inspected, artifactMaxCandidates)
+	}
+}
+
+// The response caps are unchanged by the inspection budgets: a text file within
+// them still comes back whole.
+func TestArtifacts_InspectionBudgetLeavesOrdinaryRunsAlone(t *testing.T) {
+	clone := stageClone(t, "repo")
+	dir := clone.dirs[0]
+
+	c := newArtifactCollector(clone, quietLogger())
+	defer c.close()
+	putFile(t, dir, "report.md", []byte("# digest"))
+	putFile(t, dir, "notes.txt", []byte("some notes"))
+	artifacts, skipped := c.collect()
+
+	wantPaths(t, artifacts, "notes.txt", "report.md")
+	if len(skipped) != 0 {
+		t.Errorf("artifacts_skipped = %v, want none", skipped)
+	}
+	if c.bytesRead > int64(len("# digest")+len("some notes")+2*artifactTextProbe) {
+		t.Errorf("read %d bytes for two small files", c.bytesRead)
+	}
+}
+
+// A candidate that was a regular file when the clone was scanned and is a FIFO
+// by the time it is opened must not turn collection into a wait for a writer
+// that never comes — the run that made it a FIFO is the one deciding whether a
+// writer ever appears, and collection holds the run slot meanwhile.
+//
+// The open is where that is caught, so this tests the open: the window between
+// the after-scan and the read cannot be staged deterministically from outside.
+func TestOpenArtifact_RefusesANonRegularFileWithoutBlocking(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Skipf("cannot create a FIFO here: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plain.txt"), []byte("ordinary"), 0o644); err != nil {
+		t.Fatalf("write plain.txt: %v", err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		f, _, err := openArtifact(root, "pipe")
+		if f != nil {
+			f.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errArtifactNotRegular) {
+			t.Errorf("opening a FIFO = %v, want %v", err, errArtifactNotRegular)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("opening a FIFO blocked waiting for a writer")
+	}
+
+	// An ordinary file still opens, with the size the read budget is charged on.
+	f, size, err := openArtifact(root, "plain.txt")
+	if err != nil {
+		t.Fatalf("opening a regular file: %v", err)
+	}
+	defer f.Close()
+	if size != int64(len("ordinary")) {
+		t.Errorf("size = %d, want %d", size, len("ordinary"))
+	}
+}
+
+// And a clone holding a FIFO is collected without incident: it is not an
+// artifact, and everything else the run wrote still comes back.
+func TestArtifacts_FIFOInTheCloneIsNotAnArtifact(t *testing.T) {
+	clone := stageClone(t, "repo")
+	dir := clone.dirs[0]
+
+	c := newArtifactCollector(clone, quietLogger())
+	defer c.close()
+	fifo := filepath.Join(dir, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Skipf("cannot create a FIFO here: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(fifo) })
+	putFile(t, dir, "report.md", []byte("# still returned"))
+
+	done := make(chan struct{})
+	var artifacts []Artifact
+	go func() {
+		defer close(done)
+		artifacts, _ = c.collect()
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("collection blocked on a clone holding a FIFO")
+	}
+	wantPaths(t, artifacts, "report.md")
 }
 
 // ---------------------------------------------------------------------------

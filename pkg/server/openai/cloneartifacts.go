@@ -19,6 +19,7 @@ package openai
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 	"unicode/utf8"
 )
 
@@ -50,6 +52,29 @@ const (
 	// artifactSkipEvicted: the artifact was delivered to the callback but not
 	// kept in memory. See retainedCopy in asyncruns.go.
 	artifactSkipEvicted = "evicted_from_retention"
+	// artifactSkipInspectionCap: collection spent its inspection budget before
+	// reaching this file. It is named rather than dropped, so a caller can tell
+	// a file that was not returned from one the run never wrote.
+	artifactSkipInspectionCap = "inspection_cap"
+)
+
+// The inspection budget: what collecting a response is allowed to cost,
+// independently of what the response may contain.
+//
+// The response caps — 100 artifacts, 512KB each, 2MiB total — bound the answer.
+// They do not bound the work, because a file that is not returned consumes
+// neither: a clone of binary files, or of hard links to one binary file, spends
+// no response budget at all while being read in full, once per name. These two
+// bound that work instead, and are charged before a read rather than after it.
+//
+// They are variables only so tests can shrink them; production does not mutate
+// them.
+var (
+	// artifactMaxCandidates is how many changed files one collection opens.
+	artifactMaxCandidates = 1000
+	// artifactMaxReadBytes is how many bytes one collection reads in total,
+	// counting text probes and returned content alike.
+	artifactMaxReadBytes int64 = 16 << 20
 )
 
 // cloneScanMaxEntries bounds one clone walk. A tree bigger than this is
@@ -72,6 +97,23 @@ var (
 	// errArtifactOversize marks a file that grew past the per-file cap between
 	// the manifest and the read.
 	errArtifactOversize = errors.New("artifact exceeds the per-file cap")
+
+	// errArtifactBinary marks a candidate the text probe refused, before the
+	// rest of it was read.
+	errArtifactBinary = errors.New("artifact is not text")
+
+	// errArtifactInspectionCap marks a candidate collection had no budget left
+	// to inspect.
+	errArtifactInspectionCap = errors.New("artifact inspection budget is spent")
+
+	// errArtifactResponseCap marks a file that no longer fits the response's
+	// remaining content budget.
+	errArtifactResponseCap = errors.New("artifact does not fit the remaining response budget")
+
+	// errArtifactNotRegular marks a candidate that was a regular file in the
+	// manifest and is something else — a FIFO, a device — by the time it is
+	// opened.
+	errArtifactNotRegular = errors.New("artifact is no longer a regular file")
 
 	// errCloneScanLimit marks a clone too large to walk. It is the one manifest
 	// failure that reports as scan_limit rather than as a collection error.
@@ -137,6 +179,10 @@ type artifactCollector struct {
 	once      sync.Once
 	artifacts []Artifact
 	skipped   []ArtifactSkipped
+	// What the one collection cost: candidates opened and bytes read. Kept so
+	// the inspection budgets can be asserted rather than assumed.
+	inspected int
+	bytesRead int64
 }
 
 // newArtifactCollector takes the manifest of every cloned work_dir. Call it
@@ -208,6 +254,7 @@ func (c *artifactCollector) collect() ([]Artifact, []ArtifactSkipped) {
 				"reported", len(out.skipped), "dropped", out.dropped)
 		}
 		c.artifacts, c.skipped = out.artifacts, out.skipped
+		c.inspected, c.bytesRead = out.inspected, out.bytesRead
 	})
 	return c.artifacts, c.skipped
 }
@@ -247,19 +294,21 @@ func (c *artifactCollector) collectDir(out *artifactBudget, scan *cloneScan) {
 			out.skip(reported, artifactSkipResponseCap)
 			continue
 		}
-		content, err := readArtifact(scan.root, rel)
+		content, err := out.read(scan.root, rel)
 		switch {
+		case errors.Is(err, errArtifactInspectionCap):
+			out.skip(reported, artifactSkipInspectionCap)
+		case errors.Is(err, errArtifactBinary):
+			out.skip(reported, artifactSkipBinary)
 		case errors.Is(err, errArtifactOversize):
 			out.skip(reported, artifactSkipOversize)
+		case errors.Is(err, errArtifactResponseCap):
+			// The file grew between the manifest and the read.
+			out.skip(reported, artifactSkipResponseCap)
 		case err != nil:
 			c.warn("artifact could not be read",
 				"clone", scan.name, "path", rel, "error", err)
 			out.skip(reported, artifactSkipCollectionError)
-		case !looksTextual(content):
-			out.skip(reported, artifactSkipBinary)
-		case len(content) > out.budget:
-			// The file grew between the manifest and the read.
-			out.skip(reported, artifactSkipResponseCap)
 		default:
 			out.keep(reported, content)
 		}
@@ -280,6 +329,11 @@ type artifactBudget struct {
 	artifacts []Artifact
 	skipped   []ArtifactSkipped
 	dropped   int
+
+	// What inspection has actually cost so far, for the tests that assert the
+	// budgets above are doing something.
+	inspected int
+	bytesRead int64
 }
 
 // full reports whether the artifact count cap is reached. Past it no file is
@@ -301,6 +355,114 @@ func (b *artifactBudget) skip(path, reason string) {
 		return
 	}
 	b.skipped = append(b.skipped, ArtifactSkipped{Path: path, Reason: reason})
+}
+
+// chargeRead reserves n bytes against the read budget and reports whether there
+// was room. The reservation is made before the read rather than after it: a
+// budget that counted only bytes already read would be one that finds out it is
+// over, which is the failure this bound exists to prevent.
+func (b *artifactBudget) chargeRead(n int64) bool {
+	if b.bytesRead+n > artifactMaxReadBytes {
+		return false
+	}
+	b.bytesRead += n
+	return true
+}
+
+// read inspects one candidate and returns its content, or the reason it is not
+// an artifact.
+//
+// The order is the whole point. A candidate costs one inspection and a text
+// probe before anything else is read, and a file the probe says is binary costs
+// nothing more — so a clone of hard links to one binary file costs a probe per
+// name rather than the file per name. Only a file that is text, and that fits
+// what is left of the response, is read the rest of the way.
+func (b *artifactBudget) read(root *os.Root, rel string) ([]byte, error) {
+	if b.inspected >= artifactMaxCandidates {
+		return nil, errArtifactInspectionCap
+	}
+	b.inspected++
+
+	f, size, err := openArtifact(root, rel)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if size > artifactFileCap {
+		return nil, errArtifactOversize
+	}
+
+	probe := int64(artifactTextProbe)
+	if size < probe {
+		probe = size
+	}
+	if !b.chargeRead(probe) {
+		return nil, errArtifactInspectionCap
+	}
+	head := make([]byte, probe)
+	n, err := io.ReadFull(f, head)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, err
+	}
+	head = head[:n]
+	if !looksTextualPrefix(head, int64(n) < size) {
+		return nil, errArtifactBinary
+	}
+
+	remaining := size - int64(n)
+	if remaining <= 0 {
+		if len(head) > b.budget {
+			return nil, errArtifactResponseCap
+		}
+		return head, nil
+	}
+	// Reserve the advertised size against both budgets before reading the rest.
+	if size > int64(b.budget) {
+		return nil, errArtifactResponseCap
+	}
+	if !b.chargeRead(remaining) {
+		return nil, errArtifactInspectionCap
+	}
+	// One byte past the cap distinguishes a file that grew since the manifest
+	// from one that is exactly at it.
+	rest, err := io.ReadAll(io.LimitReader(f, remaining+1))
+	if err != nil {
+		return nil, err
+	}
+	content := append(head, rest...)
+	if len(content) > artifactFileCap {
+		return nil, errArtifactOversize
+	}
+	if len(content) > b.budget {
+		return nil, errArtifactResponseCap
+	}
+	return content, nil
+}
+
+// openArtifact opens one candidate through the clone's pinned handle and
+// re-verifies what it opened.
+//
+// O_NONBLOCK is what keeps this an open rather than a wait. A candidate that
+// was a regular file when the clone was scanned and is a FIFO by the time it is
+// opened would otherwise block until a writer appeared — and the run that chose
+// to make it a FIFO is the one deciding whether that ever happens, while
+// collection holds the run slot. With it the open returns and the stat below
+// refuses the file for what it now is.
+func openArtifact(root *os.Root, rel string) (*os.File, int64, error) {
+	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, 0, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, 0, err
+	}
+	if !info.Mode().IsRegular() {
+		f.Close()
+		return nil, 0, fmt.Errorf("%w: it is now %s", errArtifactNotRegular, info.Mode().Type())
+	}
+	return f, info.Size(), nil
 }
 
 // scanClone snapshots a clone and reports whether the walk hit its entry bound.
@@ -326,24 +488,6 @@ func changedPaths(before, after map[string]artifactMeta) []string {
 	return paths
 }
 
-// readArtifact reads one file through the clone's pinned handle, refusing one
-// that grew past the per-file cap since the manifest.
-func readArtifact(root *os.Root, rel string) ([]byte, error) {
-	f, err := root.Open(rel)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, artifactFileCap+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > artifactFileCap {
-		return nil, errArtifactOversize
-	}
-	return data, nil
-}
-
 // looksTextual decides whether content can be returned inline, from its first
 // artifactTextProbe bytes: no NUL, and valid UTF-8. An empty file is text.
 //
@@ -351,8 +495,20 @@ func readArtifact(root *os.Root, rel string) ([]byte, error) {
 // trimmed before validating, or every large UTF-8 file would be a coin flip.
 func looksTextual(data []byte) bool {
 	head := data
-	if len(head) > artifactTextProbe {
-		head = trimPartialRuneBytes(head[:artifactTextProbe])
+	truncated := len(head) > artifactTextProbe
+	if truncated {
+		head = head[:artifactTextProbe]
+	}
+	return looksTextualPrefix(head, truncated)
+}
+
+// looksTextualPrefix is the same decision for a probe read from the front of a
+// file rather than from content already in hand. truncated says whether more of
+// the file follows, which is what decides whether a trailing partial rune is a
+// boundary cut to trim or genuinely invalid bytes.
+func looksTextualPrefix(head []byte, truncated bool) bool {
+	if truncated {
+		head = trimPartialRuneBytes(head)
 	}
 	if bytes.IndexByte(head, 0) >= 0 {
 		return false

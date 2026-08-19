@@ -41,9 +41,29 @@ type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
+// HandlerOption carries deployment configuration a handler cannot discover for
+// itself. Parsing belongs at startup, where a bad value can still stop the
+// process; by the time a request is being served it is too late to reject one.
+type HandlerOption func(*handlerConfig)
+
+// handlerConfig is the resolved configuration NewHandler builds from.
+type handlerConfig struct {
+	asyncLimits AsyncLimits
+}
+
+// WithAsyncLimits sets the admission bounds for async callback mode. Without
+// it a handler uses DefaultAsyncLimits for its registry's slot count.
+func WithAsyncLimits(limits AsyncLimits) HandlerOption {
+	return func(c *handlerConfig) { c.asyncLimits = limits }
+}
+
 // NewHandler creates a new Handler and registers routes on its internal mux.
 // If fileStore is non-nil, file upload/download endpoints are enabled.
-func NewHandler(s *settings.Settings, toolFactories map[string]server.ToolFactory, registry *server.RunRegistry, availableTools []string, fileStore *FileStore, sessions *server.SessionStore) *Handler {
+func NewHandler(s *settings.Settings, toolFactories map[string]server.ToolFactory, registry *server.RunRegistry, availableTools []string, fileStore *FileStore, sessions *server.SessionStore, opts ...HandlerOption) *Handler {
+	cfg := handlerConfig{asyncLimits: DefaultAsyncLimits(registry.MaxConcurrent())}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	h := &Handler{
 		mux:            http.NewServeMux(),
 		settings:       s,
@@ -54,7 +74,7 @@ func NewHandler(s *settings.Settings, toolFactories map[string]server.ToolFactor
 		sessions:       sessions,
 		authToken:      os.Getenv("RSERVE_TOKEN"),
 		runBundleFn:    defaultBundleRun(s),
-		async:          newAsyncRuns(),
+		async:          newAsyncRuns(cfg.asyncLimits),
 	}
 	h.mux.HandleFunc("/v1/chat/completions", h.handleChatCompletions)
 	h.mux.HandleFunc("/v1/models", h.handleModels)
@@ -141,14 +161,22 @@ func (h *Handler) splitToolEffort(name string) (tool, effort string, ok bool) {
 	return "", "", false
 }
 
-// handleHealth returns server health information.
+// handleHealth returns server health information, including how much of the
+// async admission budget is spoken for. A caller that starts seeing retryable
+// 503s can tell here whether the server is genuinely full or whether its limits
+// were configured too low for the workload.
 func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
+	async := h.async.stats()
 	writeJSON(w, http.StatusOK, HealthResponse{
 		Status:        "ok",
 		Version:       ToolVersion(),
 		ActiveRuns:    h.registry.ActiveCount(),
 		Queued:        h.registry.QueuedCount(),
 		MaxConcurrent: h.registry.MaxConcurrent(),
+		AsyncLive:     async.live,
+		AsyncMaxLive:  async.maxLive,
+		AsyncBytes:    async.bytes,
+		AsyncMaxBytes: async.maxBytes,
 	})
 }
 

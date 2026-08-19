@@ -47,6 +47,7 @@ const (
 	// request can succeed later.
 
 	codeConcurrencyLimit ErrorCode = "concurrency_limit"
+	codeAsyncCapacity    ErrorCode = "async_capacity"
 	codeCloneFailed      ErrorCode = "clone_failed"
 	codeWorkDirFailed    ErrorCode = "work_dir_failed"
 	codeBundleFailed     ErrorCode = "bundle_failed"
@@ -100,6 +101,10 @@ var errorRetryable = map[ErrorCode]bool{
 	// The slot wait was interrupted (shutdown or a disconnected client); the
 	// work never started.
 	codeConcurrencyLimit: true,
+	// The server already holds as much live async work — runs or retained
+	// request payload — as its admission limits allow. Nothing was accepted, so
+	// the same submission is the right thing to send once capacity frees up.
+	codeAsyncCapacity: true,
 	// Filesystem failures while cloning or preparing a work directory. These
 	// are not policy rejections — those are classified above — so they are the
 	// transient kind: a source that moved during the slot wait, a full disk, a

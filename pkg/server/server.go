@@ -30,6 +30,21 @@ type ToolFactory func() runner.Tool
 // external AI CLIs.
 type BundleRunFunc func(context.Context, *bundle.Bundle, map[string]string, bool, bool) (*envelope.Envelope, error)
 
+// AsyncCanceller cancels a run owned by the async store rather than by the run
+// registry. An async run is published — and cancellable — before it holds a
+// slot, and its worker takes its lifecycle from the store's context rather than
+// from the registry's, so cancelling the registry entry alone stops the CLI
+// without ending the run: the worker would go on to report the outcome as an
+// ordinary completion.
+//
+// The gRPC server takes this as an interface because the async store lives in
+// the openai package, which imports this one. main wires the HTTP handler in.
+type AsyncCanceller interface {
+	// CancelAsyncRun reports whether the async store owns this ID, and whether
+	// there was live work to stop.
+	CancelAsyncRun(runID string) (owned, cancelled bool)
+}
+
 // Server implements the RServe gRPC service.
 type Server struct {
 	pb.UnimplementedRServeServer
@@ -38,7 +53,14 @@ type Server struct {
 	registry      *RunRegistry
 	sessions      *SessionStore
 	runBundle     BundleRunFunc
+	// async owns cancellation for async run IDs. Nil on a server built without
+	// the HTTP API, in which case every ID is the registry's.
+	async AsyncCanceller
 }
+
+// SetAsyncCanceller makes the async store the cancellation authority for the
+// IDs it owns. Call it during startup, before serving.
+func (s *Server) SetAsyncCanceller(a AsyncCanceller) { s.async = a }
 
 // NewServer creates a new gRPC server instance.
 // toolFactories maps tool names to factory functions that create fresh instances.
@@ -422,7 +444,27 @@ func (s *Server) GetStatus(ctx context.Context, req *pb.GetStatusRequest) (*pb.G
 }
 
 // CancelRun cancels a running task by its run ID.
+//
+// The async store is asked first. It owns its IDs for the whole run — including
+// while the run is still queued, when the registry has never heard of it — and
+// it is the only thing that can end an async run rather than merely stopping
+// the process the run had reached. Whatever it owns, it answers for; everything
+// else is an ordinary registry run.
 func (s *Server) CancelRun(ctx context.Context, req *pb.CancelRunRequest) (*pb.CancelRunResponse, error) {
+	if s.async != nil {
+		if owned, cancelled := s.async.CancelAsyncRun(req.RunId); owned {
+			if cancelled {
+				return &pb.CancelRunResponse{Cancelled: true, Message: "async run cancelled"}, nil
+			}
+			// Saying "cancelled" here would claim credit for killing work that
+			// had already ended, which is the claim this release exists to stop
+			// making.
+			return &pb.CancelRunResponse{
+				Cancelled: false,
+				Message:   "async run already finished; GET /v1/runs/" + req.RunId + " holds its outcome",
+			}, nil
+		}
+	}
 	if s.registry.Cancel(req.RunId) {
 		return &pb.CancelRunResponse{Cancelled: true, Message: "run cancelled"}, nil
 	}

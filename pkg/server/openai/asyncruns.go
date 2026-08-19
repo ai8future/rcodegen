@@ -76,6 +76,15 @@ var callbackBackoff = []time.Duration{2 * time.Second, 8 * time.Second}
 // ---------------------------------------------------------------------------
 
 var (
+	// errAsyncCapacity refuses a submission that would take live async work past
+	// one of the store's admission bounds. It is the caller's signal to retry,
+	// not to change the request.
+	errAsyncCapacity = errors.New("the server is at its async capacity")
+	// errAsyncClosing refuses a submission made once shutdown has begun. The
+	// server keeps no durable run state, so there is nothing to accept it into.
+	errAsyncClosing = errors.New("the server is shutting down and is not accepting async runs; " +
+		"rserve holds no durable run state, so resubmit")
+
 	// errCallbackURL marks a callback URL the server refuses to POST to.
 	errCallbackURL = errors.New("invalid callback_url")
 	// errCallbackHeaders marks callback headers that cannot be sent as given.
@@ -291,7 +300,22 @@ func dialPlaintextCallback(ctx context.Context, network, addr string) (net.Conn,
 }
 
 // newCallbackClient builds a delivery client. dial, when non-nil, replaces the
-// transport's dialer with the plaintext address policy.
+// transport's dialer with the plaintext address policy — and, with it, drops
+// the transport's inherited proxy.
+//
+// Dropping the proxy is what makes the address policy mean anything. A cloned
+// http.DefaultTransport carries Proxy: ProxyFromEnvironment, and when HTTP_PROXY
+// names a proxy the transport asks the dialer to connect to the proxy rather
+// than to the callback host. dialPlaintextCallback would then resolve and
+// approve the proxy — while the absolute callback URL, the completion, and the
+// caller's own headers went to it, for it to resolve and forward as it liked.
+// That is the public-address and rebinding path the dialer exists to close, so
+// plaintext delivery is direct or it does not happen: a failed direct attempt
+// stays failed and pollable rather than falling back through the proxy.
+//
+// https keeps ordinary proxy behavior. Its guarantee is the certificate, which
+// a proxy cannot forge, so a proxied https callback is still delivered to the
+// host the caller named.
 //
 // Neither client follows redirects. A receiver that answers a callback with a
 // 302 is either broken or hostile, and following it would hand the payload —
@@ -302,6 +326,7 @@ func newCallbackClient(dial func(context.Context, string, string) (net.Conn, err
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if dial != nil {
 		transport.DialContext = dial
+		transport.Proxy = nil
 	}
 	return &http.Client{
 		Timeout:   callbackAttemptTimeout,
@@ -364,8 +389,12 @@ type asyncRun struct {
 	callback      *callbackTarget
 	ctx           context.Context
 	cancel        context.CancelFunc
-	// deliverOnce makes the callback exactly one POST: whichever finishes the
-	// run — the run itself or a shutdown notice — is the one the receiver sees.
+	// planBytes is the admission cost this run reserved at submit; see
+	// asyncPlanBytes.
+	planBytes int64
+	// deliverOnce is defensive belt beside tryTerminalize's braces: terminal
+	// ownership already decides who delivers, and this makes a second POST
+	// impossible even if a future caller forgets that.
 	deliverOnce sync.Once
 
 	// Guarded by asyncRuns.mu.
@@ -374,9 +403,50 @@ type asyncRun struct {
 	startedAt    time.Time
 	finishedAt   time.Time
 	queueWait    time.Duration
-	byCaller     bool // cancelled through DELETE rather than by shutdown
+	cause        string // why the run was cancelled; see the cancel causes below
+	admitted     bool   // still holding its admission reservation
 	result       *AsyncCompletion
 	lastAccessed time.Time
+}
+
+// Why a run was cancelled. The cause is set once, under the store's mutex,
+// before the cancellation is signalled, so the worker that observes a cancelled
+// context can say who ended the run rather than infer it from what else was
+// true at the time.
+const (
+	causeNone           = ""
+	causeCallerHTTP     = "caller_http"
+	causeCallerGRPC     = "caller_grpc"
+	causeServerShutdown = "server_shutdown"
+)
+
+// AsyncLimits bounds the async work one server will hold at once. Both bounds
+// are needed: a count alone lets a handful of maximum-size requests hold far
+// more memory than intended, and a byte budget alone lets an unbounded number
+// of tiny requests hold an unbounded number of goroutines.
+type AsyncLimits struct {
+	// MaxLive is how many submitted async runs may be nonterminal at once.
+	MaxLive int
+	// MaxBytes is the total estimated retained request payload those runs may
+	// hold; see asyncPlanBytes for what is counted.
+	MaxBytes int64
+}
+
+// asyncMaxBytesDefault is the default retained-plan budget: enough for several
+// requests at the 10MB body limit, small enough that a caller cannot walk the
+// process into the OOM killer one accepted 202 at a time.
+const asyncMaxBytesDefault = 64 << 20
+
+// DefaultAsyncLimits derives the admission bounds for a server with
+// maxConcurrent run slots. The live bound scales with the slot count so a
+// server built to run more work can queue proportionally more of it, with a
+// floor for the single-slot deployments the suite actually runs.
+func DefaultAsyncLimits(maxConcurrent int) AsyncLimits {
+	live := 4 * maxConcurrent
+	if live < 8 {
+		live = 8
+	}
+	return AsyncLimits{MaxLive: live, MaxBytes: asyncMaxBytesDefault}
 }
 
 // asyncRuns holds every async run this process knows about — in flight and
@@ -384,6 +454,17 @@ type asyncRun struct {
 type asyncRuns struct {
 	mu   sync.Mutex
 	runs map[string]*asyncRun
+
+	// Admission bounds and what is currently reserved against them. A run holds
+	// its reservation from submit until its execution goroutine lets go of the
+	// plan, which is a longer life than its terminal status: the memory is the
+	// thing being bounded, not the lifecycle.
+	limits    AsyncLimits
+	liveCount int
+	liveBytes int64
+	// closing refuses submissions once shutdown has begun, so nothing joins the
+	// set of runs being torn down.
+	closing bool
 
 	// Retention bounds. Tests shrink them.
 	cap int
@@ -405,10 +486,11 @@ type asyncRuns struct {
 	backoff     []time.Duration
 }
 
-func newAsyncRuns() *asyncRuns {
+func newAsyncRuns(limits AsyncLimits) *asyncRuns {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &asyncRuns{
 		runs:        make(map[string]*asyncRun),
+		limits:      limits,
 		cap:         asyncResultCap,
 		ttl:         asyncResultTTL,
 		now:         time.Now,
@@ -437,12 +519,29 @@ func asyncLogger() *slog.Logger {
 	return logz.New("info")
 }
 
-// submit registers a queued run and hands back the entry the caller answers
-// 202 with.
-func (a *asyncRuns) submit(correlationID string, cb *callbackTarget) *asyncRun {
-	ctx, cancel := context.WithCancel(a.ctx)
+// submit reserves admission for a run and registers it as queued, or refuses.
+//
+// The reservation is taken before the run has an ID, which is the whole point:
+// a refusal must reach the caller as a failed submission, not as a 202 for work
+// the server never intended to hold. A refused submission leaves no run, no
+// waiter, and no goroutine behind.
+func (a *asyncRuns) submit(correlationID string, cb *callbackTarget, planBytes int64) (*asyncRun, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.closing {
+		return nil, errAsyncClosing
+	}
+	if a.liveCount >= a.limits.MaxLive {
+		return nil, fmt.Errorf("%w: %d live async runs is the configured limit (RSERVE_ASYNC_MAX_LIVE); "+
+			"poll or cancel one, or retry shortly", errAsyncCapacity, a.limits.MaxLive)
+	}
+	if a.liveBytes+planBytes > a.limits.MaxBytes {
+		return nil, fmt.Errorf("%w: live async requests hold %d of %d retained bytes "+
+			"(RSERVE_ASYNC_MAX_BYTES) and this one needs %d; retry shortly",
+			errAsyncCapacity, a.liveBytes, a.limits.MaxBytes, planBytes)
+	}
+
+	ctx, cancel := context.WithCancel(a.ctx)
 	now := a.now()
 	run := &asyncRun{
 		id:            server.NewRunID(),
@@ -450,13 +549,52 @@ func (a *asyncRuns) submit(correlationID string, cb *callbackTarget) *asyncRun {
 		callback:      cb,
 		ctx:           ctx,
 		cancel:        cancel,
+		planBytes:     planBytes,
+		admitted:      true,
 		status:        runStatusQueued,
 		createdAt:     now,
 		lastAccessed:  now,
 	}
+	a.liveCount++
+	a.liveBytes += planBytes
 	a.sweepLocked()
 	a.runs[run.id] = run
-	return run
+	return run, nil
+}
+
+// releaseAdmission returns what a run reserved, once its execution goroutine no
+// longer holds the plan. It is idempotent by the admitted flag, so the counters
+// can never be double-credited into going negative.
+func (a *asyncRuns) releaseAdmission(run *asyncRun) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !run.admitted {
+		return
+	}
+	run.admitted = false
+	a.liveCount--
+	a.liveBytes -= run.planBytes
+}
+
+// asyncStats is what /health reports about admission: what is held now and what
+// the ceiling is, so a caller seeing retryable 503s can tell a saturated server
+// from a misconfigured one.
+type asyncStats struct {
+	live     int
+	bytes    int64
+	maxLive  int
+	maxBytes int64
+}
+
+func (a *asyncRuns) stats() asyncStats {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return asyncStats{
+		live:     a.liveCount,
+		bytes:    a.liveBytes,
+		maxLive:  a.limits.MaxLive,
+		maxBytes: a.limits.MaxBytes,
+	}
 }
 
 // markRunning records that the run took a slot, and how long it waited for it.
@@ -469,25 +607,44 @@ func (a *asyncRuns) markRunning(run *asyncRun, queueWait time.Duration) {
 	run.lastAccessed = run.startedAt
 }
 
-// finish records a terminal outcome and its payload, then applies the retention
-// bounds. The run just finished is the most recently used, so it is never the
-// entry evicted to make room.
-func (a *asyncRuns) finish(run *asyncRun, status string, payload *AsyncCompletion) {
+// tryTerminalize is the one place a run ends. It takes the run from queued or
+// running to a terminal status, records the outcome, derives the retained copy
+// from the same payload, and applies the retention bounds — all under one hold
+// of the mutex — and reports whether this caller is the one that did it.
+//
+// Only the winner may deliver the callback, and only with the payload it won
+// with. That is what keeps the three representations of a run in agreement: a
+// worker finishing at the same moment shutdown sweeps the store used to be able
+// to store success and deliver "server shut down", telling an orchestrator to
+// redo work that had in fact been done. Whichever of the two arrives first now
+// owns status, retained result, and callback together; the loser is told it
+// lost and does nothing.
+//
+// The run just finished is the most recently used, so it is never the entry
+// evicted to make room.
+func (a *asyncRuns) tryTerminalize(run *asyncRun, status string, payload *AsyncCompletion) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if run.status != runStatusQueued && run.status != runStatusRunning {
+		return false
+	}
 	run.status = status
 	run.finishedAt = a.now()
 	run.lastAccessed = run.finishedAt
-	run.result = payload
+	// Retention's own budget is applied here rather than by the caller, so the
+	// retained copy is always derived from the payload that won.
+	run.result = retainedCopy(payload)
 	a.sweepLocked()
 	a.evictLocked()
+	return true
 }
 
-// cancelledByCaller reports whether DELETE, rather than shutdown, ended the run.
-func (a *asyncRuns) cancelledByCaller(run *asyncRun) bool {
+// cancelCause reports why a run was cancelled, or causeNone if nothing has
+// asked for it to stop.
+func (a *asyncRuns) cancelCause(run *asyncRun) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return run.byCaller
+	return run.cause
 }
 
 // summary returns the run's status view, and whether it is still known.
@@ -540,20 +697,26 @@ func (a *asyncRuns) list(correlationID string) []RunSummary {
 	return out
 }
 
-// requestCancel ends a queued or running run. A run that already finished is
-// reported as known and left alone, so a caller cancelling twice sees the same
-// answer both times.
-func (a *asyncRuns) requestCancel(id string) bool {
+// requestCancel ends a queued or running run, recording who asked. known says
+// whether the store has this ID at all; live says whether there was work to
+// stop. A run that already finished is known but not live, so a caller
+// cancelling twice sees the same answer both times, and no API can claim it
+// killed work that had already ended.
+//
+// The cause is set under the mutex before the context is cancelled, so the
+// worker that wakes to a cancelled context always finds the reason already
+// recorded rather than racing to infer one.
+func (a *asyncRuns) requestCancel(id, cause string) (known, live bool) {
 	a.mu.Lock()
 	a.sweepLocked()
 	run, ok := a.runs[id]
 	if !ok {
 		a.mu.Unlock()
-		return false
+		return false, false
 	}
-	live := run.status == runStatusQueued || run.status == runStatusRunning
-	if live {
-		run.byCaller = true
+	live = run.status == runStatusQueued || run.status == runStatusRunning
+	if live && run.cause == causeNone {
+		run.cause = cause
 	}
 	run.lastAccessed = a.now()
 	a.mu.Unlock()
@@ -561,18 +724,26 @@ func (a *asyncRuns) requestCancel(id string) bool {
 	if live {
 		run.cancel()
 	}
-	return true
+	return true, live
 }
 
-// liveRuns snapshots the runs that have not reached a terminal state.
-func (a *asyncRuns) liveRuns() []*asyncRun {
+// beginShutdown closes the store to new submissions, marks every live run as
+// ending with the server, and hands them back for terminalization. Causes are
+// set here — before any context is cancelled — so a worker that observes the
+// cancellation cannot mistake it for a caller's.
+func (a *asyncRuns) beginShutdown() []*asyncRun {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.closing = true
 	var out []*asyncRun
 	for _, run := range a.runs {
-		if run.status == runStatusQueued || run.status == runStatusRunning {
-			out = append(out, run)
+		if run.status != runStatusQueued && run.status != runStatusRunning {
+			continue
 		}
+		if run.cause == causeNone {
+			run.cause = causeServerShutdown
+		}
+		out = append(out, run)
 	}
 	return out
 }
@@ -642,7 +813,11 @@ func summaryOf(run *asyncRun) RunSummary {
 // still go wrong is the run itself — and that is reported to the callback, not
 // on this connection.
 func (h *Handler) submitAsyncRun(w http.ResponseWriter, plan *chatPlan) {
-	run := h.async.submit(plan.correlationID, plan.callback)
+	run, err := h.async.submit(plan.correlationID, plan.callback, asyncPlanBytes(plan))
+	if err != nil {
+		writeAsyncRefusal(w, err)
+		return
+	}
 
 	// Answer first, then start work: the caller learns the run_id it will need
 	// for polling and cancellation before any callback can reference it.
@@ -656,18 +831,86 @@ func (h *Handler) submitAsyncRun(w http.ResponseWriter, plan *chatPlan) {
 	go h.executeAsync(run, plan)
 }
 
+// writeAsyncRefusal answers a submission the store would not admit. Unlike
+// every other async answer it carries no run_id, because nothing was accepted:
+// there is no run to poll, no run to cancel, and no callback coming. Retry-After
+// gives an unattended caller — a Windmill step's retry policy — a number to wait
+// rather than a guess.
+func writeAsyncRefusal(w http.ResponseWriter, err error) {
+	w.Header().Set("Retry-After", "1")
+	writeJSON(w, http.StatusServiceUnavailable, NewErrorResponse(
+		err.Error(), "server_error", asyncRefusalCode(err),
+	))
+}
+
+// asyncRefusalCode maps a refused submission to its API error code. Both are
+// retryable, and they differ in what the caller is waiting for: capacity to
+// free up, or a server to come back.
+func asyncRefusalCode(err error) ErrorCode {
+	if errors.Is(err, errAsyncClosing) {
+		return codeServerShutdown
+	}
+	return codeAsyncCapacity
+}
+
+// asyncPlanBytes estimates what one accepted submission keeps alive for the
+// length of its run: the strings the plan holds, plus a fixed allowance for the
+// run's own bookkeeping.
+//
+// It is deliberately an estimate. Exact Go heap accounting is not available
+// here and would not be worth its cost if it were; what the byte bound has to
+// do is stop a few maximum-size requests — a task near the 10MB body limit, a
+// long callback URL, a header set — from being admitted as if they were free.
+// The count bound handles the many-small-requests shape.
+func asyncPlanBytes(plan *chatPlan) int64 {
+	// The base covers the run entry, its context, the goroutine's stack, and the
+	// bookkeeping around them: enough that a thousand empty runs still register
+	// as memory rather than as nothing.
+	total := int64(4 << 10)
+	if plan == nil {
+		return total
+	}
+	total += int64(len(plan.model) + len(plan.toolName) + len(plan.correlationID))
+	for _, dir := range plan.workDirs {
+		total += int64(len(dir))
+	}
+	if cfg := plan.cfg; cfg != nil {
+		total += int64(len(cfg.Task) + len(cfg.Model) + len(cfg.Effort) + len(cfg.SessionID))
+		for _, dir := range cfg.WorkDirs {
+			total += int64(len(dir))
+		}
+	}
+	if cb := plan.callback; cb != nil {
+		total += int64(len(cb.url) + len(cb.target))
+		for name, value := range cb.headers {
+			total += int64(len(name) + len(value))
+		}
+	}
+	return total
+}
+
 // executeAsync runs a submitted plan to its end, records the outcome, and
 // delivers the callback. The callback POST happens after the run slot is
 // released, so a slow receiver never holds capacity.
+//
+// The run is only this goroutine's to finish if it wins terminalization.
+// Shutdown may have ended it first, in which case the receiver has already been
+// told what happened and this outcome is discarded rather than sent as a second,
+// contradictory answer. The teardown below — reaping the CLI child, removing the
+// scratch clone — runs either way.
 func (h *Handler) executeAsync(run *asyncRun, plan *chatPlan) {
 	defer h.async.wg.Done()
+	// The plan is unreachable once this returns, so the admission it reserved
+	// goes back here and nowhere else.
+	defer h.async.releaseAdmission(run)
 	defer run.cancel()
 
 	status, payload := h.runAsync(run, plan)
 	// The callback gets the payload whole; retention gets whatever fits its
-	// memory discipline. They are the same object whenever nothing was evicted.
-	h.async.finish(run, status, retainedCopy(payload))
-	h.deliverCallback(context.Background(), run, payload, h.async.backoff)
+	// memory discipline, derived inside terminalization from this same payload.
+	if h.async.tryTerminalize(run, status, payload) {
+		h.deliverCallback(context.Background(), run, payload, h.async.backoff)
+	}
 }
 
 // runAsync holds a run slot for exactly as long as the run needs it and returns
@@ -729,18 +972,29 @@ func (h *Handler) runAsync(run *asyncRun, plan *chatPlan) (string, *AsyncComplet
 	return runStatusSuccess, asyncSuccess(run, resp)
 }
 
-// abortError names why a run ended early: the caller asked, or the server did.
+// abortError names why a run ended early, from the cause recorded when the
+// cancellation was requested. Both caller protocols produce the same
+// run_cancelled outcome — an orchestrator should not have to care which API its
+// operator reached for — and anything else is the server having ended the run,
+// which is the retryable one.
 func (h *Handler) abortError(run *asyncRun) ErrorResponse {
-	if h.async.cancelledByCaller(run) {
+	switch h.async.cancelCause(run) {
+	case causeCallerHTTP:
 		return NewErrorResponse(
 			"run cancelled by DELETE /v1/runs/"+run.id,
 			"invalid_request_error", codeRunCancelled,
 		)
+	case causeCallerGRPC:
+		return NewErrorResponse(
+			"run cancelled by gRPC CancelRun for run "+run.id,
+			"invalid_request_error", codeRunCancelled,
+		)
+	default:
+		return NewErrorResponse(
+			"server shut down before the run finished; rserve holds no durable run state, so resubmit",
+			"server_error", codeServerShutdown,
+		)
 	}
-	return NewErrorResponse(
-		"server shut down before the run finished; rserve holds no durable run state, so resubmit",
-		"server_error", codeServerShutdown,
-	)
 }
 
 // asyncSuccess wraps a completion as the run's terminal payload, capping the
@@ -922,12 +1176,21 @@ func (a *asyncRuns) postOnce(ctx context.Context, cb *callbackTarget, body []byt
 // callback if its receiver is up, and nothing at all if it is not — which is
 // why a Windmill flow's suspend timeout, not rserve, is the guard.
 func (h *Handler) Shutdown(ctx context.Context) {
-	live := h.async.liveRuns()
+	// Close the store, mark the live runs as ending with the server, then cancel
+	// them. Nothing can be submitted into the set being torn down, and every
+	// worker that wakes to a cancelled context finds the cause already recorded.
+	live := h.async.beginShutdown()
 	h.async.cancel() // every run's context ends here
 
 	var wg sync.WaitGroup
 	for _, run := range live {
 		payload := asyncShutdownPayload(run)
+		// A run that finished between the snapshot and here has already stored
+		// its own outcome and delivered it. Shutdown does not get to overwrite
+		// that with a failure the caller would redo the work for.
+		if !h.async.tryTerminalize(run, runStatusFailure, payload) {
+			continue
+		}
 		wg.Add(1)
 		go func(run *asyncRun, payload *AsyncCompletion) {
 			defer wg.Done()
@@ -1025,7 +1288,7 @@ func (h *Handler) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, summary)
 	case http.MethodDelete:
-		if !h.async.requestCancel(id) {
+		if known, _ := h.async.requestCancel(id, causeCallerHTTP); !known {
 			writeJSON(w, http.StatusNotFound, NewErrorResponse(
 				runGoneMessage(id), "invalid_request_error", codeNotFound,
 			))
@@ -1037,6 +1300,18 @@ func (h *Handler) handleRunByID(w http.ResponseWriter, r *http.Request) {
 			"method not allowed", "invalid_request_error", codeMethodNotAllowed,
 		))
 	}
+}
+
+// CancelAsyncRun cancels an async run on behalf of another protocol — gRPC
+// CancelRun, which shares this process's run IDs but not its run store. owned
+// says whether this store knows the ID at all, so a caller can fall back to the
+// registry for an ordinary synchronous run; cancelled says whether there was
+// live work to stop, so an already-terminal run is never reported as killed.
+//
+// It exists on the handler rather than the store because the gRPC server must
+// not import this package: it takes this as an interface, wired in main.
+func (h *Handler) CancelAsyncRun(id string) (owned, cancelled bool) {
+	return h.async.requestCancel(id, causeCallerGRPC)
 }
 
 // writeRunResult serves GET /v1/runs/{run_id}/result.

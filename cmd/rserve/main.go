@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,6 +94,15 @@ func main() {
 		"opencode": func() runner.Tool { return opencode.New() },
 	}
 
+	// Async admission limits are read once, here, and refused loudly if they are
+	// unusable: a limit that silently parsed to zero would disable the bound it
+	// was set to tighten.
+	asyncLimits, err := asyncLimitsFromEnv(*maxConcurrent)
+	if err != nil {
+		logger.Error("invalid async admission configuration", "error", err)
+		os.Exit(1)
+	}
+
 	runRegistry := server.NewRunRegistry(*maxConcurrent)
 	sessionStore := server.NewSessionStore(time.Duration(*sessionTTL) * time.Minute)
 	srv := server.NewServer(s, toolFactories, runRegistry, sessionStore)
@@ -135,8 +145,13 @@ func main() {
 
 	// Detect available tool CLIs and create OpenAI-compatible HTTP handler
 	availableTools := openai.DetectAvailableTools(toolFactories)
-	httpHandler := openai.NewHandler(s, toolFactories, runRegistry, availableTools, fileStore, sessionStore)
+	httpHandler := openai.NewHandler(s, toolFactories, runRegistry, availableTools, fileStore, sessionStore,
+		openai.WithAsyncLimits(asyncLimits))
 	httpPort := *port + 1
+
+	// An async run ID is cancellable through either protocol, and only the async
+	// store can end one: gRPC CancelRun asks it before the registry.
+	srv.SetAsyncCanceller(httpHandler)
 
 	// --- chassis: kafkakit publisher (optional — enabled when KAFKAKIT_BOOTSTRAP_SERVERS is set) ---
 	var pub *kafkakit.Publisher
@@ -170,6 +185,8 @@ func main() {
 		"max_concurrent", *maxConcurrent,
 		"session_ttl_min", *sessionTTL,
 		"available_tools", availableTools,
+		"async_max_live", asyncLimits.MaxLive,
+		"async_max_bytes", asyncLimits.MaxBytes,
 	)
 
 	// Build lifecycle components.
@@ -247,6 +264,33 @@ func main() {
 		logger.Error("serve error", "error", err)
 		os.Exit(1)
 	}
+}
+
+// asyncLimitsFromEnv resolves the async admission bounds: the defaults for this
+// server's slot count, with RSERVE_ASYNC_MAX_LIVE and RSERVE_ASYNC_MAX_BYTES
+// overriding them.
+//
+// A value that does not parse, or that is not positive, is an error rather than
+// a fallback. Both variables exist to bound memory, and the failure mode of
+// treating "0" or "sixty-four" as "unset" is a server that runs without the
+// bound its operator believed they had set.
+func asyncLimitsFromEnv(maxConcurrent int) (openai.AsyncLimits, error) {
+	limits := openai.DefaultAsyncLimits(maxConcurrent)
+	if raw := strings.TrimSpace(os.Getenv("RSERVE_ASYNC_MAX_LIVE")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			return limits, fmt.Errorf("RSERVE_ASYNC_MAX_LIVE must be a positive integer, got %q", raw)
+		}
+		limits.MaxLive = n
+	}
+	if raw := strings.TrimSpace(os.Getenv("RSERVE_ASYNC_MAX_BYTES")); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n <= 0 {
+			return limits, fmt.Errorf("RSERVE_ASYNC_MAX_BYTES must be a positive integer, got %q", raw)
+		}
+		limits.MaxBytes = n
+	}
+	return limits, nil
 }
 
 func validateBindAddress(address string, allowInsecureRemote bool) error {

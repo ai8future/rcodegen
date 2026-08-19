@@ -38,6 +38,7 @@ var wantRetryable = map[ErrorCode]bool{
 	"run_cancelled":            false,
 
 	"concurrency_limit":  true,
+	"async_capacity":     true,
 	"clone_failed":       true,
 	"work_dir_failed":    true,
 	"bundle_failed":      true,
