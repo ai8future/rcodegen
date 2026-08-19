@@ -57,13 +57,21 @@ func main() {
 	}
 
 	logger := logz.New("info")
+	// One token guards both protocols. The HTTP handler reads it for itself; the
+	// gRPC interceptors are only installed when it is set, so an unset token
+	// leaves gRPC exactly as it was.
+	authToken := os.Getenv("RSERVE_TOKEN")
 	allowInsecureRemote := os.Getenv("RSERVE_ALLOW_INSECURE_REMOTE") == "1"
 	if err := validateBindAddress(*bind, allowInsecureRemote); err != nil {
 		logger.Error("unsafe bind refused", "bind", *bind, "error", err)
 		os.Exit(1)
 	}
 	if !isLoopbackBind(*bind) {
-		logger.Warn("remote bind explicitly enabled; native gRPC is unauthenticated and both listeners are plaintext", "bind", *bind)
+		if authToken != "" {
+			logger.Warn("remote bind explicitly enabled; gRPC and HTTP require a bearer token from non-loopback peers, but both listeners are plaintext (no TLS) so the token travels in the clear", "bind", *bind)
+		} else {
+			logger.Warn("remote bind explicitly enabled; native gRPC is unauthenticated and both listeners are plaintext", "bind", *bind)
+		}
 	}
 
 	// --- chassis: OTel initialization (before creating interceptors/metrics) ---
@@ -113,19 +121,37 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Sweep orphaned clone scratch dirs now: after the port is bound, so holding
+	// it proves no other rserve is running and every leftover is genuinely
+	// stale, and before anything is served, so no live run's dir can be caught.
+	// Sweeping before the bind would let a second, doomed process delete the
+	// running instance's scratch dirs on its way to failing.
+	sweptClones := openai.SweepOrphanedClones(os.TempDir(), logger)
+	logger.Info("swept orphaned work_dir clones", "dir", os.TempDir(), "removed", sweptClones)
+
 	// --- chassis: gRPC server with recovery, logging, tracing, and metrics interceptors ---
+	unaryInterceptors := []grpc.UnaryServerInterceptor{
+		grpckit.UnaryRecovery(logger),
+		grpckit.UnaryTracing(),
+		grpckit.UnaryMetrics(),
+		grpckit.UnaryLogging(logger),
+	}
+	streamInterceptors := []grpc.StreamServerInterceptor{
+		grpckit.StreamRecovery(logger),
+		grpckit.StreamMetrics(),
+		grpckit.StreamLogging(logger),
+	}
+	// Auth goes last in the chain so a rejected call is still traced, counted,
+	// and logged: an unauthenticated attempt from the LAN is precisely the event
+	// an operator wants to find in the log.
+	if authToken != "" {
+		auth := server.NewTokenAuth(authToken)
+		unaryInterceptors = append(unaryInterceptors, auth.Unary())
+		streamInterceptors = append(streamInterceptors, auth.Stream())
+	}
 	grpcServer := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(
-			grpckit.UnaryRecovery(logger),
-			grpckit.UnaryTracing(),
-			grpckit.UnaryMetrics(),
-			grpckit.UnaryLogging(logger),
-		),
-		grpc.ChainStreamInterceptor(
-			grpckit.StreamRecovery(logger),
-			grpckit.StreamMetrics(),
-			grpckit.StreamLogging(logger),
-		),
+		grpc.ChainUnaryInterceptor(unaryInterceptors...),
+		grpc.ChainStreamInterceptor(streamInterceptors...),
 	)
 	pb.RegisterRServeServer(grpcServer, srv)
 	reflection.Register(grpcServer)

@@ -614,9 +614,9 @@ Optional server environment variables:
 
 | Variable | Effect |
 |----------|--------|
-| `RSERVE_TOKEN` | Require a bearer token on HTTP endpoints except `/health` |
+| `RSERVE_TOKEN` | Require a bearer token on HTTP endpoints except `/health`, and on gRPC calls from non-loopback peers |
 | `RSERVE_WORK_ROOT` | Absolute root that confines HTTP bundle `work_dir` values |
-| `RSERVE_ALLOW_INSECURE_REMOTE=1` | Permit a non-loopback native bind after acknowledging plaintext unauthenticated gRPC; prefer a loopback TLS gateway |
+| `RSERVE_ALLOW_INSECURE_REMOTE=1` | Permit a non-loopback native bind after acknowledging that both listeners are plaintext; prefer a loopback TLS gateway |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Enable OpenTelemetry export to an OTLP endpoint |
 | `KAFKAKIT_BOOTSTRAP_SERVERS` | Enable the optional kafkakit/lifecycle integration for Kafka/Redpanda brokers |
 | `KAFKAKIT_TENANT_ID` | Set the event tenant ID (default: `ai8`) |
@@ -639,7 +639,7 @@ grpcurl -plaintext -d '{"tool":"claude","task":"hello","work_dirs":["/tmp"]}' \
   127.0.0.1:14260 rserve.RServe/RunTask
 ```
 
-The gRPC listener is plaintext and has no authentication layer. Keep it on loopback or place it behind authenticated TLS transport before exposing it to another host.
+The gRPC listener is plaintext. When `RSERVE_TOKEN` is set it also requires a bearer token from non-loopback peers — see [Authentication](#authentication) — but plaintext means the token is readable by anything that can see the traffic, so a LAN bind still wants authenticated TLS transport in front of it.
 
 ### OpenAI-Compatible HTTP API
 
@@ -686,7 +686,7 @@ curl http://127.0.0.1:14261/v1/chat/completions \
 
 ### Ephemeral Work Directories
 
-Chat requests accept `"clone_work_dirs": true`, which copies every `work_dirs` entry into a private scratch root under `$TMPDIR` (`rserve-clone-{run_id}-*`, mode 0700) and runs the tool against the copy. Agent state such as `.omc/` therefore lands in the throwaway tree instead of the shared source, which is what keeps concurrent workers pointed at the same repo from colliding. The scratch root is deleted when the run ends — success, failure, or client disconnect — and a cleanup failure is logged rather than failing the run. On macOS the copy is an APFS copy-on-write clone (`cp -Rc`): near-instant, no extra disk until something is written, dotfiles included; filesystems that reject it fall back to a real recursive copy, and the choice is logged per directory as `method=cow` or `method=copy`. The flag defaults to `false` (unchanged behaviour: the tool runs in the caller's directories) and is a no-op when `work_dirs` is absent. When cloning happens the response carries `"cloned_work_dirs": {n}` — on the completion object, or on the final chunk when streaming. Bundle `work_dir` semantics are unchanged.
+Chat requests accept `"clone_work_dirs": true`, which copies every `work_dirs` entry into a private scratch root under `$TMPDIR` (`rserve-clone-{run_id}-*`, mode 0700) and runs the tool against the copy. Agent state such as `.omc/` therefore lands in the throwaway tree instead of the shared source, which is what keeps concurrent workers pointed at the same repo from colliding. The scratch root is deleted when the run ends — success, failure, or client disconnect — and a cleanup failure is logged rather than failing the run. That cleanup cannot run when the process is killed, so **rserve also sweeps orphaned `rserve-clone-*` directories out of `$TMPDIR` at startup**, immediately after binding its port and before serving anything. Retained run results live only in memory, so no run survives a restart and every leftover scratch root is stale by definition; binding the port first is what proves no other instance owns them (one rserve per machine, enforced by the fixed ports). The sweep logs one line with the number removed, skips anything that is not a directory, and treats a removal failure as a warning — leftover disk is never a reason to refuse to serve. On macOS the copy is an APFS copy-on-write clone (`cp -Rc`): near-instant, no extra disk until something is written, dotfiles included; filesystems that reject it fall back to a real recursive copy, and the choice is logged per directory as `method=cow` or `method=copy`. The flag defaults to `false` (unchanged behaviour: the tool runs in the caller's directories) and is a no-op when `work_dirs` is absent. When cloning happens the response carries `"cloned_work_dirs": {n}` — on the completion object, or on the final chunk when streaming. Bundle `work_dir` semantics are unchanged.
 
 Sources are validated before the request queues for a run slot, so an unusable directory comes back right away instead of waiting behind other work. A missing or non-directory source is rejected with `400 invalid_work_dir`, and two shapes are refused because copying cannot isolate them. A tree containing an absolute symlink, or a relative symlink resolving above its root, is rejected with `400 unsafe_symlink`: the copy preserves symlinks, so the link would still aim at the original tree and a write through it would escape the scratch root. A source containing a regular file named `.git` — at the root or at any depth — is rejected with `400 unsupported_git_worktree`: that file is a gitdir pointer (a linked worktree at the root, a submodule checkout below it), so the clone would keep using the original repository and work inside it would mutate the caller's. Point `work_dirs` at a main worktree with no submodule checkouts, or let git create the working copy instead of copying one. Symlinks that stay inside the source are fine and keep working inside the clone, a `.git` **directory** clones normally at any depth (a vendored repository is fine), and a symlinked source root is resolved before any of this is checked.
 
@@ -821,7 +821,22 @@ curl -X POST http://127.0.0.1:14261/v1/bundles/ensemble \
 
 ### Authentication
 
-Set the `RSERVE_TOKEN` environment variable before starting `rserve` to require `Authorization: Bearer <token>` on all HTTP endpoints except `/health` (left open for monitoring). Unset means no HTTP authentication. This setting does **not** protect the plaintext gRPC listener, so a token alone is not sufficient before binding to a LAN with `-bind 0.0.0.0`; use loopback or put both listeners behind authenticated TLS transport.
+Set the `RSERVE_TOKEN` environment variable before starting `rserve` to require a bearer token on **both** listeners. Unset means no authentication on either, which is the historical behavior.
+
+- **HTTP:** every endpoint except `/health` (left open for monitoring) requires the `Authorization: Bearer <token>` header, from every caller including loopback.
+- **gRPC:** calls from **non-loopback** peers require the same credential in the `authorization` metadata key, again as `Bearer <token>`. Missing or wrong tokens are rejected with `Unauthenticated`. Tokens are compared in constant time.
+
+**Loopback peers are exempt on gRPC.** A caller connecting over `127.0.0.0/8`, `::1`, or a unix socket is already on the machine and could invoke the underlying CLIs directly, so requiring a token from it would buy nothing and would break every local script and tool. Adding a token to an existing server therefore changes nothing for local workflows; it only closes the LAN. A connection whose peer address cannot be determined is treated as remote and must authenticate.
+
+Two gRPC services stay open to all peers, mirroring the open HTTP `/health`: **reflection** (`grpc.reflection.v1`/`v1alpha`, which is how the docs above tell you to point `grpcurl` at the server) and **health** (`grpc.health.v1.Health`). Both answer only "is this alive and what does it speak" — neither can run a model, read run state, or cancel a run.
+
+```bash
+# From another host, with RSERVE_TOKEN set on the server:
+grpcurl -plaintext -H "authorization: Bearer $RSERVE_TOKEN" \
+  192.168.1.10:14260 rserve.RServe/GetStatus
+```
+
+Both listeners remain plaintext regardless of the token, so the credential travels in the clear. A token makes a `-bind 0.0.0.0` deployment survivable on a trusted LAN; it is not a substitute for TLS on an untrusted one.
 
 ### File Uploads
 

@@ -18,6 +18,12 @@ import (
 // path keeps the clone independent of the request's PATH.
 const cpBinary = "/bin/cp"
 
+// cloneDirPrefix names this server's scratch roots inside the system temp
+// directory. It is deliberately specific enough to identify a directory as
+// rserve's own, because the startup sweep in clonesweep.go deletes everything
+// that matches it.
+const cloneDirPrefix = "rserve-clone-"
+
 // cloneUseCOW enables the APFS copy-on-write flag (cp -c). Tests flip it to
 // exercise the plain-copy fallback.
 var cloneUseCOW = runtime.GOOS == "darwin"
@@ -143,7 +149,7 @@ func cloneWorkDirs(ctx context.Context, runID string, srcs []string, logger *slo
 		return nil, err
 	}
 
-	root, err := os.MkdirTemp("", "rserve-clone-"+runID+"-")
+	root, err := os.MkdirTemp("", cloneDirPrefix+runID+"-")
 	if err != nil {
 		return nil, fmt.Errorf("create clone scratch root: %w", err)
 	}

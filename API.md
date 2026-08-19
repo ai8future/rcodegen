@@ -22,7 +22,9 @@ rserve -bind 127.0.0.1                    # explicit loopback bind
 | `-session-ttl` | Session inactivity TTL in minutes (`0` disables expiry) | `30` |
 | `-v` | Show version and exit | |
 
-Concurrency is controlled by a shared semaphore and requests queue until a slot is available. `RSERVE_TOKEN` optionally protects HTTP endpoints except `/health`; the plaintext gRPC listener has no authentication and native HTTP has no TLS. Keep rserve on loopback and expose only the required API through authenticated TLS transport. Non-loopback binds are refused unless `RSERVE_ALLOW_INSECURE_REMOTE=1` explicitly acknowledges the risk.
+Concurrency is controlled by a shared semaphore and requests queue until a slot is available. `RSERVE_TOKEN` optionally protects both listeners: all HTTP endpoints except `/health`, and gRPC calls from non-loopback peers. Neither listener has TLS, so the token travels in the clear. Keep rserve on loopback and expose only the required API through authenticated TLS transport. Non-loopback binds are refused unless `RSERVE_ALLOW_INSECURE_REMOTE=1` explicitly acknowledges the risk.
+
+At startup — after binding its port, before serving — rserve removes any `rserve-clone-*` scratch directories left in `os.TempDir()` by a previous process, and logs the number removed. In-process cleanup of these directories cannot run when the process is killed, and since retained run state is in-memory only, nothing on disk at startup can still be in use.
 
 ---
 
@@ -33,7 +35,11 @@ Concurrency is controlled by a shared semaphore and requests queue until a slot 
 **Default port:** `14260`
 **Transport:** Plain TCP (no TLS). gRPC reflection is enabled.
 
-**Interceptors:** recovery, OpenTelemetry tracing (unary), metrics, logging.
+**Interceptors:** recovery, OpenTelemetry tracing (unary), metrics, logging, and — when `RSERVE_TOKEN` is set — bearer authentication (unary and stream).
+
+**Authentication:** none by default. If `RSERVE_TOKEN` is set, calls from **non-loopback** peers must send the `authorization` metadata key as `Bearer <token>`; missing or wrong credentials get `Unauthenticated` (tokens are compared in constant time). Peers on `127.0.0.0/8`, `::1`, or a unix socket are exempt — they are already on the machine and can invoke the CLIs directly — so enabling the token does not disturb local clients. A peer whose address cannot be determined is treated as remote.
+
+Reflection (`grpc.reflection.v1`/`v1alpha`) and health (`grpc.health.v1.Health`) stay open to all peers regardless of the token, matching the open HTTP `/health`; neither can run, inspect, or cancel work.
 
 ### RunTask (server-streaming)
 
@@ -145,6 +151,10 @@ grpcurl -plaintext 127.0.0.1:14260 rserve.RServe/GetStatus
 
 # List available tasks and bundles
 grpcurl -plaintext 127.0.0.1:14260 rserve.RServe/ListTasks
+
+# From another host when RSERVE_TOKEN is set (loopback needs no token)
+grpcurl -plaintext -H "authorization: Bearer $RSERVE_TOKEN" \
+  192.168.1.10:14260 rserve.RServe/GetStatus
 ```
 
 ---
@@ -797,7 +807,7 @@ Jobs sharing a `session` identifier are executed sequentially with session IDs c
 | `RCODEGEN_MODEL` | Override model for all tools |
 | `RCODEGEN_BUDGET` | Override Claude budget |
 | `RCODEGEN_EFFORT` | Override Claude/Codex effort (Codex support is model-specific) |
-| `RSERVE_TOKEN` | Require bearer authentication on native HTTP except `/health` |
+| `RSERVE_TOKEN` | Require bearer authentication on native HTTP except `/health`, and on gRPC from non-loopback peers (reflection and health stay open) |
 | `RSERVE_WORK_ROOT` | Absolute root that confines HTTP bundle `work_dir` values |
 | `RSERVE_ALLOW_INSECURE_REMOTE` | Set to `1` to permit an explicitly unsafe non-loopback native bind |
 | `RSERVE_ASYNC_MAX_LIVE` | Max simultaneous live async runs (default `max(8, 4 × max_concurrent)`). Must be a positive integer or the server refuses to start |

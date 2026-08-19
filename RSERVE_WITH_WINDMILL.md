@@ -82,14 +82,18 @@ runs someday span days, cross many services, and need signal-heavy workflows.
 
 ### rserve (Mac Studio)
 - Ports: gRPC **14260**, HTTP **14261**. Keep rserve bound to
-  **`127.0.0.1`**. Its native gRPC listener is plaintext and unauthenticated,
-  and its native HTTP listener has no TLS.
+  **`127.0.0.1`**. Both native listeners are plaintext; gRPC is unauthenticated
+  unless `RSERVE_TOKEN` is set, and even then loopback peers are exempt.
 - Remote access: expose only HTTP 14261 through an authenticated TLS reverse
   proxy or equivalent encrypted tunnel. Do not expose native gRPC 14260 to the
   LAN. Restrict the gateway to the Windmill VM at the host firewall as defense
   in depth.
 - Auth: set `RSERVE_TOKEN` → requires `Authorization: Bearer <token>` on all
-  HTTP endpoints except `/health`. Keep it enabled behind the TLS gateway.
+  HTTP endpoints except `/health`, and the same credential in the gRPC
+  `authorization` metadata key for non-loopback peers (reflection and
+  `grpc.health.v1` stay open). Keep it enabled behind the TLS gateway. The
+  token bounds who may drive the server; it is not TLS, so it does not make
+  exposing native gRPC to the LAN a good idea.
 - Optional containment: `RSERVE_WORK_ROOT` restricts every `work_dir` to one
   parent directory. It must be absolute; use `/Users/cliff/rcodegen-runs`.
 - OpenTelemetry: chassis OTel initializes when
