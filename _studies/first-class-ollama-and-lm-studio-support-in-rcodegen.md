@@ -33,14 +33,35 @@ rcodegen today has **zero** Ollama or LM Studio awareness. The only path to a lo
 | | Ollama | LM Studio |
 |---|---|---|
 | Default port | `11434` | `1234` |
-| OpenAI-compat surface | `/v1/chat/completions`, `/v1/models` | `/v1/chat/completions`, `/v1/models`, `/v1/embeddings` |
-| Native API | `/api/tags` (list), `/api/chat`, `/api/generate`, `/api/show` | `/api/v0/models` etc. (richer metadata: loaded state, quant, context length) |
+| OpenAI-compat surface | `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`, `/v1/responses` (v0.13.3+, non-stateful) | `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`, `/v1/responses` (Codex support) |
+| Native API | `/api/tags` (list), `/api/chat`, `/api/generate`, `/api/show` — streams **NDJSON, not SSE** | `/api/v1/*` (LM Studio 0.4.0+): stateful chats, MCP via API, auth tokens, model download/load/unload. `/api/v0` is deprecated |
 | Model naming | `name:tag` (e.g. `llama3.1:8b`, `qwen3:14b`) | Hugging-Face-style paths (e.g. `qwen/qwen3-14b`) |
-| Env/config | `OLLAMA_HOST` | `lms` CLI; Just-In-Time model loading in 0.3.x |
-| Tool calling | Yes (model-dependent quality) | Yes (model-dependent quality) |
-| Reasoning toggle | `think` parameter (deepseek-r1, qwen3, gpt-oss) | reasoning-effort field for some models |
+| Env/config | `OLLAMA_HOST` | `lms` CLI; JIT model loading + auto-evict on by default |
+| Tool calling | Yes on `/v1` — but **`tool_choice` is unsupported** | Yes (model-dependent quality) |
+| Reasoning toggle | `/v1` accepts `reasoning_effort`/`reasoning`; native `think` takes `low/medium/high/max` | reasoning-effort field for some models |
 
-Both speak OpenAI chat completions, which means **one shared implementation covers both**, differing only in base URL and model-listing endpoint. The djb2 port rule in the workspace guidelines does not apply here — these are third-party servers with fixed conventional ports.
+Both speak OpenAI chat completions at the core, which means **one shared implementation covers both**, differing only in base URL and model-listing endpoint. The djb2 port rule in the workspace guidelines does not apply here — these are third-party servers with fixed conventional ports.
+
+### 2.1 Where they break out of the OpenAI format (verified Aug 2026)
+
+Neither is a faithful OpenAI clone. The divergences that matter to this design:
+
+**Ollama `/v1` gaps:**
+- **Unsupported request fields:** `tool_choice`, `logit_bias`, `n`, `user`, and all logprobs functionality. The missing `tool_choice` means a harness cannot *force* a tool call — a direct constraint on any Phase-3 agent loop built over the compat endpoint.
+- **Context length is not settable via `/v1`.** `num_ctx` requires a Modelfile or the native API, and Ollama **silently truncates** prompts that exceed the model's context. For rcodegen tasks that pack source code into the prompt, this is a silent-corruption hazard: the model answers confidently about a truncated codebase. Mitigation: create derived models with a larger `num_ctx`, or use the native `/api/chat` with `options.num_ctx` per request.
+- **Native-API-only controls:** `keep_alive` (model residency) and `think` live only on `/api/chat`/`/api/generate`. The `/v1` layer does accept `reasoning_effort`, which is the cleaner hook for effort mapping — though the native `think` levels have a known top-level-vs-`options` inconsistency (ollama#15831).
+- Vision input is base64-only; image URLs are rejected. `/v1/responses` is the non-stateful flavor only.
+
+**LM Studio extensions and behaviors:**
+- **`ttl` is a custom non-OpenAI field accepted inside OpenAI-compat request bodies** — it sets the model's idle-unload timer. Harmless to omit, but proof the surface is extended, not cloned.
+- **JIT loading + auto-evict (both default-on):** the first request to an unloaded model blocks while the model loads into memory, and loading a second model can evict the first. To a naive HTTP client this looks like a hang or a latency cliff. rcodegen's timeout design must distinguish load-time from inference-time — or pre-warm via a health probe before dispatching a run.
+- The native surface moved: `/api/v0` is deprecated; LM Studio 0.4.0 ships `/api/v1` with stateful chats, MCP-via-API, API-token auth, and model download/load/unload endpoints. Model-management integration (Phase 2) should target `/api/v1`, not v0.
+
+**Design consequences:**
+1. Phase 1 stands — plain chat completions work identically on both — but the implementation must treat the compat layer as a *subset+extensions* dialect, not OpenAI proper: never send `tool_choice`/`logit_bias` to Ollama, and budget generous first-request timeouts for LM Studio JIT loads.
+2. The prompt-truncation hazard promotes a new Phase-1 requirement: **estimate prompt size against the model's context window** (Ollama `/api/show` reports it; LM Studio `/api/v1` model metadata includes it) and refuse or warn instead of silently truncating.
+3. Effort mapping (Phase 2) should ride `reasoning_effort` on `/v1` for Ollama rather than the native `think` parameter — simpler and one dialect fewer.
+4. Any Phase-3 agent harness needs the *native* APIs (or must tolerate advisory-only tool selection), reinforcing the study's recommendation to delegate agentic work to opencode instead.
 
 ---
 
@@ -111,7 +132,7 @@ Plus env overrides `RCODEGEN_OLLAMA_BASE_URL` / `RCODEGEN_LMSTUDIO_BASE_URL`. Re
 Today `/v1/models` enumerates static lists. Local runtimes make the real list knowable at request time:
 
 - Ollama: `GET /api/tags`
-- LM Studio: `GET /v1/models` (or `/api/v0/models` for loaded-state metadata)
+- LM Studio: `GET /v1/models` (or `/api/v1` model endpoints for loaded-state metadata)
 
 Add an optional interface:
 
@@ -150,7 +171,7 @@ type DynamicModelLister interface {
 |---|---|---|---|
 | **0** | Document the existing opencode/kilocode local-provider path (README + help text already show `provider/model` examples; add explicit Ollama/LM Studio recipes) | Hours | Unlocks agentic local models *now* |
 | **1** | `pkg/tools/localai` DirectAPI tool, settings, registration in rserve/rbatch/orchestrator, `/v1/models` live discovery, base-URL security policy | Days | First-class inference: `curl rserve /v1/chat/completions -d '{"model":"ollama:qwen3:14b", ...}'` |
-| **2** | Effort→`think` mapping for reasoning models, streaming SSE passthrough, LM Studio `/api/v0` metadata (loaded/quant/context) in model listing, health surfaced in `/healthz` detail | Days | Parity with cloud-tool ergonomics |
+| **2** | Effort mapping via `reasoning_effort` on `/v1` (not native `think`), streaming SSE passthrough, LM Studio `/api/v1` metadata (loaded/quant/context) in model listing, health surfaced in `/healthz` detail | Days | Parity with cloud-tool ergonomics |
 | **3** | Native Go agent loop for local models | Weeks | Probably not worth it — prefer Phase 0's delegation to opencode |
 
 ## 6. Open questions
