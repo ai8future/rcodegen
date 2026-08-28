@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -95,23 +94,6 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	// Create a fresh tool instance (avoids shared mutable state between requests)
 	tool := factory()
 
-	// Acquire a concurrency slot
-	runID, runCtx, cancel, err := s.registry.Acquire(stream.Context(), req.Tool, req.Task)
-	if err != nil {
-		return cerrors.Errorf(cerrors.RateLimitError, "failed to acquire run slot: %v", err).GRPCStatus().Err()
-	}
-	defer cancel()
-	defer s.registry.Release(runID)
-
-	// Send init event
-	if err := stream.Send(&pb.RunEvent{
-		RunId:       runID,
-		TimestampMs: time.Now().UnixMilli(),
-		Event:       &pb.RunEvent_Init{Init: &pb.InitEvent{Tool: req.Tool, Model: req.Model}},
-	}); err != nil {
-		return err
-	}
-
 	// Inject settings into the tool (mirrors CLI's SettingsAware path)
 	if sa, ok := tool.(runner.SettingsAware); ok && s.settings != nil {
 		sa.SetSettings(s.settings)
@@ -139,13 +121,13 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	}
 
 	// Capture stderr so we can report errors to the client
-	var stderrBuf bytes.Buffer
-	cfg.Stderr = &stderrBuf
-	var stdoutBuf bytes.Buffer
+	stderrBuf := runner.NewBoundedBuffer(64 << 10)
+	cfg.Stderr = stderrBuf
+	stdoutBuf := runner.NewBoundedBuffer(64 << 10)
 	if !tool.UsesStreamOutput() {
 		// Codex, OpenCode, and KiloCode emit ordinary stdout rather than the
 		// stream-json events handled below. Preserve it for their clients.
-		cfg.Output = &stdoutBuf
+		cfg.Output = stdoutBuf
 	}
 
 	// Look up task shortcut if task matches a known shortcut name
@@ -166,10 +148,39 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	if req.MaxBudget != "" {
 		cfg.MaxBudget = req.MaxBudget
 	}
+	if req.Effort != "" {
+		cfg.Effort = req.Effort
+	}
 
 	// If model is still empty, use the tool's built-in default
 	if cfg.Model == "" {
 		cfg.Model = tool.DefaultModel()
+	}
+	if err := runner.ValidateModel(tool, cfg.Model); err != nil {
+		return cerrors.ValidationError(err.Error()).GRPCStatus().Err()
+	}
+	if err := runner.ValidateEffort(tool, cfg.Model, cfg.Effort); err != nil {
+		return cerrors.ValidationError(err.Error()).GRPCStatus().Err()
+	}
+	if err := tool.ValidateConfig(cfg); err != nil {
+		return cerrors.ValidationError(err.Error()).GRPCStatus().Err()
+	}
+
+	// Acquire only after configuration validation, so invalid work never queues
+	// behind real runs or consumes a slot.
+	runID, runCtx, cancel, err := s.registry.Acquire(stream.Context(), req.Tool, req.Task)
+	if err != nil {
+		return cerrors.Errorf(cerrors.RateLimitError, "failed to acquire run slot: %v", err).GRPCStatus().Err()
+	}
+	defer cancel()
+	defer s.registry.Release(runID)
+
+	if err := stream.Send(&pb.RunEvent{
+		RunId:       runID,
+		TimestampMs: time.Now().UnixMilli(),
+		Event:       &pb.RunEvent_Init{Init: &pb.InitEvent{Tool: req.Tool, Model: cfg.Model}},
+	}); err != nil {
+		return err
 	}
 
 	// Mutex-protected send to guard against future concurrency
@@ -217,19 +228,22 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	}
 
 	// Send result event
-	resultEvent := &pb.ResultEvent{
-		ExitCode:     int32(result.ExitCode),
-		TotalCostUsd: result.TotalCostUSD,
-		SessionId:    sessionID,
-	}
+	retained := runner.NewBoundedBuffer(64 << 10)
 	if stdoutBuf.Len() > 0 {
-		resultEvent.Output = stdoutBuf.String()
+		_, _ = retained.Write([]byte(stdoutBuf.String()))
 	}
 	if stderrBuf.Len() > 0 {
-		if resultEvent.Output != "" && !strings.HasSuffix(resultEvent.Output, "\n") {
-			resultEvent.Output += "\n"
+		if retained.Len() > 0 && !strings.HasSuffix(retained.String(), "\n") {
+			_, _ = retained.Write([]byte("\n"))
 		}
-		resultEvent.Output += stderrBuf.String()
+		_, _ = retained.Write([]byte(stderrBuf.String()))
+	}
+	resultEvent := &pb.ResultEvent{
+		ExitCode:        int32(result.ExitCode),
+		TotalCostUsd:    result.TotalCostUSD,
+		SessionId:       sessionID,
+		Output:          retained.String(),
+		OutputTruncated: stdoutBuf.Truncated() || stderrBuf.Truncated() || retained.Truncated(),
 	}
 	if result.TokenUsage != nil {
 		resultEvent.Usage = &pb.TokenUsage{

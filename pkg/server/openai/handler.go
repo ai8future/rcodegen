@@ -138,7 +138,7 @@ func correlationID(r *http.Request) string {
 // handleModels returns the list of available tools and every valid
 // tool:model combination.
 func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, BuildModelList(h.availableTools, h.toolFactories, h.settings))
+	writeJSON(w, http.StatusOK, BuildModelList(r.Context(), h.availableTools, h.toolFactories, h.settings))
 }
 
 // splitToolEffort resolves "claude-max" style names where an effort suffix
@@ -296,6 +296,15 @@ func (h *Handler) planChatCompletion(r *http.Request, req *ChatCompletionRequest
 			requestEffort = e
 		}
 	}
+	if req.ReasoningEffort != "" {
+		if requestEffort != "" && requestEffort != req.ReasoningEffort {
+			return rejected(http.StatusBadRequest, NewErrorResponse(
+				fmt.Sprintf("conflicting reasoning efforts %q and %q", requestEffort, req.ReasoningEffort),
+				"invalid_request_error", codeInvalidEffort,
+			))
+		}
+		requestEffort = req.ReasoningEffort
+	}
 
 	// Reject unknown models up front with the valid list — a bad model passed
 	// through to the CLI fails silently (200 with empty content). GET
@@ -314,7 +323,13 @@ func (h *Handler) planChatCompletion(r *http.Request, req *ChatCompletionRequest
 	cfg.Task = task
 	cfg.Output = io.Discard
 	cfg.Logger = logz.New("warn")
-	cfg.Stderr = &bytes.Buffer{}
+	cfg.Stderr = runner.NewBoundedBuffer(64 << 10)
+	if toolName == "ollama" || toolName == "lmstudio" {
+		cfg.Messages = make([]runner.ChatMessage, len(req.Messages))
+		for i, message := range req.Messages {
+			cfg.Messages[i] = runner.ChatMessage{Role: message.Role, Content: message.Content}
+		}
+	}
 	if len(req.WorkDirs) > 0 {
 		cfg.WorkDirs = req.WorkDirs
 	}
@@ -346,6 +361,16 @@ func (h *Handler) planChatCompletion(r *http.Request, req *ChatCompletionRequest
 	if err := runner.ValidateEffort(tool, cfg.Model, cfg.Effort); err != nil {
 		return rejected(http.StatusBadRequest, NewErrorResponse(
 			err.Error(), "invalid_request_error", codeInvalidEffort,
+		))
+	}
+	if err := tool.ValidateConfig(cfg); err != nil {
+		if cfg.Model == "" {
+			return rejected(http.StatusBadRequest, NewErrorResponse(
+				err.Error(), "invalid_request_error", codeInvalidModel,
+			))
+		}
+		return rejected(http.StatusBadRequest, NewErrorResponse(
+			err.Error(), "invalid_request_error", codeInvalidJSON,
 		))
 	}
 
@@ -478,7 +503,12 @@ func (h *Handler) runChatSync(w http.ResponseWriter, r *http.Request, plan *chat
 	if plan.stream {
 		h.handleStreaming(w, runCtx, tool, cfg, meta, plan.showToolUse, cancel, sse)
 	} else {
-		writeJSON(w, http.StatusOK, h.completeNonStreaming(runCtx, tool, cfg, meta))
+		resp, result := h.completeNonStreaming(runCtx, tool, cfg, meta)
+		if result.ExitCode != 0 || result.Error != nil {
+			writeJSON(w, http.StatusBadGateway, executionErrorResponse(cfg, result))
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
 }
 
@@ -588,6 +618,13 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, to
 		Settings: h.settings,
 	}
 	result := rn.RunWithContext(ctx, cfg)
+	if result.ExitCode != 0 || result.Error != nil {
+		mu.Lock()
+		_ = sse.WriteEvent(executionErrorResponse(cfg, result))
+		mu.Unlock()
+		sse.WriteDone()
+		return
+	}
 
 	// Store session for multi-turn (use toolName, NOT cfg.Model)
 	sessionID := ""
@@ -625,7 +662,7 @@ func (h *Handler) handleStreaming(w http.ResponseWriter, ctx context.Context, to
 // completeNonStreaming runs the tool to completion and builds the response
 // object. It writes nothing: the synchronous path sends the result on the
 // caller's connection, the async path POSTs it to a callback and retains it.
-func (h *Handler) completeNonStreaming(ctx context.Context, tool runner.Tool, cfg *runner.Config, meta completionMeta) ChatCompletionResponse {
+func (h *Handler) completeNonStreaming(ctx context.Context, tool runner.Tool, cfg *runner.Config, meta completionMeta) (ChatCompletionResponse, *runner.RunResult) {
 	var buf bytes.Buffer
 	if !tool.UsesStreamOutput() {
 		cfg.Output = &buf
@@ -675,7 +712,22 @@ func (h *Handler) completeNonStreaming(ctx context.Context, tool runner.Tool, cf
 	// failed is exactly the one whose half-written files are worth reading.
 	resp.Artifacts, resp.ArtifactsSkipped = meta.artifacts.collect()
 
-	return resp
+	return resp, result
+}
+
+func executionErrorResponse(cfg *runner.Config, result *runner.RunResult) ErrorResponse {
+	message := "tool execution failed"
+	if cfg != nil && cfg.Stderr != nil {
+		if text, ok := cfg.Stderr.(interface{ String() string }); ok {
+			if detail := strings.TrimSpace(text.String()); detail != "" {
+				message += ": " + detail
+			}
+		}
+	}
+	if result != nil && result.Error != nil && message == "tool execution failed" {
+		message += ": " + result.Error.Error()
+	}
+	return NewErrorResponse(message, "server_error", codeToolExecutionFailed)
 }
 
 // workDirErrorCode maps a work_dirs validation failure to its API error code.

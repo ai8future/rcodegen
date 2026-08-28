@@ -36,10 +36,10 @@ var noTrackStatus bool
 
 // Runner orchestrates the execution of a tool
 type Runner struct {
-	Tool         Tool
-	Settings     *settings.Settings
-	TaskConfig   *settings.TaskConfig
-	SettingsOK   bool
+	Tool       Tool
+	Settings   *settings.Settings
+	TaskConfig *settings.TaskConfig
+	SettingsOK bool
 }
 
 // RunResult holds the result of a Run() invocation
@@ -562,12 +562,21 @@ func (r *Runner) RunWithContext(ctx context.Context, cfg *Config) *RunResult {
 	}
 
 	exitCode := r.executeCommandWithContext(ctx, cfg, workDir, cfg.Task)
+	var runErr error
+	if exitCode != 0 {
+		if ctx.Err() != nil {
+			runErr = ctx.Err()
+		} else {
+			runErr = fmt.Errorf("%s execution failed with exit code %d", r.Tool.Name(), exitCode)
+		}
+	}
 
 	return &RunResult{
 		ExitCode:     exitCode,
 		TokenUsage:   cfg.TokenUsage,
 		TotalCostUSD: cfg.TotalCostUSD,
 		SessionID:    cfg.SessionID,
+		Error:        runErr,
 	}
 }
 

@@ -952,7 +952,7 @@ func (h *Handler) runAsync(run *asyncRun, plan *chatPlan) (string, *AsyncComplet
 		}
 	}
 
-	resp := h.completeNonStreaming(acq.Ctx, plan.tool, plan.cfg, completionMeta{
+	resp, result := h.completeNonStreaming(acq.Ctx, plan.tool, plan.cfg, completionMeta{
 		runID:          run.id,
 		model:          plan.model,
 		toolName:       plan.toolName,
@@ -968,6 +968,9 @@ func (h *Handler) runAsync(run *asyncRun, plan *chatPlan) (string, *AsyncComplet
 	// above and is memoized, so this costs no second walk.
 	if run.ctx.Err() != nil {
 		return runStatusFailure, asyncFailure(run, plan, h.abortError(run), artifacts)
+	}
+	if result.ExitCode != 0 || result.Error != nil {
+		return runStatusFailure, asyncFailure(run, plan, executionErrorResponse(plan.cfg, result), artifacts)
 	}
 	return runStatusSuccess, asyncSuccess(run, resp)
 }

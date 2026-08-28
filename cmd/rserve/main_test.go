@@ -85,3 +85,17 @@ func TestValidateBindAddress(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalAPIToolsAreRegistered(t *testing.T) {
+	factories := newToolFactories()
+	for _, name := range []string{"ollama", "lmstudio"} {
+		factory, ok := factories[name]
+		if !ok {
+			t.Fatalf("%s factory is not registered", name)
+		}
+		tool := factory()
+		if tool.Name() != name || tool.BinaryName() != "" {
+			t.Fatalf("%s factory returned name=%q binary=%q", name, tool.Name(), tool.BinaryName())
+		}
+	}
+}

@@ -21,6 +21,13 @@ const (
 	Reset   = colors.Reset
 )
 
+// ChatMessage preserves structured chat history for tools that call a chat API
+// directly. CLI-backed tools continue to consume the flattened Task field.
+type ChatMessage struct {
+	Role    string
+	Content string
+}
+
 // Display formatting constants
 const (
 	MaxDisplayTaskLen = 50 // Max length for task display in banner
@@ -33,6 +40,7 @@ const (
 type Config struct {
 	// Common fields
 	Task          string            // The task/prompt to execute
+	Messages      []ChatMessage     // Ordered chat history for direct API tools
 	TaskShortcut  string            // The shortcut name if a shortcut was used
 	WorkDirs      []string          // Working directories (supports multiple codebases)
 	Codebase      string            // Codebase name from -c flag (used in report filenames)

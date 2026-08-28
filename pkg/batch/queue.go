@@ -6,7 +6,7 @@ import "sync"
 type JobState int
 
 const (
-	StatePending   JobState = iota
+	StatePending JobState = iota
 	StateRunning
 	StateCompleted
 	StateFailed
@@ -14,11 +14,13 @@ const (
 
 // JobResult holds the outcome of a completed or failed job.
 type JobResult struct {
-	ExitCode  int     `json:"exit_code"`
-	Cost      float64 `json:"cost"`
-	Duration  string  `json:"duration"`
-	SessionID string  `json:"session_id"`
-	Error     string  `json:"error,omitempty"`
+	ExitCode        int     `json:"exit_code"`
+	Cost            float64 `json:"cost"`
+	Duration        string  `json:"duration"`
+	SessionID       string  `json:"session_id"`
+	Error           string  `json:"error,omitempty"`
+	Output          string  `json:"output,omitempty"`
+	OutputTruncated bool    `json:"output_truncated,omitempty"`
 }
 
 // CompletedJob is a summary of a successfully completed job.

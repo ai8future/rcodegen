@@ -53,13 +53,16 @@ rpc RunTask(RunTaskRequest) returns (stream RunEvent);
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `tool` | string | yes | `"claude"`, `"codex"`, `"gemini"`, `"opencode"`, or `"kilocode"` |
+| `tool` | string | yes | `"claude"`, `"codex"`, `"gemini"`, `"opencode"`, `"kilocode"`, `"ollama"`, or `"lmstudio"` |
 | `task` | string | yes | Task text or shortcut name (`audit`, `test`, `fix`, `refactor`, `quick`, `grade`, `study`) |
 | `model` | string | no | Model override (e.g., `"opus"`, `"gpt-5.5"`) |
 | `max_budget` | string | no | USD budget string (e.g., `"10.00"`) |
 | `work_dirs` | []string | yes | Target directories |
 | `variables` | map[string]string | no | Template variables for task prompts |
 | `session_id` | string | no | Resume a prior session |
+| `effort` | string | no | Reasoning effort override. Ollama accepts `none`, `low`, `medium`, `high`, or `max`; LM Studio accepts none |
+
+For local runtimes, `tool` is `ollama` or `lmstudio` and `model` is the raw identifier returned by `/v1/models`; do not include the `tool:` HTTP namespace prefix inside the gRPC `model` field.
 
 **Response stream:** Sequence of `RunEvent` messages.
 
@@ -129,7 +132,7 @@ Every event carries `run_id` and `timestamp_ms`, plus one of:
 | `TextEvent` | `content` | Assistant text fragment |
 | `ToolUseEvent` | `tool_name`, `summary` | Tool invocation by the AI |
 | `StepProgressEvent` | `step_name`, `status`, `tool`, `model`, `cost_usd`, `duration_ms`, `tokens` | Bundle step completed |
-| `ResultEvent` | `exit_code`, `output`, `usage` (TokenUsage), `total_cost_usd`, `grade`, `session_id` | Run finished |
+| `ResultEvent` | `exit_code`, `output`, `output_truncated`, `usage` (TokenUsage), `total_cost_usd`, `grade`, `session_id` | Run finished; output is retained up to 64KiB |
 | `ErrorEvent` | `message`, `code` | Error occurred |
 
 ### Health Check
@@ -180,6 +183,7 @@ Chat completion endpoint. Supports both streaming (SSE) and non-streaming modes.
     {"role": "user", "content": "audit this codebase for security issues"}
   ],
   "stream": false,
+  "reasoning_effort": "high",
   "work_dirs": ["/path/to/project"],
   "clone_work_dirs": false,
   "return_artifacts": false,
@@ -225,7 +229,11 @@ Both messages name the offending path relative to the source root. Relative syml
 - **A failed run still reports its artifacts.** Half-written output is usually the most diagnostic thing a failed or cancelled run produced. The one exception is a failure where no clone was ever made — a rejected `work_dirs` entry, or a clone that could not be created — since there is then nothing to diff.
 - **Collection runs strictly before cleanup** and can never fail a run: a clone or a file that cannot be read becomes a `collection_error` entry and a log line, not an error response. Each clone directory is pinned by an open descriptor taken before the CLI starts, so a run that replaces its own clone directory with a symlink cannot redirect collection elsewhere. Candidates are opened non-blocking and re-checked as regular files after opening, so a candidate that has become a FIFO or a device by the time it is read is refused instead of waiting for a writer that the run itself decides whether to provide.
 
-**Model format:** `{tool}` or `{tool}:{model}` -- e.g., `claude`, `claude:opus`, `codex:gpt-5.6-sol`, `gemini`, `gemini:gemini-3-flash-preview`. Claude and Codex also accept a supported `-{effort}` suffix, such as `claude:opus-max`, `codex:gpt-5.6-luna-max`, or bare `codex-ultra` for the configured default model. OpenCode and KiloCode accept dynamic `provider/model` identifiers.
+**Model format:** `{tool}` or `{tool}:{model}` -- e.g., `claude`, `claude:opus`, `codex:gpt-5.6-sol`, `ollama:qwen3`, or `lmstudio:openai/gpt-oss-20b`. Claude and Codex accept supported `-{effort}` suffixes on fixed model selectors. A bare Ollama selector may also carry a suffix when a default model is configured, but an explicit `ollama:<runtime-model>` is always literal; use the top-level `reasoning_effort` field with explicit dynamic identifiers. Supplying two effort forms with different values is `400 invalid_effort`. OpenCode, KiloCode, Ollama, and LM Studio have dynamic model namespaces, but a bare local namespace is valid only when its settings contain a default model.
+
+Ollama and LM Studio are direct API adapters: ordered `system`, `user`, and `assistant` messages are forwarded without flattening, no CLI subprocess is started, and provider token usage is returned when present. Ollama accepts `reasoning_effort` values `none`, `low`, `medium`, `high`, and `max`; LM Studio rejects any effort override. Explicit dynamic identifiers are never suffix-parsed, including names ending in `-high` or `-max`. The Ollama payload is intentionally minimal and does not send the options its compatibility documentation lists as unsupported: `tool_choice`, `logit_bias`, `user`, `n`, and `logprobs`.
+
+Phase 1 always sends `stream:false` to the local backend; rserve can still expose its buffered answer through HTTP SSE after generation. These adapters generate text only and never edit files, call tools, or execute shell commands. Use OpenCode or another agentic CLI configured for a local provider when repository actions are required. rcodegen intentionally ignores `OLLAMA_HOST`; configure the origin with `defaults.ollama.base_url` or `RCODEGEN_OLLAMA_BASE_URL`.
 
 **Request headers:**
 
@@ -268,7 +276,7 @@ Both messages name the offending path relative to the source root. Relative syml
 
 | `usage_source` | Meaning | Tools |
 |----------------|---------|-------|
-| `cli` | The tool's CLI reported usage; `usage` is populated, and `cost_usd` too when the CLI reports a cost | Claude (tokens + cost), Gemini (tokens only -- `cost_usd` is omitted, not zero) |
+| `cli` | The tool or provider reported usage; `usage` is populated, and `cost_usd` too when reported | Claude (tokens + cost), Gemini (tokens only), Ollama and LM Studio (provider token counts) |
 | `unreported` | The CLI publishes no usage at all. `usage` and `cost_usd` are **omitted entirely** | Codex (its JSON carries `usage: null`), OpenCode, KiloCode |
 
 rserve never fabricates these numbers. An omitted `cost_usd` means "not measured", never "free", so a caller summing costs across runs must treat `unreported` as unknown rather than as zero. Extraction lives with each tool adapter (`runner.UsageReporter`), so a CLI that starts reporting usage is a change in one adapter.
@@ -302,7 +310,7 @@ data: {"type": "started"}
 | `retryable` | Codes | Why |
 |-------------|-------|-----|
 | `false` | `method_not_allowed`, `unauthorized`, `invalid_json`, `unknown_tool`, `empty_task`, `invalid_model`, `invalid_effort`, `invalid_work_dir`, `unsafe_symlink`, `unsupported_git_worktree`, `unknown_bundle`, `missing_input`, `invalid_upload`, `missing_file`, `invalid_id`, `not_found`, `no_file_store`, `invalid_callback_url`, `invalid_callback_headers`, `callback_stream_conflict`, `artifacts_require_clone`, `run_cancelled` | The request is malformed, names something that does not exist, or is refused on policy grounds. It will be refused identically every time until the caller changes it |
-| `true` | `concurrency_limit`, `async_capacity`, `clone_failed`, `work_dir_failed`, `bundle_failed`, `bundle_list_failed`, `save_failed`, `server_shutdown` | Transient: an interrupted slot wait, an async submission refused because the server already holds its configured limit of live async work, a filesystem failure, a CLI/provider failure (crash, unexpected exit, timeout, rate limit), or a server restart that caught the run in flight. The same request can succeed later |
+| `true` | `concurrency_limit`, `async_capacity`, `clone_failed`, `work_dir_failed`, `tool_execution_failed`, `bundle_failed`, `bundle_list_failed`, `save_failed`, `server_shutdown` | Transient: an interrupted slot wait, an async submission refused because the server already holds its configured limit of live async work, a filesystem failure, a CLI/provider failure (crash, unexpected exit, timeout, rate limit), or a server restart that caught the run in flight. The same request can succeed later |
 
 | HTTP Status | Meaning |
 |-------------|---------|
@@ -311,6 +319,7 @@ data: {"type": "started"}
 | `404` | Unknown run ID, or one whose result has been evicted from retention |
 | `405` | Method not allowed |
 | `500` | Work-directory clone failed, including a source that changed after validation |
+| `502` | The selected CLI or direct provider API failed, exited nonzero, timed out, or returned an invalid response (`tool_execution_failed`) |
 | `503` | Request cancelled or disconnected while queued for a run slot, or an async submission refused by admission (`async_capacity`, or `server_shutdown` once shutdown has begun). Both carry `Retry-After: 1` and no `run_id` |
 
 ### Async callback mode
@@ -395,7 +404,7 @@ A failure carries the same error envelope a synchronous caller would have receiv
 }
 ```
 
-`status` reports whether the run produced a completion, not whether the model was happy: a CLI that exits nonzero still yields `success` with whatever it wrote, exactly as the synchronous path returns `200` for the same run. `failure` means no completion exists — `clone_failed`, `run_cancelled`, or `server_shutdown`. A `run_cancelled` failure still carries `artifacts`: what the run wrote before the kill is the point of cancelling it and looking.
+`status` is `success` only when the selected tool exits successfully. A CLI nonzero exit or direct provider failure is `failure` with retryable code `tool_execution_failed`, matching the synchronous `502` contract; partial text is retained only in bounded diagnostics, not promoted to a completion. Other failures include `clone_failed`, `run_cancelled`, and `server_shutdown`. Async failure records still carry collected clone artifacts when a clone existed: half-written files are often the most useful diagnostic evidence.
 
 **Delivery.** POST with `Content-Type: application/json`, 10s per attempt, 3 attempts with backoff (2s, then 8s), then rserve gives up and logs a warning. Any non-2xx counts as a failed attempt. Delivery happens **after** the run slot is released, so a slow receiver never holds capacity. An undelivered callback costs the run nothing: the result stays available at `GET /v1/runs/{run_id}/result` for as long as retention holds it.
 
@@ -474,7 +483,7 @@ Set the step's suspend timeout to the longest the run may take (e.g. 2h); it bec
 
 ### GET /v1/models
 
-List available tools (only those whose CLI binary is found on PATH), configured defaults, fixed model namespaces, and model-specific effort suffixes. Dynamic OpenCode/KiloCode namespaces set `"dynamic": true` and list their configured default while continuing to accept arbitrary `provider/model` identifiers.
+List available CLI tools whose binary is found on `PATH`, plus the always-registered API-only Ollama and LM Studio namespaces. Fixed namespaces enumerate models and effort suffixes. OpenCode/KiloCode remain unprobed dynamic namespaces. Ollama and LM Studio probe `/api/tags` and `/v1/models` respectively under independent 500ms budgets; discovered models carry `"available": true`, while a configured default that is absent or cannot be verified carries `"available": false`. Availability means installed/visible in inventory, not currently loaded. LM Studio may JIT-load a visible model; inference uses the configured whole-request timeout, 600 seconds by default. A failed local inventory probe does not fail the endpoint.
 
 ```json
 {
@@ -484,7 +493,10 @@ List available tools (only those whose CLI binary is found on PATH), configured 
     {"id": "claude:sonnet", "object": "model", "created": 1711800000, "owned_by": "rcodegen", "default": true, "efforts": ["low", "medium", "high", "xhigh", "max"]},
     {"id": "codex", "object": "model", "created": 1711800000, "owned_by": "rcodegen", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
     {"id": "codex:gpt-5.6-sol", "object": "model", "created": 1711800000, "owned_by": "rcodegen", "default": true, "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
-    {"id": "opencode", "object": "model", "created": 1711800000, "owned_by": "rcodegen", "dynamic": true}
+    {"id": "opencode", "object": "model", "created": 1711800000, "owned_by": "rcodegen", "dynamic": true},
+    {"id": "ollama", "object": "model", "created": 1711800000, "owned_by": "rcodegen", "dynamic": true, "efforts": ["none", "low", "medium", "high", "max"]},
+    {"id": "ollama:qwen3", "object": "model", "created": 1711800000, "owned_by": "rcodegen", "dynamic": true, "available": true, "efforts": ["none", "low", "medium", "high", "max"]},
+    {"id": "lmstudio:openai/gpt-oss-20b", "object": "model", "created": 1711800000, "owned_by": "rcodegen", "dynamic": true, "default": true, "available": false}
   ]
 }
 ```
@@ -770,7 +782,7 @@ Batch job runner with subcommands.
 }
 ```
 
-Jobs sharing a `session` identifier are executed sequentially with session IDs carried forward.
+Valid tools are `claude`, `codex`, `gemini`, `opencode`, `kilocode`, `ollama`, and `lmstudio`. Jobs sharing a `session` identifier are executed sequentially with session IDs carried forward. Every terminal job writes a bounded result record under `~/.rcodegen/batches/<batch>/results/`, including `output`, `output_truncated`, and `error`; batch and job names are validated before use as path components. Local and remote execution preserve the job's effort field and provider-reported token usage.
 
 ---
 
@@ -788,7 +800,9 @@ Jobs sharing a `session` identifier are executed sequentially with session IDs c
   "defaults": {
     "codex": { "model": "gpt-5.6-sol", "effort": "xhigh" },
     "claude": { "model": "sonnet", "budget": "10.00" },
-    "gemini": { "model": "gemini-3.1-pro-preview" }
+    "gemini": { "model": "gemini-3.1-pro-preview" },
+    "ollama": { "base_url": "http://localhost:11434", "model": "", "timeout_seconds": 600, "allow_remote": false, "api_key": "" },
+    "lmstudio": { "base_url": "http://localhost:1234", "model": "", "timeout_seconds": 600, "allow_remote": false, "api_key": "" }
   },
   "tasks": {
     "my-custom-task": {
@@ -804,9 +818,12 @@ Jobs sharing a `session` identifier are executed sequentially with session IDs c
 |----------|-------------|
 | `RCODEGEN_CODE_DIR` | Override `code_dir` |
 | `RCODEGEN_OUTPUT_DIR` | Override `output_dir` |
-| `RCODEGEN_MODEL` | Override model for all tools |
+| `RCODEGEN_MODEL` | Override model for CLI tools; local runtimes use their dedicated variables |
 | `RCODEGEN_BUDGET` | Override Claude budget |
 | `RCODEGEN_EFFORT` | Override Claude/Codex effort (Codex support is model-specific) |
+| `RCODEGEN_OLLAMA_BASE_URL` / `RCODEGEN_LMSTUDIO_BASE_URL` | Override the runtime origin |
+| `RCODEGEN_OLLAMA_MODEL` / `RCODEGEN_LMSTUDIO_MODEL` | Override the runtime's configured default model |
+| `RCODEGEN_OLLAMA_API_KEY` / `RCODEGEN_LMSTUDIO_API_KEY` | Add bearer authentication without storing the key in settings JSON |
 | `RSERVE_TOKEN` | Require bearer authentication on native HTTP except `/health`, and on gRPC from non-loopback peers (reflection and health stay open) |
 | `RSERVE_WORK_ROOT` | Absolute root that confines HTTP bundle `work_dir` values |
 | `RSERVE_ALLOW_INSECURE_REMOTE` | Set to `1` to permit an explicitly unsafe non-loopback native bind |
@@ -825,6 +842,8 @@ Jobs sharing a `session` identifier are executed sequentially with session IDs c
 2. `~/.rcodegen/settings.json`
 3. Environment variables (`RCODEGEN_*`)
 4. CLI flags (highest)
+
+Local runtime base URLs must be origin-only `http` or `https` URLs without embedded credentials, paths, query strings, or fragments. Loopback/private IP literals and `localhost` are accepted by default; other hostnames and public addresses require `allow_remote: true`. Requests bypass ambient proxies, reject redirects, enforce the configured timeout, cap responses at 32MiB, and redact API keys from bounded diagnostics.
 
 ### Task Template Variables
 

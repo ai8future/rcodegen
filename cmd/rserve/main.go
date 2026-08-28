@@ -1,4 +1,4 @@
-// rserve exposes rclaude, rcodex, rgemini, ropencode, rkilo, and bundle orchestration
+// rserve exposes the configured CLI and local API tools plus bundle orchestration
 // via gRPC (streaming RPCs) and an OpenAI-compatible HTTP API.
 package main
 
@@ -25,6 +25,7 @@ import (
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
 	"rcodegen/pkg/tools/kilocode"
+	"rcodegen/pkg/tools/localai"
 	"rcodegen/pkg/tools/opencode"
 
 	chassis "github.com/ai8future/chassis-go/v11"
@@ -94,13 +95,7 @@ func main() {
 	}
 
 	// Tool factories create fresh instances per request to avoid shared mutable state
-	toolFactories := map[string]server.ToolFactory{
-		"claude":   func() runner.Tool { return claude.New() },
-		"codex":    func() runner.Tool { return codex.New() },
-		"gemini":   func() runner.Tool { return gemini.New() },
-		"kilocode": func() runner.Tool { return kilocode.New() },
-		"opencode": func() runner.Tool { return opencode.New() },
-	}
+	toolFactories := newToolFactories()
 
 	// Async admission limits are read once, here, and refused loudly if they are
 	// unusable: a limit that silently parsed to zero would disable the bound it
@@ -289,6 +284,18 @@ func main() {
 	if err := lifecycle.Run(context.Background(), lifecycleArgs...); err != nil {
 		logger.Error("serve error", "error", err)
 		os.Exit(1)
+	}
+}
+
+func newToolFactories() map[string]server.ToolFactory {
+	return map[string]server.ToolFactory{
+		"claude":   func() runner.Tool { return claude.New() },
+		"codex":    func() runner.Tool { return codex.New() },
+		"gemini":   func() runner.Tool { return gemini.New() },
+		"kilocode": func() runner.Tool { return kilocode.New() },
+		"opencode": func() runner.Tool { return opencode.New() },
+		"ollama":   func() runner.Tool { return localai.NewOllama() },
+		"lmstudio": func() runner.Tool { return localai.NewLMStudio() },
 	}
 }
 

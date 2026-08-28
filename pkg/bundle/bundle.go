@@ -19,9 +19,10 @@ type Step struct {
 	Name string `json:"name"`
 
 	// Tool execution
-	Tool  string `json:"tool,omitempty"`  // claude, gemini, codex
-	Model string `json:"model,omitempty"`
-	Task  string `json:"task,omitempty"`
+	Tool   string `json:"tool,omitempty"` // CLI tools plus ollama/lmstudio API namespaces
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
+	Task   string `json:"task,omitempty"`
 
 	// Parallel execution
 	Parallel []Step `json:"parallel,omitempty"`

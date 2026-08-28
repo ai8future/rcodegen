@@ -7,10 +7,10 @@ import (
 
 // mockExecutor is a test double that implements the Executor interface.
 type mockExecutor struct {
-	executeResult  *JobResult
-	executeErr     error
+	executeResult   *JobResult
+	executeErr      error
 	budgetRemaining int
-	budgetErr      error
+	budgetErr       error
 }
 
 func (m *mockExecutor) Execute(ctx context.Context, job *JobDef, sessionID string) (*JobResult, error) {

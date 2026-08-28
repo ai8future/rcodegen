@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -17,6 +18,8 @@ var validTools = map[string]bool{
 	"gemini":   true,
 	"kilocode": true,
 	"opencode": true,
+	"ollama":   true,
+	"lmstudio": true,
 }
 
 // validOnBudget lists the allowed on_budget strategies.
@@ -127,17 +130,28 @@ func validate(m *Manifest) error {
 	if len(m.Jobs) == 0 {
 		return fmt.Errorf("manifest must contain at least one job")
 	}
+	if m.Name != "" && !validBatchName.MatchString(m.Name) {
+		return fmt.Errorf("invalid batch name %q: must be alphanumeric with hyphens/underscores/dots only", m.Name)
+	}
 
 	if !validOnBudget[m.Budget.OnBudget] {
 		return fmt.Errorf("invalid on_budget value %q: must be one of stop, wait, ask", m.Budget.OnBudget)
 	}
 
+	seenNames := make(map[string]bool, len(m.Jobs))
 	for i, j := range m.Jobs {
+		if !validBatchName.MatchString(j.Name) {
+			return fmt.Errorf("job %d: invalid name %q: must be alphanumeric with hyphens/underscores/dots only", i+1, j.Name)
+		}
+		if seenNames[j.Name] {
+			return fmt.Errorf("job %d: duplicate name %q", i+1, j.Name)
+		}
+		seenNames[j.Name] = true
 		if j.Task == "" {
 			return fmt.Errorf("job %d (%s): task is required", i+1, j.Name)
 		}
 		if !validTools[j.Tool] {
-			return fmt.Errorf("job %d (%s): invalid tool %q: must be one of claude, codex, gemini, opencode, kilocode", i+1, j.Name, j.Tool)
+			return fmt.Errorf("job %d (%s): invalid tool %q: must be one of %s", i+1, j.Name, j.Tool, strings.Join([]string{"claude", "codex", "gemini", "opencode", "kilocode", "ollama", "lmstudio"}, ", "))
 		}
 	}
 

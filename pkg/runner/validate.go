@@ -60,6 +60,11 @@ func IsValidModel(tool Tool, model string) bool {
 // "gpt-5.6-luna" are never mangled. Returns the input unchanged (empty
 // effort) when no valid suffix is present.
 func SplitModelEffort(tool Tool, model string) (base, effort string) {
+	// Runtime-defined model identifiers may legitimately end in "-high" or
+	// another effort-looking suffix. Their effort must be supplied explicitly.
+	if len(tool.ValidModels()) == 0 {
+		return model, ""
+	}
 	for _, e := range tool.ValidEfforts() {
 		suffix := "-" + e
 		if strings.HasSuffix(model, suffix) {

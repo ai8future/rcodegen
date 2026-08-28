@@ -1,10 +1,9 @@
 package batch
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
+	"strings"
 	"time"
 
 	"rcodegen/pkg/runner"
@@ -13,6 +12,7 @@ import (
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
 	"rcodegen/pkg/tools/kilocode"
+	"rcodegen/pkg/tools/localai"
 	"rcodegen/pkg/tools/opencode"
 	"rcodegen/pkg/tracking"
 
@@ -39,6 +39,8 @@ func NewLocalExecutor(s *settings.Settings) *LocalExecutor {
 			"gemini":   func() runner.Tool { return gemini.New() },
 			"kilocode": func() runner.Tool { return kilocode.New() },
 			"opencode": func() runner.Tool { return opencode.New() },
+			"ollama":   func() runner.Tool { return localai.NewOllama() },
+			"lmstudio": func() runner.Tool { return localai.NewLMStudio() },
 		},
 	}
 }
@@ -65,12 +67,14 @@ func (e *LocalExecutor) Execute(ctx context.Context, job *JobDef, sessionID stri
 		workDirs = []string{job.Dir}
 	}
 
+	output := runner.NewBoundedBuffer(64 << 10)
+	diagnostics := runner.NewBoundedBuffer(64 << 10)
 	cfg := &runner.Config{
 		Task:     job.Task,
 		WorkDirs: workDirs,
-		Output:   io.Discard,
+		Output:   output,
 		Logger:   logz.New("warn"),
-		Stderr:   &bytes.Buffer{},
+		Stderr:   diagnostics,
 	}
 
 	// Apply tool defaults first (model, effort, budget from settings).
@@ -89,6 +93,15 @@ func (e *LocalExecutor) Execute(ctx context.Context, job *JobDef, sessionID stri
 	if sessionID != "" {
 		cfg.SessionID = sessionID
 	}
+	if err := runner.ValidateModel(tool, cfg.Model); err != nil {
+		return nil, err
+	}
+	if err := runner.ValidateEffort(tool, cfg.Model, cfg.Effort); err != nil {
+		return nil, err
+	}
+	if err := tool.ValidateConfig(cfg); err != nil {
+		return nil, err
+	}
 
 	// Execute the job.
 	start := time.Now()
@@ -99,11 +112,21 @@ func (e *LocalExecutor) Execute(ctx context.Context, job *JobDef, sessionID stri
 	// Stream-capable tools update result.SessionID from their init event. Tools
 	// that do not expose a new session ID leave it empty (or preserve a resumed
 	// session), so the batch runner only chains sessions the tool actually reports.
+	errorMessage := ""
+	if result.ExitCode != 0 {
+		errorMessage = strings.TrimSpace(diagnostics.String())
+		if errorMessage == "" && result.Error != nil {
+			errorMessage = result.Error.Error()
+		}
+	}
 	return &JobResult{
-		ExitCode:  result.ExitCode,
-		Cost:      result.TotalCostUSD,
-		Duration:  elapsed.Truncate(time.Millisecond).String(),
-		SessionID: result.SessionID,
+		ExitCode:        result.ExitCode,
+		Cost:            result.TotalCostUSD,
+		Duration:        elapsed.Truncate(time.Millisecond).String(),
+		SessionID:       result.SessionID,
+		Error:           errorMessage,
+		Output:          output.String(),
+		OutputTruncated: output.Truncated(),
 	}, nil
 }
 

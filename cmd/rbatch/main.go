@@ -599,6 +599,7 @@ func makeEventHandler(m *batch.Manifest, verbose bool, start time.Time) func(bat
 			completed++
 			if e.Result != nil {
 				cost += e.Result.Cost
+				persistJobResult(m, e.JobName, e.Result)
 			}
 			registry.Progress(completed+failed, total, failed)
 			if verbose {
@@ -615,6 +616,7 @@ func makeEventHandler(m *batch.Manifest, verbose bool, start time.Time) func(bat
 			failed++
 			if e.Result != nil {
 				cost += e.Result.Cost
+				persistJobResult(m, e.JobName, e.Result)
 			}
 			registry.Progress(completed+failed, total, failed)
 			errMsg := ""
@@ -629,6 +631,21 @@ func makeEventHandler(m *batch.Manifest, verbose bool, start time.Time) func(bat
 				fmt.Fprintf(os.Stderr, "\n  budget check: %d%% remaining\n", e.Remaining)
 			}
 		}
+	}
+}
+
+func persistJobResult(m *batch.Manifest, jobName string, result *batch.JobResult) {
+	batchName := m.Name
+	if batchName == "" {
+		batchName = "unnamed"
+	}
+	dir, err := batch.BatchDir(batchName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not resolve result directory: %v\n", err)
+		return
+	}
+	if err := batch.WriteJobResult(dir, jobName, result); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write result for %s: %v\n", jobName, err)
 	}
 }
 
@@ -678,7 +695,7 @@ Examples:
   %s spool /path/to/spool/dir
   %s resume
   %s status
-`, strings.Join([]string{"claude", "codex", "gemini", "opencode", "kilocode"}, ", "),
+`, strings.Join([]string{"claude", "codex", "gemini", "opencode", "kilocode", "ollama", "lmstudio"}, ", "),
 		name, name, name, name, name, name)
 }
 

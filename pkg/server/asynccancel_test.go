@@ -201,15 +201,14 @@ func awaitMarker(t *testing.T, marker string) {
 	}
 }
 
-// The defect this release fixes, kept as a test: a gRPC server that does not
-// know the async store owns its IDs cancels the registry entry instead. That
-// kills the CLI the run had reached but leaves the run's own context alive, so
-// the worker treats the kill as an ordinary completion and publishes success —
+// A gRPC server that does not know the async store owns its IDs cancels the
+// registry entry instead. That kills the CLI the run had reached but leaves the
+// run's own context alive, so the worker publishes a tool-execution failure —
 // after gRPC has already told its caller the run was cancelled.
 //
 // It is a live code path, not a historical one: a server built without
 // SetAsyncCanceller behaves exactly this way, which is why main wires it.
-func TestCancelRun_UnwiredGRPCAcknowledgesButTheAsyncRunReportsSuccess(t *testing.T) {
+func TestCancelRun_UnwiredGRPCAcknowledgesButTheAsyncRunReportsToolFailure(t *testing.T) {
 	chassis.RequireMajor(11)
 	marker := filepath.Join(t.TempDir(), "started")
 	installSleepingOpenCode(t, marker)
@@ -229,13 +228,9 @@ func TestCancelRun_UnwiredGRPCAcknowledgesButTheAsyncRunReportsSuccess(t *testin
 	}
 
 	status, code := receiver.await(t)
-	if status != "failure" || code != "run_cancelled" {
-		t.Logf("reproduced: gRPC acknowledged the cancellation and the run published %q (code %q)",
-			status, code)
-		return
+	if status != "failure" || code != "tool_execution_failed" {
+		t.Fatalf("callback = %q/%q, want failure/tool_execution_failed", status, code)
 	}
-	t.Fatalf("an unwired gRPC server produced %q/%q; the reproduction no longer holds "+
-		"and the cancellation-routing fix needs re-deriving", status, code)
 }
 
 // Wired, the async store answers for its own IDs: the cancellation ends the run

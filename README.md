@@ -1,6 +1,6 @@
 # rcodegen
 
-Unified automation framework for AI-powered code analysis, generation, reporting, batch execution, and remote serving. Run Claude, Codex, Gemini, opencode, and kilocode in unattended workflows against one or many codebases.
+Unified automation framework for AI-powered code analysis, generation, reporting, batch execution, and remote serving. Run Claude, Codex, Gemini, opencode, kilocode, Ollama, and LM Studio in unattended workflows against one or many codebases.
 
 ## What It Does
 
@@ -8,7 +8,7 @@ rcodegen provides four connected surfaces:
 
 **Single-tool wrappers** (`rclaude`, `rcodex`, `rgemini`, `ropencode`, `rkilo`) add task shortcuts, automated reporting, cost tracking, file locking, grading, and multi-codebase support on top of each tool's native CLI.
 
-**Multi-tool orchestrator** (`rcodegen`) chains multiple AI tools together in defined workflows called "bundles" -- one model builds code, another reviews it, another tests it, with parallel execution, voting, and merging.
+**Multi-tool orchestrator** (`rcodegen`) chains multiple AI tools together in defined workflows called "bundles" -- one model builds code, another reviews it, another tests it, with parallel execution, voting, and merging. Ollama and LM Studio participate through direct local APIs rather than wrapper binaries.
 
 **Operational tools** (`rbatch`, `rserve`) execute large job manifests locally or remotely and expose the tools through streaming gRPC and OpenAI-compatible HTTP APIs.
 
@@ -31,6 +31,7 @@ rcodegen provides four connected surfaces:
 
 - Go 1.26.5+
 - One or more AI CLIs installed: `claude`, `codex`, `gemini`, `opencode`, `kilocode`
+- Ollama or LM Studio running locally (optional, for direct local-model execution)
 - Python 3.11+ (optional, for credit tracking via iTerm2)
 - Node.js 20+ and npm (optional, for the dashboard and scheduler)
 - `GEMINI_API_KEY` (only for Gemini image generation with `banana` / `gemini-3.1-flash-image-preview`)
@@ -343,7 +344,9 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
     "kilocode": {
       "model": "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
       "provider": "deepinfra"
-    }
+    },
+    "ollama": { "base_url": "http://localhost:11434", "model": "", "timeout_seconds": 600, "allow_remote": false, "api_key": "" },
+    "lmstudio": { "base_url": "http://localhost:1234", "model": "", "timeout_seconds": 600, "allow_remote": false, "api_key": "" }
   },
   "tasks": {
     "my-custom-task": {
@@ -357,8 +360,10 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
 
 1. Hardcoded defaults
 2. `~/.rcodegen/settings.json`
-3. Environment variables (`RCODEGEN_CODE_DIR`, `RCODEGEN_OUTPUT_DIR`, `RCODEGEN_MODEL`, `RCODEGEN_BUDGET`, `RCODEGEN_EFFORT`, `RCODEGEN_LOG_LEVEL`; `RCODEGEN_EFFORT` applies to Claude and Codex, with Codex levels validated against the selected model)
+3. Environment variables (`RCODEGEN_CODE_DIR`, `RCODEGEN_OUTPUT_DIR`, `RCODEGEN_MODEL`, `RCODEGEN_BUDGET`, `RCODEGEN_EFFORT`, `RCODEGEN_LOG_LEVEL`, and the local-runtime variables documented below; the global model and effort variables do not override Ollama or LM Studio)
 4. CLI flags (highest priority)
+
+Local runtime overrides are `RCODEGEN_OLLAMA_BASE_URL`, `RCODEGEN_OLLAMA_MODEL`, `RCODEGEN_OLLAMA_API_KEY`, `RCODEGEN_LMSTUDIO_BASE_URL`, `RCODEGEN_LMSTUDIO_MODEL`, and `RCODEGEN_LMSTUDIO_API_KEY`.
 
 ### Task Template Variables
 
@@ -385,6 +390,20 @@ In task text, `@path/to/file` is expanded to that file's contents before executi
 
 ### OpenCode / KiloCode
 Any opencode or kilocode `provider/model` string, for example `deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct` (default). Run `opencode providers login` or `kilocode auth login` once per provider before first use.
+
+### Ollama / LM Studio
+Use HTTP selectors such as `ollama:<model>` or `lmstudio:<model>`. Structured bundle, batch, and gRPC requests put `ollama` / `lmstudio` in `tool` and the raw runtime identifier in `model`. No model is fabricated when the configured default is empty; callers must name one or set `defaults.ollama.model` / `defaults.lmstudio.model`.
+
+```bash
+curl -s http://localhost:14261/v1/models | python3 -m json.tool
+curl -s http://localhost:14261/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"ollama:MODEL_FROM_V1_MODELS","reasoning_effort":"low","messages":[{"role":"user","content":"Reply with exactly OK"}]}'
+```
+
+`available:true` means the model identifier appeared in that runtime's live inventory response; it does not mean the model is already loaded. LM Studio may JIT-load an available model, so local requests default to a 600-second whole-request timeout. Ollama accepts efforts `none`, `low`, `medium`, `high`, and `max`; LM Studio accepts no effort override in Phase 1. Explicit dynamic identifiers are never suffix-parsed, even when they end in `-high` or `-max`.
+
+Both adapters send a deliberately minimal, non-streaming OpenAI-compatible request and return text only. They do not edit files, call tools, or execute shell commands; use OpenCode or another agentic CLI configured for a local provider when the model must act on a repository. Ollama still documents `tool_choice`, `logit_bias`, `user`, `n`, and `logprobs` as unsupported, so rcodegen does not send them. rcodegen intentionally ignores `OLLAMA_HOST`; configure its client origin through settings or `RCODEGEN_OLLAMA_BASE_URL`. LM Studio bearer authentication uses `api_key` or `RCODEGEN_LMSTUDIO_API_KEY`.
 
 ## Locking & Concurrency
 
@@ -555,7 +574,7 @@ rcodegen/
 }
 ```
 
-Manifest defaults: `concurrency=1`, `tool=claude`, generated job names, `on_budget=stop`, `check_interval=3m`, and `max_wait=1h`. Valid tools are `claude`, `codex`, `gemini`, `opencode`, and `kilocode`. `on_budget` accepts `stop`, `wait`, or `ask`; `ask` behaves as `stop` because batch mode is non-interactive.
+Manifest defaults: `concurrency=1`, `tool=claude`, generated job names, `on_budget=stop`, `check_interval=3m`, and `max_wait=1h`. Valid tools are `claude`, `codex`, `gemini`, `opencode`, `kilocode`, `ollama`, and `lmstudio`. `on_budget` accepts `stop`, `wait`, or `ask`; `ask` behaves as `stop` because batch mode is non-interactive.
 
 ### Commands
 
@@ -581,7 +600,7 @@ rbatch status nightly-audits
 
 `rbatch run` flags: `--concurrency`, `--threshold`, `--on-budget`, `--max-wait`, `--server`, `--dry-run`, and `-v`. `spool` accepts `--server` and `-v`; `resume` accepts `--server`, `--concurrency`, and `-v`. `watch` is reserved but not implemented.
 
-Summaries and checkpoints are stored under `~/.rcodegen/batches/<name>/`. A failed job stops only its session group; other groups finish. `Ctrl+C` creates a resumable checkpoint. Native conversation reuse works when the selected tool reports a session ID (currently the stream-parsed Claude and Gemini paths); group ordering still applies to every tool. Budget percentages use locally available Claude credit tracking; remote execution cannot query that budget and therefore continues when budget data is unavailable.
+Summaries and checkpoints are stored under `~/.rcodegen/batches/<name>/`. Every terminal job also writes a bounded result record containing `output`, `output_truncated`, and `error`; job and batch names are validated before they become paths. A failed job stops only its session group; other groups finish. `Ctrl+C` creates a resumable checkpoint. Native conversation reuse works when the selected tool reports a session ID (currently the stream-parsed Claude and Gemini paths); group ordering still applies to every tool. Budget percentages use locally available Claude credit tracking; remote execution cannot query that budget and therefore continues when budget data is unavailable.
 
 ## rserve (gRPC + HTTP Server)
 
@@ -625,7 +644,7 @@ Optional server environment variables:
 
 | RPC | Description |
 |-----|-------------|
-| `RunTask` | Run a single tool (claude/codex/gemini/opencode/kilocode), stream events |
+| `RunTask` | Run a single tool (claude/codex/gemini/opencode/kilocode/ollama/lmstudio), stream events |
 | `RunBundle` | Run a named bundle, stream events |
 | `ListTasks` | List task shortcuts and bundles |
 | `GetStatus` | Server health, active run count, run details |
@@ -643,7 +662,7 @@ The gRPC listener is plaintext. When `RSERVE_TOKEN` is set it also requires a be
 
 ### OpenAI-Compatible HTTP API
 
-The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs`, `clone_work_dirs`, `return_artifacts`, `session_id`, and `callback_url` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, or `gemini:gemini-3.1-pro-preview`), with an optional **`-{effort}` suffix** on either form: `claude:opus-max`, `codex:gpt-5.6-luna-high`, or bare `codex-ultra` (the configured default model at that effort). The suffix is only treated as an effort when that specific model supports it, so hyphenated names like `gpt-5.6-luna` are never mangled; chat requests reject unsupported combinations such as `gpt-5.6-luna-ultra`. Supported suffixes also work on `model` fields in bundle step definitions. `/v1/models` enumerates fixed `tool:model` combinations for tools found on the server's `PATH`, flags the configured default with `"default": true`, and lists model-specific suffixes in `"efforts"`. OpenCode and KiloCode advertise `"dynamic": true`, list their configured default, and continue accepting arbitrary `provider/model` identifiers. Unknown models in fixed namespaces receive a 400 listing valid options. Chat request bodies are limited to 10MB; bundle run request bodies are limited to 1MB.
+The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs`, `clone_work_dirs`, `return_artifacts`, `session_id`, and `callback_url` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, `ollama:qwen3`, or `lmstudio:openai/gpt-oss-20b`). Fixed model selectors may carry a supported **`-{effort}` suffix**; a bare Ollama selector may too when a default model is configured. Explicit dynamic identifiers such as `ollama:qwen3-high` are always literal, so use the top-level `reasoning_effort` field with them. Supplying conflicting effort forms is rejected. Supported suffixes also work on fixed `model` fields in bundle step definitions. `/v1/models` enumerates fixed CLI models for binaries found on `PATH`; Ollama and LM Studio are API-only dynamic namespaces that are always listed, probe their live model inventories, and set `"available": false` when a configured default cannot be confirmed. OpenCode and KiloCode remain dynamic without probing. Chat request bodies are limited to 10MB; local-runtime responses to rcodegen are limited to 32MiB.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -678,11 +697,18 @@ curl http://127.0.0.1:14261/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"claude","messages":[{"role":"user","content":"audit this code"}],"work_dirs":["/path/to/project"]}'
 
+# Direct Ollama request; ordered messages are forwarded without flattening
+curl http://127.0.0.1:14261/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"ollama:qwen3","reasoning_effort":"high","messages":[{"role":"system","content":"Be concise."},{"role":"user","content":"Explain this patch."}]}'
+
 # Against a throwaway copy, leaving the source tree untouched
 curl http://127.0.0.1:14261/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"claude","messages":[{"role":"user","content":"audit this code"}],"work_dirs":["/path/to/project"],"clone_work_dirs":true}'
 ```
+
+Local runtime origins must be `http` or `https` origins without credentials, paths, query strings, or fragments. Loopback and private IP literals plus `localhost` are accepted by default; other hostnames and public addresses require the runtime's explicit `allow_remote` setting. Requests ignore ambient HTTP proxies, never follow redirects, apply a per-request timeout, and redact configured API keys from diagnostics.
 
 ### Ephemeral Work Directories
 

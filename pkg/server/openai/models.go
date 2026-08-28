@@ -1,9 +1,12 @@
 package openai
 
 import (
+	"context"
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	rcodegenpkg "rcodegen"
 	"rcodegen/pkg/runner"
@@ -62,7 +65,9 @@ func DetectAvailableTools(toolFactories map[string]server.ToolFactory) []string 
 	var available []string
 	for name, factory := range toolFactories {
 		tool := factory()
-		if _, err := exec.LookPath(tool.BinaryName()); err == nil {
+		if tool.BinaryName() == "" {
+			available = append(available, name)
+		} else if _, err := exec.LookPath(tool.BinaryName()); err == nil {
 			available = append(available, name)
 		}
 	}
@@ -75,42 +80,94 @@ func DetectAvailableTools(toolFactories map[string]server.ToolFactory) []string 
 // "tool:model" entry for every fixed model the tool accepts. Dynamic model
 // namespaces include their configured default and advertise "dynamic": true
 // on the bare tool entry. Model entries carry their model-specific efforts.
-func BuildModelList(available []string, factories map[string]server.ToolFactory, configured *settings.Settings) ModelList {
+func BuildModelList(ctx context.Context, available []string, factories map[string]server.ToolFactory, configured *settings.Settings) ModelList {
 	now := nowUnix()
-	var data []ModelInfo
-	for _, name := range available {
-		info := ModelInfo{
-			ID:      name,
-			Object:  "model",
-			Created: now,
-			OwnedBy: "rcodegen",
-		}
-		factory, ok := factories[name]
-		if !ok {
-			data = append(data, info)
-			continue
-		}
-		tool := factory()
-		applyToolSettings(tool, configured)
-		def := tool.DefaultModelSetting()
-		info.Efforts = runner.EffortsForModel(tool, def)
-		models := tool.ValidModels()
-		info.Dynamic = len(models) == 0
-		data = append(data, info)
-		if len(models) == 0 && def != "" {
-			models = []string{def}
-		}
-		for _, m := range models {
-			data = append(data, ModelInfo{
-				ID:      name + ":" + m,
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	type toolModels struct {
+		data []ModelInfo
+	}
+	results := make([]toolModels, len(available))
+	var wg sync.WaitGroup
+	for idx, name := range available {
+		name := name
+		idx := idx
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			info := ModelInfo{
+				ID:      name,
 				Object:  "model",
 				Created: now,
 				OwnedBy: "rcodegen",
-				Default: m == def,
-				Efforts: runner.EffortsForModel(tool, m),
-			})
-		}
+			}
+			factory, ok := factories[name]
+			if !ok {
+				results[idx] = toolModels{data: []ModelInfo{info}}
+				return
+			}
+			tool := factory()
+			applyToolSettings(tool, configured)
+			def := tool.DefaultModelSetting()
+			info.Efforts = runner.EffortsForModel(tool, def)
+			models := tool.ValidModels()
+			info.Dynamic = len(models) == 0
+			entries := []ModelInfo{info}
+			if len(models) == 0 {
+				if lister, ok := tool.(runner.DynamicModelLister); ok {
+					probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+					discovered, err := lister.ListAvailableModels(probeCtx)
+					cancel()
+					availableSet := make(map[string]bool, len(discovered))
+					if err == nil {
+						for _, model := range discovered {
+							availableSet[model] = true
+						}
+					}
+					if def != "" {
+						if _, discovered := availableSet[def]; !discovered {
+							availableSet[def] = false
+						}
+					}
+					models = make([]string, 0, len(availableSet))
+					for model := range availableSet {
+						models = append(models, model)
+					}
+					sort.Strings(models)
+					for _, model := range models {
+						value := availableSet[model]
+						entries = append(entries, ModelInfo{
+							ID: name + ":" + model, Object: "model", Created: now, OwnedBy: "rcodegen",
+							Default: model == def, Efforts: runner.EffortsForModel(tool, model), Available: &value,
+						})
+					}
+					results[idx] = toolModels{data: entries}
+					return
+				}
+				if def != "" {
+					models = []string{def}
+				}
+			}
+			for _, m := range models {
+				entries = append(entries, ModelInfo{
+					ID:      name + ":" + m,
+					Object:  "model",
+					Created: now,
+					OwnedBy: "rcodegen",
+					Default: m == def,
+					Efforts: runner.EffortsForModel(tool, m),
+				})
+			}
+			results[idx] = toolModels{data: entries}
+		}()
 	}
+	wg.Wait()
+	var data []ModelInfo
+	for _, result := range results {
+		data = append(data, result.data...)
+	}
+	sort.SliceStable(data, func(i, j int) bool { return data[i].ID < data[j].ID })
 	return ModelList{
 		Object: "list",
 		Data:   data,

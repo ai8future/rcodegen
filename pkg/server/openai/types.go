@@ -12,11 +12,12 @@ import (
 
 // ChatCompletionRequest represents an OpenAI-compatible chat completion request.
 type ChatCompletionRequest struct {
-	Model     string    `json:"model"`
-	Messages  []Message `json:"messages"`
-	Stream    bool      `json:"stream,omitempty"`
-	WorkDirs  []string  `json:"work_dirs,omitempty"`
-	SessionID string    `json:"session_id,omitempty"`
+	Model           string    `json:"model"`
+	Messages        []Message `json:"messages"`
+	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
+	Stream          bool      `json:"stream,omitempty"`
+	WorkDirs        []string  `json:"work_dirs,omitempty"`
+	SessionID       string    `json:"session_id,omitempty"`
 	// CloneWorkDirs runs the tool against throwaway copies of work_dirs so
 	// concurrent runs never write state into the same source tree.
 	CloneWorkDirs bool `json:"clone_work_dirs,omitempty"`
@@ -228,8 +229,11 @@ type ModelInfo struct {
 	Created int64    `json:"created"`
 	OwnedBy string   `json:"owned_by"`
 	Default bool     `json:"default,omitempty"` // true for a tool's default model
-	Efforts []string `json:"efforts,omitempty"` // valid "-{effort}" suffixes for this entry
+	Efforts []string `json:"efforts,omitempty"` // accepted reasoning-effort values for this entry
 	Dynamic bool     `json:"dynamic,omitempty"` // true when arbitrary provider/model names are accepted
+	// Available describes live runtime visibility for local discovered/default
+	// models. Static and bare dynamic entries omit it.
+	Available *bool `json:"available,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

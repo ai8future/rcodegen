@@ -844,8 +844,8 @@ func TestChatCompletions_ArtifactsRideTheStreamingFinalChunk(t *testing.T) {
 	}
 }
 
-// A failed run's half-written files are usually the most diagnostic thing it
-// produced, so they come back too.
+// A failed synchronous run returns the generic execution-failure envelope
+// rather than a false successful completion.
 func TestChatCompletions_ArtifactsSurviveAFailedRun(t *testing.T) {
 	chassis.RequireMajor(11)
 	installFakeOpenCodeWriting(t,
@@ -853,12 +853,14 @@ func TestChatCompletions_ArtifactsSurviveAFailedRun(t *testing.T) {
 	src := t.TempDir()
 	h := artifactHandler(1)
 
-	resp := postChat(t, h, chatBody(
-		`"work_dirs":["`+src+`"],"clone_work_dirs":true,"return_artifacts":true`))
-
-	wantPaths(t, resp.Artifacts, "progress.md")
-	if got := contentOf(t, resp.Artifacts, "progress.md"); got != "got this far" {
-		t.Errorf("progress.md content = %q, want %q", got, "got this far")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(chatBody(
+		`"work_dirs":["`+src+`"],"clone_work_dirs":true,"return_artifacts":true`))))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "tool_execution_failed") || !strings.Contains(rec.Body.String(), "boom") {
+		t.Fatalf("failure body = %s", rec.Body.String())
 	}
 }
 

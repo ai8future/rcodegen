@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -24,7 +25,7 @@ func claudeCodexFactories() map[string]server.ToolFactory {
 }
 
 func TestBuildModelList_EnumeratesToolModels(t *testing.T) {
-	ml := BuildModelList([]string{"claude", "codex"}, claudeCodexFactories(), nil)
+	ml := BuildModelList(context.Background(), []string{"claude", "codex"}, claudeCodexFactories(), nil)
 
 	ids := make(map[string]ModelInfo, len(ml.Data))
 	for _, m := range ml.Data {
@@ -82,7 +83,7 @@ func TestBuildModelList_DynamicToolIncludesConfiguredDefault(t *testing.T) {
 	}
 	s := settings.GetDefaultSettings()
 	s.Defaults.OpenCode.Model = "custom/provider-model"
-	ml := BuildModelList([]string{"opencode"}, factories, s)
+	ml := BuildModelList(context.Background(), []string{"opencode"}, factories, s)
 
 	want := "opencode:custom/provider-model"
 	found := false

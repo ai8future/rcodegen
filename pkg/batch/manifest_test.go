@@ -148,6 +148,27 @@ func TestLoadManifest(t *testing.T) {
 	}
 }
 
+func TestLoadManifestAcceptsLocalRuntimeTools(t *testing.T) {
+	for _, tool := range []string{"ollama", "lmstudio"} {
+		path := writeManifestJSON(t, map[string]any{"name": "local", "jobs": []map[string]any{{"name": tool, "task": "hi", "tool": tool, "model": "model"}}})
+		if _, err := LoadManifest(path); err != nil {
+			t.Fatalf("%s manifest: %v", tool, err)
+		}
+	}
+}
+
+func TestLoadManifestRejectsUnsafeOrDuplicateNames(t *testing.T) {
+	for _, manifest := range []map[string]any{
+		{"name": "../escape", "jobs": []map[string]any{{"name": "job", "task": "hi"}}},
+		{"name": "safe", "jobs": []map[string]any{{"name": "../job", "task": "hi"}}},
+		{"name": "safe", "jobs": []map[string]any{{"name": "same", "task": "hi"}, {"name": "same", "task": "hi"}}},
+	} {
+		if _, err := LoadManifest(writeManifestJSON(t, manifest)); err == nil {
+			t.Fatalf("unsafe manifest accepted: %+v", manifest)
+		}
+	}
+}
+
 func TestLoadManifest_KilocodeIsValidTool(t *testing.T) {
 	manifest := map[string]any{
 		"name": "smoke",

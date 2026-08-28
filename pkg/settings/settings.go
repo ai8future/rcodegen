@@ -14,14 +14,17 @@ import (
 )
 
 const (
-	ConfigDirName           = ".rcodegen"
-	ConfigFileName          = "settings.json"
-	DefaultClaudeBudget     = "10.00"
-	DefaultClaudeEffort     = "xhigh"
-	DefaultOpenCodeModel    = "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"
-	DefaultOpenCodeProvider = "deepinfra"
-	DefaultKiloCodeModel    = "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"
-	DefaultKiloCodeProvider = "deepinfra"
+	ConfigDirName                = ".rcodegen"
+	ConfigFileName               = "settings.json"
+	DefaultClaudeBudget          = "10.00"
+	DefaultClaudeEffort          = "xhigh"
+	DefaultOpenCodeModel         = "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"
+	DefaultOpenCodeProvider      = "deepinfra"
+	DefaultKiloCodeModel         = "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"
+	DefaultKiloCodeProvider      = "deepinfra"
+	DefaultOllamaBaseURL         = "http://localhost:11434"
+	DefaultLMStudioBaseURL       = "http://localhost:1234"
+	DefaultLocalAITimeoutSeconds = 600
 )
 
 // TaskDef defines a task shortcut with its prompt
@@ -59,6 +62,15 @@ type KiloCodeDefaults struct {
 	Provider string `json:"provider,omitempty"` // Default provider name; model string carries provider selection
 }
 
+// LocalAIDefaults configures an OpenAI-compatible local model runtime.
+type LocalAIDefaults struct {
+	BaseURL        string `json:"base_url,omitempty"`
+	Model          string `json:"model,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	AllowRemote    bool   `json:"allow_remote,omitempty"`
+	APIKey         string `json:"api_key,omitempty"`
+}
+
 // Defaults holds default settings for all tools
 type Defaults struct {
 	Codex    CodexDefaults    `json:"codex"`
@@ -66,6 +78,8 @@ type Defaults struct {
 	Gemini   GeminiDefaults   `json:"gemini,omitempty"`
 	OpenCode OpenCodeDefaults `json:"opencode,omitempty"`
 	KiloCode KiloCodeDefaults `json:"kilocode,omitempty"`
+	Ollama   LocalAIDefaults  `json:"ollama,omitempty"`
+	LMStudio LocalAIDefaults  `json:"lmstudio,omitempty"`
 }
 
 // Settings holds all configuration for rcodegen tools
@@ -81,12 +95,18 @@ type Settings struct {
 // All fields are optional (required:"false") — only non-empty values apply.
 // Merge order: defaults < settings.json < env vars < CLI flags.
 type EnvOverrides struct {
-	CodeDir   string `env:"RCODEGEN_CODE_DIR" required:"false"`
-	OutputDir string `env:"RCODEGEN_OUTPUT_DIR" required:"false"`
-	Model     string `env:"RCODEGEN_MODEL" required:"false"`
-	Budget    string `env:"RCODEGEN_BUDGET" required:"false"`
-	Effort    string `env:"RCODEGEN_EFFORT" required:"false"`
-	LogLevel  string `env:"RCODEGEN_LOG_LEVEL" required:"false"`
+	CodeDir         string `env:"RCODEGEN_CODE_DIR" required:"false"`
+	OutputDir       string `env:"RCODEGEN_OUTPUT_DIR" required:"false"`
+	Model           string `env:"RCODEGEN_MODEL" required:"false"`
+	Budget          string `env:"RCODEGEN_BUDGET" required:"false"`
+	Effort          string `env:"RCODEGEN_EFFORT" required:"false"`
+	LogLevel        string `env:"RCODEGEN_LOG_LEVEL" required:"false"`
+	OllamaBaseURL   string `env:"RCODEGEN_OLLAMA_BASE_URL" required:"false"`
+	OllamaModel     string `env:"RCODEGEN_OLLAMA_MODEL" required:"false"`
+	OllamaAPIKey    string `env:"RCODEGEN_OLLAMA_API_KEY" required:"false"`
+	LMStudioBaseURL string `env:"RCODEGEN_LMSTUDIO_BASE_URL" required:"false"`
+	LMStudioModel   string `env:"RCODEGEN_LMSTUDIO_MODEL" required:"false"`
+	LMStudioAPIKey  string `env:"RCODEGEN_LMSTUDIO_API_KEY" required:"false"`
 }
 
 // applyEnvOverrides loads environment variable overrides and merges them into settings.
@@ -113,6 +133,24 @@ func applyEnvOverrides(s *Settings) {
 	if env.Effort != "" {
 		s.Defaults.Claude.Effort = env.Effort
 		s.Defaults.Codex.Effort = env.Effort
+	}
+	if env.OllamaBaseURL != "" {
+		s.Defaults.Ollama.BaseURL = env.OllamaBaseURL
+	}
+	if env.OllamaModel != "" {
+		s.Defaults.Ollama.Model = env.OllamaModel
+	}
+	if env.OllamaAPIKey != "" {
+		s.Defaults.Ollama.APIKey = env.OllamaAPIKey
+	}
+	if env.LMStudioBaseURL != "" {
+		s.Defaults.LMStudio.BaseURL = env.LMStudioBaseURL
+	}
+	if env.LMStudioModel != "" {
+		s.Defaults.LMStudio.Model = env.LMStudioModel
+	}
+	if env.LMStudioAPIKey != "" {
+		s.Defaults.LMStudio.APIKey = env.LMStudioAPIKey
 	}
 }
 
@@ -251,6 +289,14 @@ func GetDefaultSettings() *Settings {
 				Model:    DefaultKiloCodeModel,
 				Provider: DefaultKiloCodeProvider,
 			},
+			Ollama: LocalAIDefaults{
+				BaseURL:        DefaultOllamaBaseURL,
+				TimeoutSeconds: DefaultLocalAITimeoutSeconds,
+			},
+			LMStudio: LocalAIDefaults{
+				BaseURL:        DefaultLMStudioBaseURL,
+				TimeoutSeconds: DefaultLocalAITimeoutSeconds,
+			},
 		},
 		Tasks: make(map[string]TaskDef),
 	}
@@ -294,6 +340,8 @@ func LoadWithFallback() (*Settings, bool, error) {
 	if settings.Defaults.KiloCode.Provider == "" {
 		settings.Defaults.KiloCode.Provider = DefaultKiloCodeProvider
 	}
+	fillLocalAIDefaults(&settings.Defaults.Ollama, DefaultOllamaBaseURL)
+	fillLocalAIDefaults(&settings.Defaults.LMStudio, DefaultLMStudioBaseURL)
 	if settings.DefaultBuildDir == "" {
 		settings.DefaultBuildDir = settings.CodeDir // Default to code_dir if not set
 	}
@@ -312,6 +360,15 @@ func LoadWithFallback() (*Settings, bool, error) {
 		settings.Tasks[name] = task // Always use built-in defaults for reserved names
 	}
 	return settings, true, nil
+}
+
+func fillLocalAIDefaults(defaults *LocalAIDefaults, baseURL string) {
+	if defaults.BaseURL == "" {
+		defaults.BaseURL = baseURL
+	}
+	if defaults.TimeoutSeconds <= 0 {
+		defaults.TimeoutSeconds = DefaultLocalAITimeoutSeconds
+	}
 }
 
 // ToTaskConfig converts Settings to the legacy TaskConfig format

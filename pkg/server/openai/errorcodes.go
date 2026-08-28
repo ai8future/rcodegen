@@ -46,14 +46,15 @@ const (
 	// Retryable: a transient server-side or environmental failure. The same
 	// request can succeed later.
 
-	codeConcurrencyLimit ErrorCode = "concurrency_limit"
-	codeAsyncCapacity    ErrorCode = "async_capacity"
-	codeCloneFailed      ErrorCode = "clone_failed"
-	codeWorkDirFailed    ErrorCode = "work_dir_failed"
-	codeBundleFailed     ErrorCode = "bundle_failed"
-	codeBundleListFailed ErrorCode = "bundle_list_failed"
-	codeSaveFailed       ErrorCode = "save_failed"
-	codeServerShutdown   ErrorCode = "server_shutdown"
+	codeConcurrencyLimit    ErrorCode = "concurrency_limit"
+	codeAsyncCapacity       ErrorCode = "async_capacity"
+	codeCloneFailed         ErrorCode = "clone_failed"
+	codeWorkDirFailed       ErrorCode = "work_dir_failed"
+	codeBundleFailed        ErrorCode = "bundle_failed"
+	codeBundleListFailed    ErrorCode = "bundle_list_failed"
+	codeSaveFailed          ErrorCode = "save_failed"
+	codeServerShutdown      ErrorCode = "server_shutdown"
+	codeToolExecutionFailed ErrorCode = "tool_execution_failed"
 )
 
 // errorRetryable classifies every declared error code. The mapping is the
@@ -121,7 +122,8 @@ var errorRetryable = map[ErrorCode]bool{
 	// An async run was still in flight when the server shut down. Nothing about
 	// the request was wrong, and rserve keeps no durable state, so the caller's
 	// only recovery is to submit it again.
-	codeServerShutdown: true,
+	codeServerShutdown:      true,
+	codeToolExecutionFailed: true,
 }
 
 // retryableForCode reports whether a caller should retry an error with this

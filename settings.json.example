@@ -21,6 +21,20 @@
     "kilocode": {
       "model": "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
       "provider": "deepinfra"
+    },
+    "ollama": {
+      "base_url": "http://localhost:11434",
+      "model": "",
+      "timeout_seconds": 600,
+      "allow_remote": false,
+      "api_key": ""
+    },
+    "lmstudio": {
+      "base_url": "http://localhost:1234",
+      "model": "",
+      "timeout_seconds": 600,
+      "allow_remote": false,
+      "api_key": ""
     }
   }
 }

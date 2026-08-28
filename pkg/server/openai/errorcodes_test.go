@@ -37,14 +37,15 @@ var wantRetryable = map[ErrorCode]bool{
 	"artifacts_require_clone":  false,
 	"run_cancelled":            false,
 
-	"concurrency_limit":  true,
-	"async_capacity":     true,
-	"clone_failed":       true,
-	"work_dir_failed":    true,
-	"bundle_failed":      true,
-	"bundle_list_failed": true,
-	"save_failed":        true,
-	"server_shutdown":    true,
+	"concurrency_limit":     true,
+	"async_capacity":        true,
+	"clone_failed":          true,
+	"work_dir_failed":       true,
+	"bundle_failed":         true,
+	"bundle_list_failed":    true,
+	"save_failed":           true,
+	"server_shutdown":       true,
+	"tool_execution_failed": true,
 }
 
 func TestErrorRetryable_MatchesTheShippedClassification(t *testing.T) {

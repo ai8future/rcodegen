@@ -3,8 +3,11 @@ package server
 import (
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +16,8 @@ import (
 	"rcodegen/pkg/envelope"
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/server/pb"
+	"rcodegen/pkg/settings"
+	"rcodegen/pkg/tools/localai"
 	"rcodegen/pkg/tools/opencode"
 
 	chassis "github.com/ai8future/chassis-go/v11"
@@ -60,6 +65,56 @@ func TestRunTask_NonStreamToolReturnsStdout(t *testing.T) {
 	}
 	if resultOutput != "plain gRPC output" {
 		t.Fatalf("result output = %q, want plain gRPC output", resultOutput)
+	}
+}
+
+func TestRunTask_LocalAIReturnsOutputUsageEffort(t *testing.T) {
+	chassis.RequireMajor(11)
+	var effort string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), `"reasoning_effort":"max"`) {
+			effort = "max"
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"grpc local"}}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`))
+	}))
+	defer backend.Close()
+	configured := settings.GetDefaultSettings()
+	configured.Defaults.Ollama.BaseURL = backend.URL
+	s := NewServer(configured, map[string]ToolFactory{
+		"ollama": func() runner.Tool { return localai.NewOllama() },
+	}, NewRunRegistry(1), nil)
+	stream := newBundleTestStream(context.Background())
+	if err := s.RunTask(&pb.RunTaskRequest{Tool: "ollama", Task: "hello", Model: "model", Effort: "max"}, stream); err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	var result *pb.ResultEvent
+	for _, event := range stream.events {
+		if event.GetResult() != nil {
+			result = event.GetResult()
+		}
+	}
+	if result == nil || result.Output != "grpc local" || result.Usage.GetInputTokens() != 2 || result.Usage.GetOutputTokens() != 3 || result.OutputTruncated {
+		t.Fatalf("result = %+v", result)
+	}
+	if effort != "max" {
+		t.Fatalf("backend effort = %q", effort)
+	}
+}
+
+func TestRunTask_InvalidLocalAIConfigDoesNotAcquireSlot(t *testing.T) {
+	chassis.RequireMajor(11)
+	configured := settings.GetDefaultSettings()
+	reg := NewRunRegistry(1)
+	s := NewServer(configured, map[string]ToolFactory{
+		"ollama": func() runner.Tool { return localai.NewOllama() },
+	}, reg, nil)
+	stream := newBundleTestStream(context.Background())
+	if err := s.RunTask(&pb.RunTaskRequest{Tool: "ollama", Task: "hello"}, stream); err == nil {
+		t.Fatal("empty local model was accepted")
+	}
+	if reg.ActiveCount() != 0 || reg.QueuedCount() != 0 || len(stream.events) != 0 {
+		t.Fatalf("invalid request touched execution state: active=%d queued=%d events=%d", reg.ActiveCount(), reg.QueuedCount(), len(stream.events))
 	}
 }
 

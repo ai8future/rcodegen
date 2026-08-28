@@ -22,6 +22,7 @@ import (
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
 	"rcodegen/pkg/tools/kilocode"
+	"rcodegen/pkg/tools/localai"
 	"rcodegen/pkg/tools/opencode"
 	"rcodegen/pkg/workspace"
 )
@@ -214,6 +215,8 @@ func New(s *settings.Settings) *Orchestrator {
 		"gemini":   gemini.New(),
 		"kilocode": kilocode.New(),
 		"opencode": opencode.New(),
+		"ollama":   localai.NewOllama(),
+		"lmstudio": localai.NewLMStudio(),
 	}
 	for _, tool := range tools {
 		if aware, ok := tool.(runner.SettingsAware); ok {

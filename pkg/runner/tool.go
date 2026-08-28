@@ -111,6 +111,12 @@ type DirectAPIRunner interface {
 	RunDirectAPI(ctx context.Context, cfg *Config, workDir, task string) int
 }
 
+// DynamicModelLister is implemented by API-backed tools whose model inventory
+// is supplied by a live runtime instead of a fixed compile-time list.
+type DynamicModelLister interface {
+	ListAvailableModels(ctx context.Context) ([]string, error)
+}
+
 // ModelEffortProvider is an optional interface for tools whose supported
 // reasoning efforts vary by model. Tools that do not implement it use the
 // tool-wide ValidEfforts list for every model.

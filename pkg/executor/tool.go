@@ -3,9 +3,9 @@
 package executor
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -37,8 +37,14 @@ func (e *ToolExecutor) Execute(step *bundle.Step, ctx *orchestrator.Context, ws 
 
 	// Build config
 	cfg := &runner.Config{
-		Task:  task,
-		Model: step.Model,
+		Task: task,
+	}
+	workDir := ctx.Inputs["codebase"]
+	if workDir == "" {
+		workDir, _ = os.Getwd()
+	}
+	if workDir != "" {
+		cfg.WorkDirs = []string{workDir}
 	}
 
 	// Apply tool-specific defaults (sets MaxBudget, etc.)
@@ -50,10 +56,25 @@ func (e *ToolExecutor) Execute(step *bundle.Step, ctx *orchestrator.Context, ws 
 		base, effort := runner.SplitModelEffort(tool, step.Model)
 		cfg.Model = base
 		if effort != "" {
+			if step.Effort != "" && step.Effort != effort {
+				return envelope.New().Failure("INVALID_CONFIG", "conflicting model suffix and explicit effort").Build(), nil
+			}
 			cfg.Effort = effort
 		}
 	} else if cfg.Model == "" {
 		cfg.Model = tool.DefaultModel()
+	}
+	if step.Effort != "" {
+		cfg.Effort = step.Effort
+	}
+	if err := runner.ValidateModel(tool, cfg.Model); err != nil {
+		return envelope.New().Failure("INVALID_CONFIG", err.Error()).Build(), nil
+	}
+	if err := runner.ValidateEffort(tool, cfg.Model, cfg.Effort); err != nil {
+		return envelope.New().Failure("INVALID_CONFIG", err.Error()).Build(), nil
+	}
+	if err := tool.ValidateConfig(cfg); err != nil {
+		return envelope.New().Failure("INVALID_CONFIG", err.Error()).Build(), nil
 	}
 
 	// Reuse session if available
@@ -61,46 +82,55 @@ func (e *ToolExecutor) Execute(step *bundle.Step, ctx *orchestrator.Context, ws 
 		cfg.SessionID = sessionID
 	}
 
-	// Get working directory
-	workDir := ctx.Inputs["codebase"]
-	if workDir == "" {
-		workDir, _ = os.Getwd()
-	}
-
-	// Build and run command
-	start := time.Now()
-	cmd := tool.BuildCommand(cfg, workDir, task)
-
 	// Create log file for real-time output
 	logDir := filepath.Join(ws.JobDir, "logs")
 	os.MkdirAll(logDir, 0755)
 	logPath := filepath.Join(logDir, step.Name+".log")
 	logFile, logErr := os.Create(logPath)
 
-	var stdout, stderr bytes.Buffer
+	stdout := runner.NewBoundedBuffer(64 << 10)
+	stderr := runner.NewBoundedBuffer(64 << 10)
 	if logErr == nil {
 		// Write to both buffer and log file simultaneously
-		cmd.Stdout = io.MultiWriter(&stdout, logFile)
-		cmd.Stderr = io.MultiWriter(&stderr, logFile)
+		cfg.Output = io.MultiWriter(stdout, logFile)
+		cfg.Stderr = io.MultiWriter(stderr, logFile)
 		defer logFile.Close()
 	} else {
 		// Fallback to buffer only
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
+		cfg.Output = stdout
+		cfg.Stderr = stderr
 	}
 
-	err := runWithContext(ctx.Ctx(), cmd)
+	start := time.Now()
+	var runResult *runner.RunResult
+	var err error
+	if direct, ok := tool.(runner.DirectAPIRunner); ok && direct.ShouldUseDirectAPI(cfg) {
+		runResult = runner.NewRunner(tool).RunWithContext(ctx.Ctx(), cfg)
+		if runResult.Error != nil {
+			err = runResult.Error
+		} else if runResult.ExitCode != 0 {
+			err = fmt.Errorf("tool exited with code %d", runResult.ExitCode)
+		}
+	} else {
+		cmd := tool.BuildCommand(cfg, workDir, task)
+		cmd.Stdout = cfg.Output
+		cmd.Stderr = cfg.Stderr
+		err = runWithContext(ctx.Ctx(), cmd)
+	}
 	duration := time.Since(start)
 
 	// Extract and store session ID for future reuse
-	if sessionID := extractSessionID(step.Tool, stdout.String(), stderr.String()); sessionID != "" {
+	if runResult != nil && runResult.SessionID != "" {
+		ctx.SetToolSession(step.Tool, runResult.SessionID)
+	} else if sessionID := extractSessionID(step.Tool, stdout.String(), stderr.String()); sessionID != "" {
 		ctx.SetToolSession(step.Tool, sessionID)
 	}
 
 	// Write output
 	outputPath, _ := ws.WriteOutput(step.Name, map[string]interface{}{
-		"stdout": stdout.String(),
-		"stderr": stderr.String(),
+		"stdout":           stdout.String(),
+		"stderr":           stderr.String(),
+		"output_truncated": stdout.Truncated() || stderr.Truncated(),
 	})
 
 	// Build envelope
@@ -120,9 +150,19 @@ func (e *ToolExecutor) Execute(step *bundle.Step, ctx *orchestrator.Context, ws 
 
 	// Extract cost/token info
 	usage := extractCostInfo(step.Tool, stdout.String(), stderr.String())
+	if runResult != nil {
+		if reporter, ok := tool.(runner.UsageReporter); ok {
+			if reported, ok := reporter.ReportedUsage(runResult); ok {
+				usage.InputTokens = reported.InputTokens
+				usage.OutputTokens = reported.OutputTokens
+				usage.CostUSD = reported.CostUSD
+			}
+		}
+	}
 
 	return builder.Success().
 		WithResult("output_length", stdout.Len()).
+		WithResult("output_truncated", stdout.Truncated() || stderr.Truncated()).
 		WithResult("cost_usd", usage.CostUSD).
 		WithResult("input_tokens", usage.InputTokens).
 		WithResult("output_tokens", usage.OutputTokens).

@@ -1,8 +1,14 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
+
+	"rcodegen/pkg/batch"
 )
 
 func TestReorderSubcommandArgs(t *testing.T) {
@@ -29,5 +35,31 @@ func TestReorderSubcommandArgs_PreservesFlagTerminator(t *testing.T) {
 	want := []string{"--server", "localhost:14260", "--", "batch.json", "--literal"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("reordered args = %#v, want %#v", got, want)
+	}
+}
+
+func TestPersistJobResultsConcurrently(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := &batch.Manifest{Name: "persist-test"}
+	var wg sync.WaitGroup
+	for _, name := range []string{"one", "two", "three"} {
+		name := name
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			persistJobResult(m, name, &batch.JobResult{Output: name, ExitCode: 0})
+		}()
+	}
+	wg.Wait()
+	for _, name := range []string{"one", "two", "three"} {
+		path := filepath.Join(os.Getenv("HOME"), ".rcodegen", "batches", "persist-test", "results", name+".json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result batch.JobResult
+		if json.Unmarshal(data, &result) != nil || result.Output != name {
+			t.Fatalf("result %s = %s", name, data)
+		}
 	}
 }

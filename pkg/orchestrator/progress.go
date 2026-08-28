@@ -136,6 +136,10 @@ func toolColor(tool string) string {
 		return colorWhite
 	case "kilocode":
 		return colorBrightMagenta
+	case "ollama":
+		return colorGreen
+	case "lmstudio":
+		return colorCyan
 	case "parallel":
 		return colorCyan
 	default:

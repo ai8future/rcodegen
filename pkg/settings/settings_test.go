@@ -177,12 +177,18 @@ func TestApplyEnvOverrides_Effort(t *testing.T) {
 func TestApplyEnvOverrides_NoEnvVarsSet(t *testing.T) {
 	// Ensure none of the RCODEGEN_* vars are set
 	testkit.SetEnv(t, map[string]string{
-		"RCODEGEN_CODE_DIR":   "",
-		"RCODEGEN_OUTPUT_DIR": "",
-		"RCODEGEN_MODEL":      "",
-		"RCODEGEN_BUDGET":     "",
-		"RCODEGEN_EFFORT":     "",
-		"RCODEGEN_LOG_LEVEL":  "",
+		"RCODEGEN_CODE_DIR":          "",
+		"RCODEGEN_OUTPUT_DIR":        "",
+		"RCODEGEN_MODEL":             "",
+		"RCODEGEN_BUDGET":            "",
+		"RCODEGEN_EFFORT":            "",
+		"RCODEGEN_LOG_LEVEL":         "",
+		"RCODEGEN_OLLAMA_BASE_URL":   "",
+		"RCODEGEN_OLLAMA_MODEL":      "",
+		"RCODEGEN_OLLAMA_API_KEY":    "",
+		"RCODEGEN_LMSTUDIO_BASE_URL": "",
+		"RCODEGEN_LMSTUDIO_MODEL":    "",
+		"RCODEGEN_LMSTUDIO_API_KEY":  "",
 	})
 
 	s := GetDefaultSettings()
@@ -192,6 +198,60 @@ func TestApplyEnvOverrides_NoEnvVarsSet(t *testing.T) {
 	// Nothing should have changed
 	if s.Defaults.Claude.Budget != originalBudget {
 		t.Errorf("Budget changed from %q to %q without env var", originalBudget, s.Defaults.Claude.Budget)
+	}
+}
+
+func TestDefaultSettingsLocalAIRuntimes(t *testing.T) {
+	s := GetDefaultSettings()
+	if s.Defaults.Ollama.BaseURL != DefaultOllamaBaseURL || s.Defaults.LMStudio.BaseURL != DefaultLMStudioBaseURL {
+		t.Fatalf("unexpected local runtime defaults: %+v %+v", s.Defaults.Ollama, s.Defaults.LMStudio)
+	}
+	if s.Defaults.Ollama.Model != "" || s.Defaults.LMStudio.Model != "" {
+		t.Fatal("local runtime models must not be fabricated")
+	}
+	if s.Defaults.Ollama.TimeoutSeconds != DefaultLocalAITimeoutSeconds || s.Defaults.LMStudio.TimeoutSeconds != DefaultLocalAITimeoutSeconds {
+		t.Fatal("local runtime timeouts were not initialized")
+	}
+}
+
+func TestFillLocalAIDefaultsPreservesOperatorFields(t *testing.T) {
+	d := LocalAIDefaults{Model: "custom", AllowRemote: true, APIKey: "secret"}
+	fillLocalAIDefaults(&d, DefaultOllamaBaseURL)
+	if d.BaseURL != DefaultOllamaBaseURL || d.TimeoutSeconds != DefaultLocalAITimeoutSeconds {
+		t.Fatalf("missing fallback values: %+v", d)
+	}
+	if !d.AllowRemote || d.Model != "custom" || d.APIKey != "secret" {
+		t.Fatalf("operator fields changed: %+v", d)
+	}
+}
+
+func TestApplyEnvOverridesLocalAI(t *testing.T) {
+	testkit.SetEnv(t, map[string]string{
+		"RCODEGEN_MODEL":             "global-model",
+		"RCODEGEN_OLLAMA_BASE_URL":   "http://127.0.0.1:1111",
+		"RCODEGEN_OLLAMA_MODEL":      "ollama-model",
+		"RCODEGEN_OLLAMA_API_KEY":    "ollama-key",
+		"RCODEGEN_LMSTUDIO_BASE_URL": "http://127.0.0.1:2222",
+		"RCODEGEN_LMSTUDIO_MODEL":    "lm-model",
+		"RCODEGEN_LMSTUDIO_API_KEY":  "lm-key",
+	})
+
+	s := GetDefaultSettings()
+	applyEnvOverrides(s)
+	if got := s.Defaults.Ollama; got.BaseURL != "http://127.0.0.1:1111" || got.Model != "ollama-model" || got.APIKey != "ollama-key" {
+		t.Fatalf("ollama overrides = %+v", got)
+	}
+	if got := s.Defaults.LMStudio; got.BaseURL != "http://127.0.0.1:2222" || got.Model != "lm-model" || got.APIKey != "lm-key" {
+		t.Fatalf("lmstudio overrides = %+v", got)
+	}
+}
+
+func TestGlobalModelDoesNotPoisonLocalAI(t *testing.T) {
+	testkit.SetEnv(t, map[string]string{"RCODEGEN_MODEL": "global-model"})
+	s := GetDefaultSettings()
+	applyEnvOverrides(s)
+	if s.Defaults.Ollama.Model != "" || s.Defaults.LMStudio.Model != "" {
+		t.Fatalf("global model leaked into local runtimes: %+v %+v", s.Defaults.Ollama, s.Defaults.LMStudio)
 	}
 }
 
