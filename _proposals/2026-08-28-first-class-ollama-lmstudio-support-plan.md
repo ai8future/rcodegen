@@ -22,8 +22,8 @@ These facts replace the stale compatibility assumptions in the earlier draft. Re
 
 - Default local origin: `http://localhost:11434`.
 - OpenAI-compatible chat endpoint: `POST /v1/chat/completions`.
-- Ollama supports chat messages, streaming, tools, logprobs, `tool_choice`, `logit_bias`, `user`, `n`, and `reasoning_effort`. The first implementation deliberately sends a smaller common payload; it must not claim those omitted fields are unsupported.
-- Supported Ollama reasoning efforts are `none`, `low`, `medium`, and `high`.
+- Ollama supports chat messages, streaming, tools, and reasoning/thinking control. The live compatibility page currently marks Logprobs plus the `tool_choice`, `logit_bias`, `user`, and `n` request fields as unsupported. Phase 1 does not expose or forward those fields; future forwarding work must re-check the runtime documentation rather than encode today's compatibility table as a permanent rejection policy.
+- Supported Ollama reasoning efforts are `none`, `low`, `medium`, `high`, and `max`.
 - `GET /api/tags` lists models pulled/installed in Ollama. It does **not** mean those models are currently loaded in memory.
 - `GET /api/ps` is the loaded/running-model endpoint and is follow-up metadata, not the Phase 1 inventory source.
 - Context size is not configurable through the OpenAI-compatible request. A Modelfile with `PARAMETER num_ctx` is still required.
@@ -68,7 +68,7 @@ Official references:
   - Ollama: `GET /api/tags`.
   - LM Studio: `GET /v1/models`.
 - Graceful `/v1/models` behavior when either local runtime is stopped.
-- Ollama `reasoning_effort` mapping for `none`, `low`, `medium`, and `high`.
+- Ollama `reasoning_effort` mapping for `none`, `low`, `medium`, `high`, and `max`.
 - Explicit effort fields on HTTP, gRPC, rbatch, and bundle requests so arbitrary runtime-defined model identifiers are never rewritten as effort suffixes.
 - Correct rserve synchronous, streaming-envelope, and async-callback failure reporting.
 - Direct-API support in the bundle executor.
@@ -99,7 +99,7 @@ Official references:
 | Passing the flattened task string preserves OpenAI chat semantics. | Store the original messages on `runner.Config` and send them to the local backend in order. |
 | rbatch support only needs factory registration. | Local rbatch currently uses `io.Discard`, remote rbatch ignores streamed/final output, and `WriteJobResult` is not wired into command execution. Capture and persist bounded output in every rbatch mode. |
 | The local model list represents loaded models. | It represents models available/visible to the runtime. Loaded-state metadata is a follow-up. |
-| Ollama rejects `tool_choice`, `logit_bias`, `n`, and `user`. | Current Ollama documentation lists them as supported. Phase 1 remains deliberately minimal without calling them unsupported. |
+| Ollama supports Logprobs plus `tool_choice`, `logit_bias`, `n`, and `user`. | The live compatibility page currently marks all five unsupported. Keep Phase 1's payload deliberately minimal and re-check upstream documentation before any later parameter-forwarding implementation. |
 | A hard-coded Qwen model is a safe default. | There is no universal installed model. Model defaults are optional and empty unless configured by the operator. |
 | Checking only the initial base URL enforces the remote-host policy. | Reject redirects and validate an origin-only base URL before every request. |
 | LM Studio needs no authentication setting. | LM Studio can require bearer authentication; add an optional API key/token setting. |
@@ -312,7 +312,7 @@ The utility is run-local and need not be internally synchronized; callers that p
    - failed direct execution with preserved exit code and non-nil error;
    - cancelled direct execution.
    - fixed model `model-high` suffix parsing still works;
-   - dynamic model identifiers ending in `-none`, `-low`, `-medium`, or `-high` are never truncated.
+   - dynamic model identifiers ending in `-none`, `-low`, `-medium`, `-high`, or `-max` are never truncated.
    - bounded writes retain the prefix, return the original write length, mark truncation, and do not persist a partial UTF-8 rune.
 
 **Acceptance:** `go test ./pkg/runner -run 'Test.*DirectAPI|Test.*ChatMessage|Test.*SplitModelEffort' -v` passes.
@@ -367,12 +367,12 @@ Tests must cover default construction, partial-settings fallback, every environm
 Required behavior:
 
 - Constructors: `NewOllama()` and `NewLMStudio()`.
-- `Name()` returns `ollama` or `lmstudio`, matching registry keys.
+- `Name()` returns `ollama` or `lmstudio`, matching registry keys. Add a short code comment that the names intentionally omit the repository's usual `r` prefix because these are API namespaces with no `rollama`/`rlmstudio` binaries; `ReportPrefix()` remains responsible for any report filename prefix.
 - `BinaryName()` returns empty.
 - `ShouldUseDirectAPI()` always returns true.
 - `BuildCommand()` returns a defensive `exec.Command("false")` subprocess fallback. Tests on every supported surface must prove it is not invoked.
 - `ValidModels()` returns nil because identifiers are runtime-defined.
-- Ollama `ValidEfforts()` returns `[]string{"none", "low", "medium", "high"}`.
+- Ollama `ValidEfforts()` returns `[]string{"none", "low", "medium", "high", "max"}`.
 - LM Studio `ValidEfforts()` returns nil for Phase 1; its OpenAI chat reasoning contract is not universal across models.
 - `DefaultModel()` and `DefaultModelSetting()` return the configured model or empty.
 - `ApplyToolDefaults` sets `cfg.Model` only when a model is configured.
@@ -470,7 +470,7 @@ Tests cover normal, empty, duplicate, unsorted, authenticated, unreachable, canc
 3. Add `Available *bool` to `ModelInfo`; omit it for entries where live availability is not applicable, and set it explicitly for discovered/configured local model entries.
 4. For dynamic tools implementing `DynamicModelLister`, probe concurrently with independent 500 ms child contexts so two stopped runtimes do not impose additive one-second latency.
 5. Inventory failures never fail `/v1/models`.
-6. Update the `Efforts` field/comment to mean accepted effort values; Ollama inventory/default entries advertise `none`, `low`, `medium`, and `high`, while LM Studio entries omit it in Phase 1.
+6. Update the `Efforts` field/comment to mean accepted effort values; Ollama inventory/default entries advertise `none`, `low`, `medium`, `high`, and `max`, while LM Studio entries omit it in Phase 1.
 7. Merge rules:
    - one bare dynamic tool entry;
    - one entry per discovered model, explicitly marked `available:true`;
@@ -519,9 +519,10 @@ Deterministic tests must cover:
 
 - a complete rserve chat call through a real localai tool and `httptest` backend;
 - original message roles/order reaching the backend;
-- explicit `reasoning_effort`, suffix conflict, and literal dynamic model IDs ending in `-high`;
+- every supported `reasoning_effort`, suffix conflict, and literal dynamic model IDs ending in `-high` or `-max`;
 - usage propagation;
 - sync unreachable/non-200 backend returning 502 rather than empty 200;
+- an existing CLI tool exiting nonzero follows the same 502/SSE/async-failure contract, proving the generic behavior change is intentional;
 - streaming failure event with no success terminator;
 - async failed status, retained result, and callback payload;
 - API key redaction from every response;
@@ -729,7 +730,7 @@ Never hard-code another agent's identity. Stage the entire tree as required, inc
 - [ ] A configured LM Studio API key is sent as bearer auth and never appears in logs/responses.
 - [ ] System, user, and assistant messages reach the local backend in original order.
 - [ ] HTTP `reasoning_effort` and bundle/gRPC/rbatch `effort` reach Ollama as `reasoning_effort` only when valid.
-- [ ] An explicit dynamic model identifier ending in `-none`, `-low`, `-medium`, or `-high` is preserved byte-for-byte; no effort is inferred from it.
+- [ ] An explicit dynamic model identifier ending in `-none`, `-low`, `-medium`, `-high`, or `-max` is preserved byte-for-byte; no effort is inferred from it.
 - [ ] A bare local tool works only with a configured default model.
 - [ ] A bare local tool without a configured default returns HTTP 400 before run-slot acquisition.
 - [ ] An unreachable or rejecting backend returns synchronous HTTP 502, not HTTP 200 with empty content.
