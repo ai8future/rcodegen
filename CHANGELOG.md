@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.4.2 — 2026-08-28
+- **Brought README local-runtime guidance back in sync with the live documentation and shipped tooling.** Ollama's current compatibility page now lists `tool_choice`, `logit_bias`, `user`, and `n` as supported chat-completion request fields and Logprobs as a supported feature; the README no longer claims those capabilities are unsupported, while retaining the accurate Phase 1 boundary that rcodegen deliberately sends a minimal payload
+- The guarded E2E section now states its macOS-only `memory_pressure` dependency, the requirement to verify both Ollama and LM Studio even for a single-provider run, the preflight server lifecycle, required `curl`/Python/`lms` surfaces, default rserve ports, and runtime-origin overrides. Version flag syntax is documented per binary instead of implying every binary accepts `-v`
+- The repository map now includes the local-runtime adapter, live E2E package and harness, bounded output buffer, and clone sweeper. The rserve environment table now includes the two async admission overrides already described later in the README. Details: `_bugs_fixed/2026-08-28-readme-local-runtime-drift.md`
+- Verified the statements against current Ollama and LM Studio official documentation, current binary help/version output, source environment-variable definitions, Make targets, and the repository tree; `git diff --check` and the full version-embedded build passed
+- Agent: Codex:gpt-5.6-sol-high
+
 ## 4.4.1 — 2026-08-28
 - **Added an opt-in, fail-closed live E2E suite for Ollama and LM Studio.** `make e2e-localai-preflight`, `e2e-ollama`, `e2e-lmstudio`, `e2e-localai-smoke`, and `e2e-localai-full` route through one lifecycle wrapper rather than exposing an unsafe tagged-test command. The full profile proves live inventory, invalid-effort rejection, synchronous HTTP, SSE completion and `[DONE]`, streaming gRPC with usage, and persisted local and remote rbatch results
 - **The two local runtimes are never intentionally loaded together.** The wrapper takes an inter-process lock, refuses any pre-existing loaded model, checks macOS memory pressure plus installed/estimated model size, uses concurrency 1 and a short TTL, runs Ollama to empty before LM Studio starts, and verifies the empty-state barrier after every unload. Cleanup owns exact identifiers only, preserves foreign loaded models by failing rather than unloading them, restores LM Studio's prior server state, keeps rserve/rbatch state under a temporary `HOME`, and preserves another process's lock on refusal

@@ -31,7 +31,7 @@ rcodegen provides four connected surfaces:
 
 - Go 1.26.5+
 - One or more AI CLIs installed: `claude`, `codex`, `gemini`, `opencode`, `kilocode`
-- Ollama or LM Studio running locally (optional, for direct local-model execution)
+- Ollama and/or LM Studio running locally (optional, for direct local-model execution)
 - Python 3.11+ (optional, for credit tracking via iTerm2)
 - Node.js 20+ and npm (optional, for the dashboard and scheduler)
 - `GEMINI_API_KEY` (only for Gemini image generation with `banana` / `gemini-3.1-flash-image-preview`)
@@ -59,7 +59,7 @@ make test
 make clean
 ```
 
-The root `VERSION` file is embedded at compile time so `-v` works from any directory; the Makefile also applies release linker flags and creates platform launchers. Use `make` rather than bare `go build` for distributable binaries.
+The root `VERSION` file is embedded at compile time so version reporting works from any directory. The five single-tool wrappers accept `-v` or `--version`, `rserve` accepts `-v`, and `rcodegen`/`rbatch` accept `--version`. The Makefile also applies release linker flags and creates platform launchers. Use `make` rather than bare `go build` for distributable binaries.
 
 ### Guarded Ollama and LM Studio E2E tests
 
@@ -73,6 +73,8 @@ make e2e-localai-smoke     # both runtimes, one completion each
 make e2e-localai-full      # both runtimes, all protocol and batch paths
 ```
 
+The guarded harness is macOS-specific because its load gate uses `memory_pressure`. Every target requires `curl`, Python 3, a reachable Ollama server, and the `lms` CLI, even when testing only one provider: refusing to overlap models depends on verifying both runtimes' loaded-model state. The preflight target may temporarily start an empty LM Studio server for inventory checks, but it does not load a model and restores a server it started to stopped.
+
 The wrapper acquires a process lock, refuses to start if either runtime already has a loaded model, checks memory pressure and model-size limits, and runs the providers serially with an empty-state barrier between them. It unloads only the exact model instance it loaded, preserves a previously running LM Studio server, uses a temporary `HOME` for rserve/rbatch state, and verifies that both runtimes are empty on exit. It never intentionally keeps Ollama and LM Studio models loaded at the same time.
 
 The default test models are `qwen3.5:4b` for Ollama and `gemma-4-31b-it-abliterated` for LM Studio. Override them when needed:
@@ -82,7 +84,7 @@ RCODEGEN_E2E_OLLAMA_MODEL=installed-model make e2e-ollama
 RCODEGEN_E2E_LMSTUDIO_MODEL=installed-model make e2e-lmstudio
 ```
 
-Safety thresholds can be tightened or deliberately raised with `RCODEGEN_E2E_MIN_FREE_PERCENT`, `RCODEGEN_E2E_MAX_OLLAMA_GIB`, `RCODEGEN_E2E_MAX_LM_DISK_GIB`, and `RCODEGEN_E2E_MAX_LM_ESTIMATE_GIB`. LM Studio context defaults to 2048 and can be changed with `RCODEGEN_E2E_LMSTUDIO_CONTEXT`. The full suite validates model discovery, invalid-effort rejection, synchronous HTTP, SSE termination, streaming gRPC usage, and persisted local and remote `rbatch` results.
+Safety thresholds can be tightened or deliberately raised with `RCODEGEN_E2E_MIN_FREE_PERCENT`, `RCODEGEN_E2E_MAX_OLLAMA_GIB`, `RCODEGEN_E2E_MAX_LM_DISK_GIB`, and `RCODEGEN_E2E_MAX_LM_ESTIMATE_GIB`. LM Studio context defaults to 2048 and can be changed with `RCODEGEN_E2E_LMSTUDIO_CONTEXT`. The harness uses rserve ports 18260/18261 by default; change the gRPC port with `RCODEGEN_E2E_RSERVE_PORT` and the HTTP port follows at port+1. Non-default runtime origins use `RCODEGEN_E2E_OLLAMA_BASE_URL` and `RCODEGEN_E2E_LMSTUDIO_BASE_URL`. The full suite validates model discovery, invalid-effort rejection, synchronous HTTP, SSE termination, streaming gRPC usage, and persisted local and remote `rbatch` results.
 
 Add the launchers to your `PATH`, for example:
 
@@ -424,9 +426,9 @@ curl -s http://localhost:14261/v1/chat/completions \
   -d '{"model":"ollama:MODEL_FROM_V1_MODELS","reasoning_effort":"low","messages":[{"role":"user","content":"Reply with exactly OK"}]}'
 ```
 
-`available:true` means the model identifier appeared in that runtime's live inventory response; it does not mean the model is already loaded. LM Studio may JIT-load an available model, so local requests default to a 600-second whole-request timeout. Ollama accepts efforts `none`, `low`, `medium`, `high`, and `max`; LM Studio accepts no effort override in Phase 1. Explicit dynamic identifiers are never suffix-parsed, even when they end in `-high` or `-max`.
+`available:true` means the model identifier appeared in that runtime's live inventory response; it does not mean the model is already loaded. [LM Studio may JIT-load](https://lmstudio.ai/docs/developer/core/headless#just-in-time-jit-model-loading-for-rest-endpoints) an available model, so local requests default to a 600-second whole-request timeout. Ollama accepts efforts `none`, `low`, `medium`, `high`, and `max`; LM Studio accepts no effort override in Phase 1. Explicit dynamic identifiers are never suffix-parsed, even when they end in `-high` or `-max`.
 
-Both adapters send a deliberately minimal, non-streaming OpenAI-compatible request and return text only. They do not edit files, call tools, or execute shell commands; use OpenCode or another agentic CLI configured for a local provider when the model must act on a repository. Ollama still documents `tool_choice`, `logit_bias`, `user`, `n`, and `logprobs` as unsupported, so rcodegen does not send them. rcodegen intentionally ignores `OLLAMA_HOST`; configure its client origin through settings or `RCODEGEN_OLLAMA_BASE_URL`. LM Studio bearer authentication uses `api_key` or `RCODEGEN_LMSTUDIO_API_KEY`.
+Both adapters send a deliberately minimal, non-streaming OpenAI-compatible request and return text only. They do not edit files, call tools, or execute shell commands; use OpenCode or another agentic CLI configured for a local provider when the model must act on a repository. Ollama's current [OpenAI compatibility page](https://docs.ollama.com/api/openai-compatibility) lists `tool_choice`, `logit_bias`, `user`, and `n` as supported request fields and Logprobs as a supported feature; Phase 1 still does not expose or forward them because its payload is intentionally limited to the fields rcodegen uses. rcodegen intentionally ignores `OLLAMA_HOST`; configure its client origin through settings or `RCODEGEN_OLLAMA_BASE_URL`. LM Studio bearer authentication uses `api_key` or `RCODEGEN_LMSTUDIO_API_KEY`.
 
 ## Locking & Concurrency
 
@@ -488,6 +490,7 @@ rcodegen/
 │   │   ├── tasks.go                 # Task type constants
 │   │   ├── output.go                # Banners, summaries, stats
 │   │   ├── stream.go                # Stream-JSON parser
+│   │   ├── bounded_buffer.go        # Bounded subprocess output capture
 │   │   ├── validate.go              # Model validation
 │   │   ├── versionstate.go          # VERSION-based skip state (per tool+task)
 │   │   └── migrate.go               # Grade migration utilities
@@ -496,7 +499,8 @@ rcodegen/
 │   │   ├── codex/codex.go           # Codex tool implementation
 │   │   ├── gemini/gemini.go         # Gemini tool implementation
 │   │   ├── opencode/opencode.go     # opencode tool implementation
-│   │   └── kilocode/kilocode.go     # kilocode tool implementation
+│   │   ├── kilocode/kilocode.go     # kilocode tool implementation
+│   │   └── localai/                  # Shared Ollama/LM Studio direct-API adapter
 │   ├── orchestrator/                # Multi-step workflow engine
 │   │   ├── orchestrator.go          # Main orchestration loop
 │   │   ├── context.go               # Variable resolution
@@ -523,6 +527,7 @@ rcodegen/
 │   │   │   ├── asyncruns.go         # Callback mode, /v1/runs endpoints, result retention
 │   │   │   ├── workdirclone.go      # Per-run scratch copies of work_dirs
 │   │   │   ├── cloneartifacts.go    # Files a run wrote inside its clone
+│   │   │   ├── clonesweep.go        # Startup cleanup for orphaned clone roots
 │   │   │   ├── errorcodes.go        # Error codes and their retryability
 │   │   │   ├── types.go             # Request/response types
 │   │   │   ├── models.go            # Model name parsing
@@ -548,8 +553,12 @@ rcodegen/
 │   ├── reports/                     # Report management
 │   ├── tracking/                    # Credit/cost tracking (iTerm2)
 │   └── colors/                      # ANSI color constants
+├── e2e/
+│   └── localai/                     # Opt-in live local-runtime black-box tests
 ├── dashboard/                       # Web-based reporting dashboard
 ├── scheduler/                       # Cron daemon used by dashboard schedules
+├── scripts/
+│   └── e2e-localai.sh               # Serialized, resource-guarded E2E lifecycle
 ├── bin/                             # Compiled binaries
 ├── Makefile                         # Build system with ldflags
 ├── settings.json.example            # Example config
@@ -659,6 +668,8 @@ Optional server environment variables:
 | `RSERVE_TOKEN` | Require a bearer token on HTTP endpoints except `/health`, and on gRPC calls from non-loopback peers |
 | `RSERVE_WORK_ROOT` | Absolute root that confines HTTP bundle `work_dir` values |
 | `RSERVE_ALLOW_INSECURE_REMOTE=1` | Permit a non-loopback native bind after acknowledging that both listeners are plaintext; prefer a loopback TLS gateway |
+| `RSERVE_ASYNC_MAX_LIVE` | Override the maximum number of accepted non-terminal async runs; must be a positive integer |
+| `RSERVE_ASYNC_MAX_BYTES` | Override the estimated retained-request byte budget for live async runs; must be a positive integer |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Enable OpenTelemetry export to an OTLP endpoint |
 | `KAFKAKIT_BOOTSTRAP_SERVERS` | Enable the optional kafkakit/lifecycle integration for Kafka/Redpanda brokers |
 | `KAFKAKIT_TENANT_ID` | Set the event tenant ID (default: `ai8`) |
