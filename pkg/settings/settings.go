@@ -305,10 +305,12 @@ func GetDefaultSettings() *Settings {
 // LoadWithFallback tries to load settings, falling back to defaults if not found
 // Returns the settings (possibly with defaults), whether the config file existed, and any validation error
 func LoadWithFallback() (*Settings, bool, error) {
-	settings, err := Load()
+	loaded, err := Load()
+	configExisted := err == nil
 	if err != nil {
-		return GetDefaultSettings(), false, nil
+		loaded = GetDefaultSettings()
 	}
+	settings := loaded
 	// Fill in any missing defaults
 	if settings.Defaults.Codex.Model == "" {
 		settings.Defaults.Codex.Model = "gpt-5.6-sol"
@@ -359,7 +361,7 @@ func LoadWithFallback() (*Settings, bool, error) {
 	for name, task := range GetDefaultTasks() {
 		settings.Tasks[name] = task // Always use built-in defaults for reserved names
 	}
-	return settings, true, nil
+	return settings, configExisted, nil
 }
 
 func fillLocalAIDefaults(defaults *LocalAIDefaults, baseURL string) {

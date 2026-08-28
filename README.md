@@ -61,6 +61,29 @@ make clean
 
 The root `VERSION` file is embedded at compile time so `-v` works from any directory; the Makefile also applies release linker flags and creates platform launchers. Use `make` rather than bare `go build` for distributable binaries.
 
+### Guarded Ollama and LM Studio E2E tests
+
+Live local-runtime tests are opt-in and must be run through the Make targets, not by invoking the tagged Go test directly:
+
+```bash
+make e2e-localai-preflight # inventory and resource checks; does not load a model
+make e2e-ollama            # full Ollama protocol suite only
+make e2e-lmstudio          # full LM Studio protocol suite only
+make e2e-localai-smoke     # both runtimes, one completion each
+make e2e-localai-full      # both runtimes, all protocol and batch paths
+```
+
+The wrapper acquires a process lock, refuses to start if either runtime already has a loaded model, checks memory pressure and model-size limits, and runs the providers serially with an empty-state barrier between them. It unloads only the exact model instance it loaded, preserves a previously running LM Studio server, uses a temporary `HOME` for rserve/rbatch state, and verifies that both runtimes are empty on exit. It never intentionally keeps Ollama and LM Studio models loaded at the same time.
+
+The default test models are `qwen3.5:4b` for Ollama and `gemma-4-31b-it-abliterated` for LM Studio. Override them when needed:
+
+```bash
+RCODEGEN_E2E_OLLAMA_MODEL=installed-model make e2e-ollama
+RCODEGEN_E2E_LMSTUDIO_MODEL=installed-model make e2e-lmstudio
+```
+
+Safety thresholds can be tightened or deliberately raised with `RCODEGEN_E2E_MIN_FREE_PERCENT`, `RCODEGEN_E2E_MAX_OLLAMA_GIB`, `RCODEGEN_E2E_MAX_LM_DISK_GIB`, and `RCODEGEN_E2E_MAX_LM_ESTIMATE_GIB`. LM Studio context defaults to 2048 and can be changed with `RCODEGEN_E2E_LMSTUDIO_CONTEXT`. The full suite validates model discovery, invalid-effort rejection, synchronous HTTP, SSE termination, streaming gRPC usage, and persisted local and remote `rbatch` results.
+
 Add the launchers to your `PATH`, for example:
 
 ```bash

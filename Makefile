@@ -7,7 +7,10 @@ BINS := rclaude rcodex rgemini ropencode rkilo rcodegen rserve rbatch
 .DEFAULT_GOAL := build-all
 
 .PHONY: build build-linux build-darwin build-all test clean lint deps run proto \
+        e2e-localai-preflight e2e-ollama e2e-lmstudio e2e-localai-smoke e2e-localai-full \
         $(foreach b,$(BINS),$(b) $(b)-linux $(b)-darwin)
+
+.NOTPARALLEL: e2e-localai-preflight e2e-ollama e2e-lmstudio e2e-localai-smoke e2e-localai-full
 
 # --- Native build (one target per binary) ---
 build: $(BINS)
@@ -61,3 +64,19 @@ proto:
 	@if [ -d rcodegen/pkg/server/pb ]; then \
 		mv rcodegen/pkg/server/pb/*.go pkg/server/pb/ && rm -rf rcodegen; \
 	fi
+
+# --- Opt-in live local-runtime E2E tests (serialized and lifecycle guarded) ---
+e2e-localai-preflight: rserve rbatch
+	./scripts/e2e-localai.sh preflight
+
+e2e-ollama: rserve rbatch
+	./scripts/e2e-localai.sh ollama
+
+e2e-lmstudio: rserve rbatch
+	./scripts/e2e-localai.sh lmstudio
+
+e2e-localai-smoke: rserve rbatch
+	./scripts/e2e-localai.sh smoke
+
+e2e-localai-full: rserve rbatch
+	./scripts/e2e-localai.sh full

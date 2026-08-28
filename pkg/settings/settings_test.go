@@ -122,6 +122,32 @@ func TestOpenCodeDefaults_AppliedFromLoadFallback(t *testing.T) {
 	}
 }
 
+func TestLoadWithFallbackAppliesEnvOverridesWithoutSettingsFile(t *testing.T) {
+	testkit.SetEnv(t, map[string]string{
+		"HOME":                       t.TempDir(),
+		"RCODEGEN_OLLAMA_BASE_URL":   "http://127.0.0.1:21134",
+		"RCODEGEN_OLLAMA_MODEL":      "ollama-e2e-model",
+		"RCODEGEN_OLLAMA_API_KEY":    "ollama-e2e-key",
+		"RCODEGEN_LMSTUDIO_BASE_URL": "http://127.0.0.1:21234",
+		"RCODEGEN_LMSTUDIO_MODEL":    "lmstudio-e2e-model",
+		"RCODEGEN_LMSTUDIO_API_KEY":  "lmstudio-e2e-key",
+	})
+
+	s, existed, err := LoadWithFallback()
+	if err != nil {
+		t.Fatalf("LoadWithFallback: %v", err)
+	}
+	if existed {
+		t.Fatal("settings file unexpectedly existed")
+	}
+	if got := s.Defaults.Ollama; got.BaseURL != "http://127.0.0.1:21134" || got.Model != "ollama-e2e-model" || got.APIKey != "ollama-e2e-key" {
+		t.Fatalf("Ollama fallback overrides = %+v", got)
+	}
+	if got := s.Defaults.LMStudio; got.BaseURL != "http://127.0.0.1:21234" || got.Model != "lmstudio-e2e-model" || got.APIKey != "lmstudio-e2e-key" {
+		t.Fatalf("LM Studio fallback overrides = %+v", got)
+	}
+}
+
 func TestClaudeDefaults_AppliedFromLoadFallback(t *testing.T) {
 	s, _, err := LoadWithFallback()
 	if err != nil {
