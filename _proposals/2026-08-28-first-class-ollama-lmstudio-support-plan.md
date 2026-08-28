@@ -322,12 +322,21 @@ func (t *Tool) defaults() settings.LocalAIDefaults {
 	return t.settings.Defaults.LMStudio
 }
 
-// flavorName is the short human name used in messages and prefixes.
+// flavorName is the short machine name used in messages and prefixes.
 func (t *Tool) flavorName() string {
 	if t.flavor == FlavorOllama {
 		return "ollama"
 	}
 	return "lmstudio"
+}
+
+// displayName is the human-facing runtime name. (Do not use strings.Title —
+// it is deprecated; see pkg/orchestrator/progress.go:29 for the same rule.)
+func (t *Tool) displayName() string {
+	if t.flavor == FlavorOllama {
+		return "Ollama"
+	}
+	return "LM Studio"
 }
 
 // baseURL resolves the endpoint: settings > OLLAMA_HOST (ollama only) > default.
@@ -436,7 +445,7 @@ func (t *Tool) SecurityWarning() []string { return nil }
 func (t *Tool) ToolSpecificHelpSections() []runner.HelpSection {
 	return []runner.HelpSection{
 		{
-			Title: strings.Title(t.flavorName()) + " Options",
+			Title: t.displayName() + " Options",
 			Lines: []string{
 				"  Chat-completion inference against a local runtime at " + t.baseURL() + ".",
 				"  Models are whatever the runtime has installed; GET /v1/models on",
@@ -603,6 +612,7 @@ func TestCheckBaseURL(t *testing.T) {
 		{"http://[::1]:11434", false, false},
 		{"http://192.168.1.20:11434", false, false}, // RFC 1918 = LAN, allowed
 		{"http://10.0.0.5:1234", false, false},
+		{"http://0.0.0.0:11434", false, false},     // OLLAMA_HOST bind-address form
 		{"http://8.8.8.8:11434", false, true},      // public IP blocked by default
 		{"http://example.com:11434", false, true},  // DNS name blocked by default
 		{"http://example.com:11434", true, false},  // explicit opt-in
@@ -699,7 +709,9 @@ func checkBaseURL(raw string, allowRemote bool) error {
 	if ip == nil {
 		return fmt.Errorf("base URL host %q is a DNS name; set allow_remote: true to permit it", host)
 	}
-	if ip.IsLoopback() || ip.IsPrivate() {
+	// IsUnspecified covers 0.0.0.0/:: — common when OLLAMA_HOST holds the
+	// server's *bind* address; connecting to it resolves locally, so allow it.
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() {
 		return nil
 	}
 	return fmt.Errorf("base URL host %q is public; set allow_remote: true to permit it", host)
@@ -1193,16 +1205,19 @@ Expected: success, no output.
 
 ```bash
 make rserve
-./bin/rserve --help   # confirm it starts; then in one terminal:
-./bin/rserve &
+./bin/rserve &      # startup log prints the gRPC port; HTTP is gRPC+1
 sleep 1
-curl -s http://localhost:PORT/v1/models | python3 -m json.tool | grep -A2 '"ollama'
-curl -s http://localhost:PORT/v1/chat/completions \
+# rserve derives its gRPC port from chassis.Port("rserve", chassis.PortGRPC)
+# (cmd/rserve/main.go:46) and serves the OpenAI HTTP API on gRPC+1
+# (main.go:176). Read both from the startup log, then:
+HTTP_PORT=<gRPC port from log + 1>
+curl -s http://localhost:$HTTP_PORT/v1/models | python3 -m json.tool | grep -B1 -A4 'ollama'
+curl -s http://localhost:$HTTP_PORT/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"ollama:qwen3:14b","messages":[{"role":"user","content":"Reply with exactly OK"}]}'
 ```
 
-Expected: `/v1/models` lists `ollama` (Dynamic, with live entries if Ollama is running); the chat call returns a completion whose content came from the local model. If no local runtime is installed, verify instead that the request returns a clean JSON error (non-200) mentioning the backend is unreachable — not a hang, not an empty 200. (Use the rserve port from its existing config/startup output.)
+Expected: `/v1/models` lists `ollama` (Dynamic, with live entries if Ollama is running); the chat call returns a completion whose content came from the local model. If no local runtime is installed, verify instead that the request returns a clean JSON error (non-200) mentioning the backend is unreachable — not a hang, not an empty 200.
 
 ---
 
