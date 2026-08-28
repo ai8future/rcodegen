@@ -1,22 +1,240 @@
-# First-Class Ollama and LM Studio Support — Implementation Plan
+# First-Class Ollama and LM Studio Support — Corrected Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+**Updated:** 2026-08-28
 
-**Goal:** Add `ollama` and `lmstudio` as first-class rserve/rbatch/bundle tools that call local OpenAI-compatible endpoints directly (no CLI subprocess), with live model discovery in `/v1/models`.
+**Goal:** Add `ollama` and `lmstudio` as first-class rserve, rbatch, and bundle tools that call local OpenAI-compatible HTTP endpoints directly, preserve chat-message semantics, expose the runtime's currently available model inventory, route reasoning effort without corrupting dynamic model identifiers, report backend failures correctly, and work without standalone CLI subprocesses.
 
-**Architecture:** One new package `pkg/tools/localai` implements `runner.Tool` + `runner.DirectAPIRunner` (the same hook Gemini image models use, `pkg/runner/runner.go:578`), parameterized by a two-value `Flavor`. Registered server-side only (rserve, rbatch, orchestrator) — no standalone binaries, matching the `rkilo`/`ropencode` precedent. A new optional `runner.DynamicModelLister` interface lets `/v1/models` enumerate what the local runtime actually has loaded.
+**Stop condition:** The feature is complete only when deterministic tests prove all three execution surfaces work end to end:
 
-**Tech Stack:** Go stdlib only (`net/http`, `net/url`, `net`, `encoding/json`, `httptest` for tests). No new dependencies, no vendor changes.
+1. rserve chat completions succeed and backend failures become explicit API failures.
+2. Local and remote rbatch retain the local model's generated text in bounded per-job result files instead of discarding it.
+3. bundle steps take the direct-API path and never execute the defensive `BuildCommand` fallback.
 
-**Scope:** Phases 0 + 1 of the study (`_studies/first-class-ollama-and-lm-studio-support-in-rcodegen.md`). Phase 2 (effort mapping via `reasoning_effort`, SSE streaming passthrough, `/api/v1` metadata) gets its own follow-up plan after this ships.
+The implementation must also pass the repository's full vendor, build, race-test, lint, and versioned-release workflow.
 
-**Commit protocol (overrides per-task commits):** Per repo rules, code commits happen ONLY after VERSION increment + CHANGELOG annotation. So: implement all tasks, then Task 10 does VERSION/CHANGELOG/build/test/commit/push once. Do not commit per task.
+---
 
-**Dialect constraints (verified Aug 2026, see study §2.1):**
-- Never send `tool_choice`, `logit_bias`, `n`, `user`, or logprobs fields to Ollama's `/v1` — they are unsupported.
-- Ollama silently truncates prompts exceeding the model context; context length is not settable via `/v1`.
-- LM Studio JIT-loads models on first request — first call can block for a model load. The per-request timeout must budget for this (default 600s).
-- Local model listing: Ollama `GET /api/tags`, LM Studio `GET /v1/models`.
+## Current Runtime Facts
+
+These facts replace the stale compatibility assumptions in the earlier draft. Re-check the linked official documentation immediately before implementation if the runtime versions have materially changed.
+
+### Ollama
+
+- Default local origin: `http://localhost:11434`.
+- OpenAI-compatible chat endpoint: `POST /v1/chat/completions`.
+- Ollama supports chat messages, streaming, tools, logprobs, `tool_choice`, `logit_bias`, `user`, `n`, and `reasoning_effort`. The first implementation deliberately sends a smaller common payload; it must not claim those omitted fields are unsupported.
+- Supported Ollama reasoning efforts are `none`, `low`, `medium`, and `high`.
+- `GET /api/tags` lists models pulled/installed in Ollama. It does **not** mean those models are currently loaded in memory.
+- `GET /api/ps` is the loaded/running-model endpoint and is follow-up metadata, not the Phase 1 inventory source.
+- Context size is not configurable through the OpenAI-compatible request. A Modelfile with `PARAMETER num_ctx` is still required.
+- The local Ollama API does not require authentication. An optional bearer-token setting is still useful for authenticated reverse proxies or remote/self-hosted deployments.
+
+Official references:
+
+- [Ollama OpenAI compatibility](https://docs.ollama.com/api/openai-compatibility)
+- [Ollama list models (`/api/tags`)](https://docs.ollama.com/api/tags)
+- [Ollama list running models (`/api/ps`)](https://docs.ollama.com/api/ps)
+
+### LM Studio
+
+- Default local origin: `http://localhost:1234`.
+- OpenAI-compatible chat endpoint: `POST /v1/chat/completions`.
+- OpenAI-compatible inventory endpoint: `GET /v1/models`.
+- When JIT loading is enabled, `/v1/models` can return every downloaded model, not only models already loaded in memory. When JIT is disabled, it generally returns the models visible to the running server. The plan therefore calls this an **available inventory**, not a loaded inventory.
+- LM Studio can require an API token for every request. First-class support therefore needs an optional bearer-token setting from the start.
+- LM Studio's native `/api/v1/*` API is now the richer API for stateful chat, loading, unloading, context configuration, and model metadata. Phase 1 intentionally keeps `/v1/chat/completions` as the common Ollama/LM Studio inference contract; richer native metadata remains a follow-up.
+
+Official references:
+
+- [LM Studio OpenAI compatibility](https://lmstudio.ai/docs/developer/openai-compat)
+- [LM Studio chat completions](https://lmstudio.ai/docs/developer/openai-compat/chat-completions)
+- [LM Studio OpenAI-compatible models endpoint](https://lmstudio.ai/docs/developer/openai-compat/models)
+- [LM Studio headless mode and JIT loading](https://lmstudio.ai/docs/developer/core/headless)
+- [LM Studio API authentication](https://lmstudio.ai/docs/developer/core/authentication)
+- [LM Studio native REST API](https://lmstudio.ai/docs/developer/rest)
+
+---
+
+## Requirements Summary
+
+### In scope
+
+- Direct HTTP inference for Ollama and LM Studio through `runner.DirectAPIRunner`.
+- Original rserve `system`, `user`, and `assistant` messages preserved in order for local API tools.
+- Plain task strings from gRPC, rbatch, and bundles mapped to one `user` message.
+- Optional LM Studio or reverse-proxy bearer authentication.
+- Secure, operator-configured base URLs with no request-level endpoint override.
+- Available-model discovery:
+  - Ollama: `GET /api/tags`.
+  - LM Studio: `GET /v1/models`.
+- Graceful `/v1/models` behavior when either local runtime is stopped.
+- Ollama `reasoning_effort` mapping for `none`, `low`, `medium`, and `high`.
+- Explicit effort fields on HTTP, gRPC, rbatch, and bundle requests so arbitrary runtime-defined model identifiers are never rewritten as effort suffixes.
+- Correct rserve synchronous, streaming-envelope, and async-callback failure reporting.
+- Direct-API support in the bundle executor.
+- Bounded output capture in rbatch.
+- Registration in rserve, rbatch, and orchestrator.
+- Documentation, settings example, tests, VERSION, CHANGELOG, bug notes, build, commit, and push.
+
+### Explicitly out of scope
+
+- Standalone `rollama` or `rlmstudio` binaries.
+- Model downloading, loading, unloading, or lifecycle management.
+- Advertising whether a model is currently resident in RAM/VRAM.
+- Passing arbitrary OpenAI inference parameters through rserve.
+- Tool/function-call execution.
+- Image or multimodal inputs.
+- Native upstream token-by-token SSE passthrough. In Phase 1, an rserve request with `stream:true` remains a valid SSE response, but the local backend response may arrive as one content chunk after inference completes.
+- LM Studio `/api/v1/chat` stateful sessions.
+- Ollama `/api/show` context-window preflight.
+
+---
+
+## Corrections Applied to the Earlier Draft
+
+| Earlier assumption | Corrected requirement |
+|---|---|
+| Registering a `DirectAPIRunner` in orchestrator is sufficient. | `pkg/executor.ToolExecutor` bypasses `runner.RunWithContext`; add an explicit direct-API execution branch and prove `BuildCommand` is never called. |
+| A nonzero `RunDirectAPI` result becomes an HTTP error automatically. | rserve currently ignores `RunResult.ExitCode`; explicitly propagate failure through synchronous, streaming, and async HTTP paths. |
+| Passing the flattened task string preserves OpenAI chat semantics. | Store the original messages on `runner.Config` and send them to the local backend in order. |
+| rbatch support only needs factory registration. | Local rbatch currently uses `io.Discard`, remote rbatch ignores streamed/final output, and `WriteJobResult` is not wired into command execution. Capture and persist bounded output in every rbatch mode. |
+| The local model list represents loaded models. | It represents models available/visible to the runtime. Loaded-state metadata is a follow-up. |
+| Ollama rejects `tool_choice`, `logit_bias`, `n`, and `user`. | Current Ollama documentation lists them as supported. Phase 1 remains deliberately minimal without calling them unsupported. |
+| A hard-coded Qwen model is a safe default. | There is no universal installed model. Model defaults are optional and empty unless configured by the operator. |
+| Checking only the initial base URL enforces the remote-host policy. | Reject redirects and validate an origin-only base URL before every request. |
+| LM Studio needs no authentication setting. | LM Studio can require bearer authentication; add an optional API key/token setting. |
+| `OLLAMA_HOST` is a useful client fallback. | It configures Ollama's server binding and was shadowed by populated rcodegen defaults. Use explicit rcodegen base-URL settings/env vars only. |
+| rkilo/ropencode establish a no-binary precedent. | Both currently have standalone binaries. No new local-runtime binaries remains a deliberate scope choice, not a precedent. |
+| The repository builds six binaries. | `Makefile` currently lists eight binaries. Use `make`; do not hard-code an obsolete count. |
+| A `bool` with `json:"available,omitempty"` can explicitly report an unavailable configured default. | It cannot: false is omitted. Use an optional boolean so static entries omit the field while local discovered/default entries explicitly report true or false. |
+| Existing `-{effort}` parsing is safe for runtime-defined model IDs. | An Ollama/LM Studio model may legitimately end in `-high`, `-low`, and similar text. Do not infer an effort suffix from explicit models in a dynamic namespace; use request-level effort fields. |
+
+---
+
+## Architecture
+
+### 1. Shared local runtime adapter
+
+Create `pkg/tools/localai`, parameterized by:
+
+```go
+type Flavor int
+
+const (
+    FlavorOllama Flavor = iota
+    FlavorLMStudio
+)
+```
+
+`Tool` implements:
+
+- `runner.Tool`
+- `runner.DirectAPIRunner`
+- `runner.DynamicModelLister`
+- `runner.UsageReporter`
+- `runner.SettingsAware`
+
+The tool holds only immutable flavor plus the injected settings pointer. Per-run output, error, messages, and usage remain on `runner.Config`/`runner.RunResult`; no mutable run state is stored on the shared orchestrator tool instance.
+
+### 2. Preserve chat messages at the runner boundary
+
+Add a runner-native message type so `pkg/runner` does not depend on `pkg/server/openai`:
+
+```go
+type ChatMessage struct {
+    Role    string
+    Content string
+}
+```
+
+Add `Messages []ChatMessage` to `runner.Config`.
+
+- For localai requests, rserve validates the supported standard roles and defensively copies the incoming message list into `cfg.Messages` before flattening it for CLI tools.
+- Existing CLI adapters continue using `cfg.Task` and ignore `cfg.Messages`.
+- localai uses `cfg.Messages` when non-empty.
+- gRPC, rbatch, and bundles leave `cfg.Messages` empty, so localai constructs one `user` message from `task`.
+
+### 3. Make direct execution a real cross-surface contract
+
+- `runner.RunWithContext` remains the canonical direct-API dispatch for rserve, gRPC, and rbatch.
+- `pkg/executor.ToolExecutor` gets an explicit direct-API branch because it currently builds subprocess commands itself.
+- A nonzero run must set `RunResult.Error` to a non-nil generic execution error. localai must write only bounded, sanitized backend detail, and every durable caller must capture it with an explicit bound rather than an unbounded `bytes.Buffer`.
+- HTTP response builders must inspect `ExitCode`/`Error` rather than treating every completed function call as success.
+
+### 4. Available-model discovery
+
+Introduce the explicit inventory interface:
+
+```go
+type DynamicModelLister interface {
+    ListAvailableModels(ctx context.Context) ([]string, error)
+}
+```
+
+Add this extension to model entries:
+
+```go
+Available *bool `json:"available,omitempty"`
+```
+
+`available:true` means the model identifier was returned by a successful live inventory request. `available:false` means an operator-configured default was not returned, including when the probe failed. It does not mean loaded in RAM/VRAM. Static CLI entries and bare dynamic tool entries omit the field because live runtime availability does not apply to them.
+
+The configured default model is always represented once when non-empty:
+
+- `default:true`
+- explicit `available:true` only when the live inventory included it
+- explicit `available:false` when the backend is unreachable or did not advertise it
+
+No fabricated model entry is created when the operator has not configured a default.
+
+### 5. Base URL and authentication policy
+
+Base URLs are origins, not arbitrary URL prefixes:
+
+- Scheme must be `http` or `https`.
+- Host and optional port are required.
+- User info, path other than `/`, query, and fragment are rejected.
+- Without `allow_remote`, accept only exact `localhost`, loopback IPs, or literal private IPs.
+- Reject unspecified bind addresses such as `0.0.0.0` and `::`; users must configure a connectable address.
+- DNS names other than `localhost` require `allow_remote:true`; this avoids pretending a one-time DNS lookup is a durable private-network security boundary.
+- Reject all redirects. Neither local API requires them, and following redirects would bypass the validated destination policy.
+- Use a dedicated reusable `http.Client`, not `http.DefaultClient`.
+- Do not use ambient HTTP proxy variables for local-runtime requests; connect directly to the configured runtime.
+- Add `Authorization: Bearer <api_key>` when configured.
+- Never include the API key in stats, banners, logs, errors, or model-list responses.
+
+The redirect requirement is explicit because Go clients follow redirects by default; see [`net/http.Client`](https://pkg.go.dev/net/http#Client).
+
+### 6. No universal default model
+
+`DefaultModel()` and `DefaultModelSetting()` may return empty for localai.
+
+- `ollama:<model>` and `lmstudio:<model>` always provide an explicit model.
+- Bare `ollama` or `lmstudio` works only when the corresponding settings block contains `model`.
+- A bare request without a configured model returns a deterministic 400 `invalid_model` response before acquiring a run slot.
+
+### 7. Effort is explicit for dynamic model namespaces
+
+Current `runner.SplitModelEffort` treats a trailing `-{effort}` as syntax when the remaining model is valid. That is safe for fixed model lists but ambiguous for Ollama and LM Studio, where every non-empty identifier is potentially valid.
+
+- Add `reasoning_effort` to HTTP chat-completion requests.
+- Add `effort` to bundle steps and gRPC `RunTaskRequest`; rbatch already has an `effort` field.
+- An explicit effort field is authoritative when no conflicting syntax is present. If a fixed-model suffix and explicit field are both supplied and disagree, reject the request instead of silently choosing one.
+- Change `SplitModelEffort` so it never strips a suffix from an explicit model when `ValidModels()` is empty.
+- Existing suffix behavior remains unchanged for fixed namespaces. The unambiguous bare configured-default form (for example `ollama-high`) may continue to work in HTTP, but `ollama:some-model-high` always means the literal model identifier `some-model-high`.
+- `ModelInfo.Efforts` describes accepted effort values. Documentation must explain whether a surface supplies them through a suffix or an explicit field.
+
+### 8. Share one bounded capture primitive
+
+rserve, gRPC, rbatch, and bundle execution all need an `io.Writer` that retains a prefix without making the producer fail after the cap. Add one small runner utility rather than four subtly different implementations:
+
+- `Write(p)` retains only bytes that fit but returns `len(p), nil`;
+- `Truncated()` reports whether bytes were dropped;
+- `String()` trims an incomplete trailing UTF-8 rune so persisted JSON/text remains valid;
+- construction rejects a non-positive limit;
+- limits are selected by the caller (64 KiB for durable results/diagnostics, 32 MiB for the synchronous localai response bound).
+
+The utility is run-local and need not be internally synchronized; callers that permit concurrent writes retain their existing mutex.
 
 ---
 
@@ -24,1311 +242,586 @@
 
 | File | Action | Responsibility |
 |---|---|---|
-| `pkg/settings/settings.go` | Modify | `LocalAIDefaults` struct, `Ollama`/`LMStudio` fields on `Defaults`, constants, fallback fill, env overrides |
-| `pkg/settings/settings_test.go` | Modify | defaults-fill test |
-| `pkg/runner/tool.go` | Modify | add `DynamicModelLister` optional interface |
-| `pkg/tools/localai/localai.go` | Create | `Tool` struct, `Flavor`, all ~25 `runner.Tool` methods |
-| `pkg/tools/localai/api.go` | Create | `DirectAPIRunner` impl: chat call, base-URL policy, usage capture |
-| `pkg/tools/localai/models.go` | Create | `ListModelsLive` for both flavors |
-| `pkg/tools/localai/localai_test.go` | Create | interface compliance, defaults, base-URL policy |
-| `pkg/tools/localai/api_test.go` | Create | chat happy path, error paths, cancellation, usage |
-| `pkg/tools/localai/models_test.go` | Create | live listing both flavors |
-| `pkg/server/openai/models.go` | Modify | `DetectAvailableTools` empty-BinaryName rule; `BuildModelList` live merge (+ctx) |
-| `pkg/server/openai/types.go` | Modify | `Live bool` on `ModelInfo` |
-| `pkg/server/openai/handler.go` | Modify | pass `r.Context()` to `BuildModelList` |
-| `pkg/server/openai/models_list_test.go` | Modify | live-merge + detection tests |
-| `cmd/rserve/main.go` | Modify | register two factories |
-| `pkg/batch/executor_local.go` | Modify | register two factories |
-| `pkg/orchestrator/orchestrator.go` | Modify | register two factories |
-| `README.md`, `settings.json.example` | Modify | Phase 0 docs: native tools + opencode local-provider recipe |
-| `VERSION`, `CHANGELOG.md` | Modify | Task 10 only, read VERSION at the last second |
+| `pkg/runner/config.go` | Modify | `ChatMessage`, `Config.Messages` |
+| `pkg/runner/tool.go` | Modify | `DynamicModelLister` interface |
+| `pkg/runner/runner.go` | Modify | nonzero `RunWithContext` result carries a non-nil error |
+| `pkg/runner/runner_test.go` | Modify | direct-API failure-result regression |
+| `pkg/runner/validate.go` | Modify | do not parse effort suffixes from dynamic model identifiers |
+| `pkg/runner/validate_test.go` | Create | fixed versus dynamic suffix parsing regressions |
+| `pkg/runner/bounded_buffer.go` | Create | shared prefix-retaining writer with truncation state |
+| `pkg/runner/bounded_buffer_test.go` | Create | cap, write contract, UTF-8, zero/invalid limit tests |
+| `pkg/settings/settings.go` | Modify | `LocalAIDefaults`, defaults, fallback fill, env overrides |
+| `pkg/settings/settings_test.go` | Modify | defaults, fallback, env, secret behavior |
+| `pkg/tools/localai/localai.go` | Create | flavor, Tool implementation, defaults/validation |
+| `pkg/tools/localai/client.go` | Create | base-origin validation, reusable client, auth headers |
+| `pkg/tools/localai/api.go` | Create | direct chat-completion execution and usage capture |
+| `pkg/tools/localai/models.go` | Create | available-model inventory for both flavors |
+| `pkg/tools/localai/*_test.go` | Create | tool, policy, inference, auth, inventory tests |
+| `pkg/server/openai/models.go` | Modify | API-only detection and live inventory merge |
+| `pkg/server/openai/types.go` | Modify | optional `ModelInfo.Available`, request `ReasoningEffort` |
+| `pkg/server/openai/handler.go` | Modify | message preservation/validation, effort, tool validation, execution failure propagation |
+| `pkg/server/openai/asyncruns.go` | Modify | async tool failures become failed runs |
+| `pkg/server/openai/errorcodes.go` | Modify | retryable `tool_execution_failed` code |
+| `pkg/server/openai/models_list_test.go` | Modify | inventory semantics and API-only detection |
+| `pkg/server/openai/handler_test.go` | Modify | sync/stream localai success and failure |
+| `pkg/server/openai/asyncruns_test.go` | Modify | async localai failure status/callback |
+| `pkg/executor/tool.go` | Modify | direct-API bundle branch and usage capture |
+| `pkg/executor/tool_test.go` | Modify | prove direct branch bypasses `BuildCommand` |
+| `pkg/bundle/bundle.go` | Modify | explicit bundle-step `effort` field |
+| `pkg/bundle/loader_test.go` | Modify | bundle effort decode regression |
+| `pkg/batch/executor_local.go` | Modify | bounded output/error capture and factories |
+| `pkg/batch/executor_remote.go` | Modify | retain bounded gRPC result output/error |
+| `pkg/batch/queue.go` | Modify | output fields on `JobResult` |
+| `pkg/batch/manifest.go` | Modify | permit both local-runtime tools and validate safe unique job names |
+| `pkg/batch/manifest_test.go` | Modify | tool and result-filename validation |
+| `pkg/batch/executor_test.go` | Modify | local direct-API output/failure/cancellation |
+| `pkg/batch/executor_remote_test.go` | Modify | remote output/failure/truncation |
+| `pkg/batch/reporter.go` | Modify | safe per-job result persistence if validation is not centralized there |
+| `cmd/rserve/main.go` | Modify | factories for both tools; testable factory helper |
+| `cmd/rserve/main_test.go` | Modify/Create | factory registration regression |
+| `pkg/server/server.go` | Modify | gRPC effort, validation, and bounded output/error capture |
+| `pkg/server/server_test.go` | Modify | gRPC localai success/failure/effort |
+| `proto/rserve.proto` | Modify | request `effort`, result `output_truncated`, current tool comments |
+| `pkg/server/pb/rserve*.go` | Regenerate | generated protobuf bindings |
+| `cmd/rbatch/main.go` | Modify | supported-tool help and per-job result wiring in run/spool/resume |
+| `cmd/rbatch/main_test.go` | Modify | output persistence across command modes |
+| `pkg/orchestrator/orchestrator.go` | Modify | tools for both flavors |
+| `pkg/orchestrator/orchestrator_test.go` | Modify | registration and settings injection |
+| `README.md` | Modify | setup, capabilities, security, limitations, examples |
+| `API.md` | Modify | HTTP/gRPC request fields, failure and model-inventory semantics |
+| `settings.json.example` | Modify | optional local-runtime settings |
+| `_bugs_fixed/2026-08-28-local-direct-api-integration-gaps.md` | Create | bundle, HTTP failure-path, and rbatch persistence bug record |
+| `VERSION`, `CHANGELOG.md` | Modify last | release metadata only after implementation is green |
 
 ---
 
-### Task 1: Settings — `LocalAIDefaults`
+## Implementation Tasks
 
-**Files:**
-- Modify: `pkg/settings/settings.go`
-- Test: `pkg/settings/settings_test.go`
+### Task 1: Lock the runner contracts
 
-- [ ] **Step 1: Write the failing test** (append to `pkg/settings/settings_test.go`)
+**Files:** `pkg/runner/config.go`, `pkg/runner/tool.go`, `pkg/runner/runner.go`, `pkg/runner/runner_test.go`, `pkg/runner/validate.go`, `pkg/runner/validate_test.go`, `pkg/runner/bounded_buffer.go`, `pkg/runner/bounded_buffer_test.go`
 
-```go
-func TestLocalAIDefaultsFill(t *testing.T) {
-	s := GetDefaultSettings()
-	if s.Defaults.Ollama.BaseURL != DefaultOllamaBaseURL {
-		t.Errorf("ollama base_url = %q, want %q", s.Defaults.Ollama.BaseURL, DefaultOllamaBaseURL)
-	}
-	if s.Defaults.Ollama.TimeoutSeconds != DefaultLocalAITimeoutSeconds {
-		t.Errorf("ollama timeout = %d, want %d", s.Defaults.Ollama.TimeoutSeconds, DefaultLocalAITimeoutSeconds)
-	}
-	if s.Defaults.LMStudio.BaseURL != DefaultLMStudioBaseURL {
-		t.Errorf("lmstudio base_url = %q, want %q", s.Defaults.LMStudio.BaseURL, DefaultLMStudioBaseURL)
-	}
-	if s.Defaults.Ollama.Model != DefaultOllamaModel || s.Defaults.LMStudio.Model != DefaultLMStudioModel {
-		t.Errorf("unexpected default models: %q / %q", s.Defaults.Ollama.Model, s.Defaults.LMStudio.Model)
-	}
-}
-```
+1. Add `runner.ChatMessage` and `Config.Messages`.
+2. Add `DynamicModelLister.ListAvailableModels(context.Context)`.
+3. Update `RunWithContext` so a nonzero exit code produces a non-nil `RunResult.Error` when the execution path did not already provide one. Do not fabricate an error for exit code zero.
+4. Update `SplitModelEffort` to return an explicit dynamic model identifier unchanged when `ValidModels()` is empty. Fixed model namespaces retain existing suffix parsing.
+5. Add the shared bounded capture writer described above.
+6. Add regression tests for:
+   - ordered chat-message storage;
+   - successful direct execution with nil error;
+   - failed direct execution with preserved exit code and non-nil error;
+   - cancelled direct execution.
+   - fixed model `model-high` suffix parsing still works;
+   - dynamic model identifiers ending in `-none`, `-low`, `-medium`, or `-high` are never truncated.
+   - bounded writes retain the prefix, return the original write length, mark truncation, and do not persist a partial UTF-8 rune.
 
-- [ ] **Step 2: Run it to verify failure**
+**Acceptance:** `go test ./pkg/runner -run 'Test.*DirectAPI|Test.*ChatMessage|Test.*SplitModelEffort' -v` passes.
 
-Run: `go test ./pkg/settings/ -run TestLocalAIDefaultsFill -v`
-Expected: FAIL (compile error: undefined `DefaultOllamaBaseURL` etc.)
+### Task 2: Add local-runtime settings without fake models
 
-- [ ] **Step 3: Implement**
+**Files:** `pkg/settings/settings.go`, `pkg/settings/settings_test.go`
 
-In `pkg/settings/settings.go` add to the `const` block (after `DefaultKiloCodeProvider`):
+Add:
 
 ```go
-	DefaultOllamaBaseURL         = "http://localhost:11434"
-	DefaultOllamaModel           = "qwen3:14b"
-	DefaultLMStudioBaseURL       = "http://localhost:1234"
-	DefaultLMStudioModel         = "qwen/qwen3-14b"
-	DefaultLocalAITimeoutSeconds = 600 // local models can block on JIT model loads
-```
-
-After `KiloCodeDefaults` add:
-
-```go
-// LocalAIDefaults holds settings for a local OpenAI-compatible runtime
-// (Ollama or LM Studio). BaseURL is operator-configured, never per-request.
 type LocalAIDefaults struct {
-	BaseURL        string `json:"base_url,omitempty"`        // e.g. "http://localhost:11434"
-	Model          string `json:"model,omitempty"`           // runtime's own model naming
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // whole-request cap incl. JIT load
-	AllowRemote    bool   `json:"allow_remote,omitempty"`    // permit non-loopback/non-private hosts
+    BaseURL        string `json:"base_url,omitempty"`
+    Model          string `json:"model,omitempty"`
+    TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+    AllowRemote    bool   `json:"allow_remote,omitempty"`
+    APIKey         string `json:"api_key,omitempty"`
 }
 ```
 
-Extend `Defaults`:
+Constants:
 
 ```go
-	OpenCode OpenCodeDefaults `json:"opencode,omitempty"`
-	KiloCode KiloCodeDefaults `json:"kilocode,omitempty"`
-	Ollama   LocalAIDefaults  `json:"ollama,omitempty"`
-	LMStudio LocalAIDefaults  `json:"lmstudio,omitempty"`
+DefaultOllamaBaseURL         = "http://localhost:11434"
+DefaultLMStudioBaseURL       = "http://localhost:1234"
+DefaultLocalAITimeoutSeconds = 600
 ```
 
-In `GetDefaultSettings()` add to the `Defaults` literal:
+Do **not** define hard-coded model constants.
+
+Add `Defaults.Ollama` and `Defaults.LMStudio`. Fill missing base URLs and non-positive timeouts in `GetDefaultSettings` and `LoadWithFallback`; leave models empty unless configured.
+
+Environment overrides:
+
+- `RCODEGEN_OLLAMA_BASE_URL`
+- `RCODEGEN_OLLAMA_MODEL`
+- `RCODEGEN_OLLAMA_API_KEY`
+- `RCODEGEN_LMSTUDIO_BASE_URL`
+- `RCODEGEN_LMSTUDIO_MODEL`
+- `RCODEGEN_LMSTUDIO_API_KEY`
+
+Do not add these models to the global `RCODEGEN_MODEL` fan-out. Do not inspect `OLLAMA_HOST`.
+
+Tests must cover default construction, partial-settings fallback, every environment override, no global-model poisoning, and preservation of `allow_remote`.
+
+**Acceptance:** `go test ./pkg/settings -v` passes.
+
+### Task 3: Implement the Tool skeleton
+
+**Files:** `pkg/tools/localai/localai.go`, `pkg/tools/localai/localai_test.go`
+
+Required behavior:
+
+- Constructors: `NewOllama()` and `NewLMStudio()`.
+- `Name()` returns `ollama` or `lmstudio`, matching registry keys.
+- `BinaryName()` returns empty.
+- `ShouldUseDirectAPI()` always returns true.
+- `BuildCommand()` returns a defensive `exec.Command("false")` subprocess fallback. Tests on every supported surface must prove it is not invoked.
+- `ValidModels()` returns nil because identifiers are runtime-defined.
+- Ollama `ValidEfforts()` returns `[]string{"none", "low", "medium", "high"}`.
+- LM Studio `ValidEfforts()` returns nil for Phase 1; its OpenAI chat reasoning contract is not universal across models.
+- `DefaultModel()` and `DefaultModelSetting()` return the configured model or empty.
+- `ApplyToolDefaults` sets `cfg.Model` only when a model is configured.
+- `ValidateConfig` rejects an empty model with a message explaining explicit `tool:model` syntax and the corresponding settings field.
+- `ValidateConfig` also rejects unsupported message roles and invalid Ollama/LM Studio effort combinations when called outside rserve.
+- Help text states that the tool generates text only and does not edit files or execute commands.
+- Stats/run-log fields may show flavor, model, and base origin, but never the API key.
+
+Compile-time interface assertions are added only once Tasks 4-6 provide all required methods.
+
+**Acceptance:** localai identity, default, effort, validation, and secret-redaction tests pass.
+
+### Task 4: Build the hardened HTTP client and origin policy
+
+**Files:** `pkg/tools/localai/client.go`, `pkg/tools/localai/client_test.go`
+
+Implement:
+
+- strict origin parsing and normalization;
+- loopback/private/remote policy described above;
+- rejection of user info, non-root paths, query, fragment, unspecified addresses, and unsupported schemes;
+- a reusable direct `http.Client` whose cloned transport has ambient proxies disabled while retaining standard pooling/dial/TLS behavior;
+- `CheckRedirect` that rejects every redirect;
+- shared request builder that adds JSON headers and optional bearer auth;
+- path construction using parsed URLs rather than raw string concatenation.
+- a per-request `context.WithTimeout` derived from `timeout_seconds`, so shared client state is never mutated and a shorter caller/inventory deadline still wins.
+
+Tests must include:
+
+- localhost, IPv4 loopback, IPv6 loopback, and RFC1918/private literals;
+- public IP and DNS host rejection by default;
+- remote host acceptance only with `allow_remote:true`;
+- `0.0.0.0`, `::`, credentials, paths, query, fragment, and bad schemes rejected;
+- a private/localhost test server redirecting to another server is not followed;
+- auth header present when configured and absent otherwise;
+- API key absent from returned errors and stats.
+
+**Acceptance:** policy tests pass under `go test -race`.
+
+### Task 5: Implement direct chat inference
+
+**Files:** `pkg/tools/localai/api.go`, `pkg/tools/localai/api_test.go`
+
+Use the common payload:
 
 ```go
-			Ollama: LocalAIDefaults{
-				BaseURL:        DefaultOllamaBaseURL,
-				Model:          DefaultOllamaModel,
-				TimeoutSeconds: DefaultLocalAITimeoutSeconds,
-			},
-			LMStudio: LocalAIDefaults{
-				BaseURL:        DefaultLMStudioBaseURL,
-				Model:          DefaultLMStudioModel,
-				TimeoutSeconds: DefaultLocalAITimeoutSeconds,
-			},
-```
-
-In `LoadWithFallback()` add (alongside the other fills):
-
-```go
-	if settings.Defaults.Ollama.BaseURL == "" {
-		settings.Defaults.Ollama.BaseURL = DefaultOllamaBaseURL
-	}
-	if settings.Defaults.Ollama.Model == "" {
-		settings.Defaults.Ollama.Model = DefaultOllamaModel
-	}
-	if settings.Defaults.Ollama.TimeoutSeconds == 0 {
-		settings.Defaults.Ollama.TimeoutSeconds = DefaultLocalAITimeoutSeconds
-	}
-	if settings.Defaults.LMStudio.BaseURL == "" {
-		settings.Defaults.LMStudio.BaseURL = DefaultLMStudioBaseURL
-	}
-	if settings.Defaults.LMStudio.Model == "" {
-		settings.Defaults.LMStudio.Model = DefaultLMStudioModel
-	}
-	if settings.Defaults.LMStudio.TimeoutSeconds == 0 {
-		settings.Defaults.LMStudio.TimeoutSeconds = DefaultLocalAITimeoutSeconds
-	}
-```
-
-In `EnvOverrides` add:
-
-```go
-	OllamaBaseURL   string `env:"RCODEGEN_OLLAMA_BASE_URL" required:"false"`
-	LMStudioBaseURL string `env:"RCODEGEN_LMSTUDIO_BASE_URL" required:"false"`
-```
-
-And in `applyEnvOverrides`:
-
-```go
-	if env.OllamaBaseURL != "" {
-		s.Defaults.Ollama.BaseURL = env.OllamaBaseURL
-	}
-	if env.LMStudioBaseURL != "" {
-		s.Defaults.LMStudio.BaseURL = env.LMStudioBaseURL
-	}
-```
-
-Note: do NOT add ollama/lmstudio to the `RCODEGEN_MODEL` fan-out in `applyEnvOverrides` — that variable holds cloud-tool names and would poison local model names.
-
-- [ ] **Step 4: Run tests**
-
-Run: `go test ./pkg/settings/ -v`
-Expected: PASS (all, including existing tests)
-
----
-
-### Task 2: `runner.DynamicModelLister` interface
-
-**Files:**
-- Modify: `pkg/runner/tool.go`
-
-- [ ] **Step 1: Add the interface** (after `ModelEffortProvider`, ~line 119)
-
-```go
-// DynamicModelLister is an optional interface for tools whose model list is
-// knowable only by asking a live backend (local runtimes like Ollama and
-// LM Studio). Callers must treat an error as "backend unreachable" and
-// degrade gracefully — never fail an endpoint because a local runtime is off.
-type DynamicModelLister interface {
-	ListModelsLive(ctx context.Context) ([]string, error)
-}
-```
-
-- [ ] **Step 2: Verify it compiles**
-
-Run: `go build ./pkg/runner/`
-Expected: no output (success). `context` is already imported in tool.go.
-
----
-
-### Task 3: `pkg/tools/localai` — Tool skeleton
-
-**Files:**
-- Create: `pkg/tools/localai/localai.go`
-- Test: `pkg/tools/localai/localai_test.go`
-
-- [ ] **Step 1: Write the failing test**
-
-```go
-package localai
-
-import (
-	"testing"
-
-	"rcodegen/pkg/runner"
-	"rcodegen/pkg/settings"
-)
-
-// Compile-time interface compliance is asserted in localai.go via var _.
-
-func TestFlavorIdentity(t *testing.T) {
-	o, l := NewOllama(), NewLMStudio()
-	if o.Name() != "rollama" || l.Name() != "rlmstudio" {
-		t.Errorf("names: %q, %q", o.Name(), l.Name())
-	}
-	if o.BinaryName() != "" || l.BinaryName() != "" {
-		t.Error("localai tools must report no CLI binary")
-	}
-	if o.ReportPrefix() != "ollama-" || l.ReportPrefix() != "lmstudio-" {
-		t.Errorf("prefixes: %q, %q", o.ReportPrefix(), l.ReportPrefix())
-	}
-}
-
-func TestDefaultsFromSettings(t *testing.T) {
-	s := settings.GetDefaultSettings()
-	s.Defaults.Ollama.Model = "llama3.1:8b"
-	o := NewOllama()
-	o.SetSettings(s)
-	if got := o.DefaultModelSetting(); got != "llama3.1:8b" {
-		t.Errorf("DefaultModelSetting = %q", got)
-	}
-	cfg := runner.NewConfig()
-	o.ApplyToolDefaults(cfg)
-	if cfg.Model != "llama3.1:8b" {
-		t.Errorf("ApplyToolDefaults model = %q", cfg.Model)
-	}
-}
-
-func TestValidateConfigRequiresModel(t *testing.T) {
-	o := NewOllama()
-	cfg := runner.NewConfig()
-	cfg.Model = ""
-	if err := o.ValidateConfig(cfg); err == nil {
-		t.Error("expected error for empty model")
-	}
-}
-```
-
-- [ ] **Step 2: Run to verify failure**
-
-Run: `go test ./pkg/tools/localai/ -v`
-Expected: FAIL — package does not exist yet.
-
-- [ ] **Step 3: Implement `localai.go`**
-
-```go
-// Package localai implements runner.Tool for local OpenAI-compatible model
-// runtimes (Ollama, LM Studio). Unlike every other tool package it spawns no
-// CLI: it is a pure DirectAPIRunner, calling the runtime's HTTP endpoint.
-package localai
-
-import (
-	"fmt"
-	"os"
-	"os/exec"
-	"strings"
-
-	"rcodegen/pkg/runner"
-	"rcodegen/pkg/settings"
-)
-
-var (
-	_ runner.Tool               = (*Tool)(nil)
-	_ runner.DirectAPIRunner    = (*Tool)(nil)
-	_ runner.UsageReporter      = (*Tool)(nil)
-	_ runner.DynamicModelLister = (*Tool)(nil)
-	_ runner.SettingsAware      = (*Tool)(nil)
-)
-
-// Flavor selects which local runtime this Tool instance talks to.
-type Flavor int
-
-const (
-	FlavorOllama Flavor = iota
-	FlavorLMStudio
-)
-
-// Tool implements runner.Tool for a local OpenAI-compatible runtime.
-type Tool struct {
-	settings *settings.Settings
-	flavor   Flavor
-}
-
-// NewOllama creates a tool targeting an Ollama server.
-func NewOllama() *Tool { return &Tool{flavor: FlavorOllama} }
-
-// NewLMStudio creates a tool targeting an LM Studio server.
-func NewLMStudio() *Tool { return &Tool{flavor: FlavorLMStudio} }
-
-// SetSettings sets loaded settings on the tool.
-func (t *Tool) SetSettings(s *settings.Settings) { t.settings = s }
-
-// defaults returns this flavor's settings block (zero value when unset).
-func (t *Tool) defaults() settings.LocalAIDefaults {
-	if t.settings == nil {
-		return settings.LocalAIDefaults{}
-	}
-	if t.flavor == FlavorOllama {
-		return t.settings.Defaults.Ollama
-	}
-	return t.settings.Defaults.LMStudio
-}
-
-// flavorName is the short machine name used in messages and prefixes.
-func (t *Tool) flavorName() string {
-	if t.flavor == FlavorOllama {
-		return "ollama"
-	}
-	return "lmstudio"
-}
-
-// displayName is the human-facing runtime name. (Do not use strings.Title —
-// it is deprecated; see pkg/orchestrator/progress.go:29 for the same rule.)
-func (t *Tool) displayName() string {
-	if t.flavor == FlavorOllama {
-		return "Ollama"
-	}
-	return "LM Studio"
-}
-
-// baseURL resolves the endpoint: settings > OLLAMA_HOST (ollama only) > default.
-func (t *Tool) baseURL() string {
-	if d := t.defaults(); d.BaseURL != "" {
-		return strings.TrimRight(d.BaseURL, "/")
-	}
-	if t.flavor == FlavorOllama {
-		if h := os.Getenv("OLLAMA_HOST"); h != "" {
-			if !strings.Contains(h, "://") {
-				h = "http://" + h
-			}
-			return strings.TrimRight(h, "/")
-		}
-		return settings.DefaultOllamaBaseURL
-	}
-	return settings.DefaultLMStudioBaseURL
-}
-
-func (t *Tool) timeoutSeconds() int {
-	if d := t.defaults(); d.TimeoutSeconds > 0 {
-		return d.TimeoutSeconds
-	}
-	return settings.DefaultLocalAITimeoutSeconds
-}
-
-func (t *Tool) Name() string { return "r" + t.flavorName() }
-
-// BinaryName is empty: there is no CLI. DetectAvailableTools treats an empty
-// BinaryName as "API-based, always available"; reachability surfaces at
-// request time and in live model listing instead.
-func (t *Tool) BinaryName() string { return "" }
-
-func (t *Tool) ReportDir() string    { return "_rcodegen" }
-func (t *Tool) ReportPrefix() string { return t.flavorName() + "-" }
-
-// ValidModels returns nil: the namespace is whatever the runtime has pulled.
-func (t *Tool) ValidModels() []string { return nil }
-
-// ValidEfforts returns nil in Phase 1. Phase 2 maps efforts onto the
-// /v1 "reasoning_effort" field (see the study, §2.1).
-func (t *Tool) ValidEfforts() []string { return nil }
-
-func (t *Tool) DefaultModel() string {
-	if t.flavor == FlavorOllama {
-		return settings.DefaultOllamaModel
-	}
-	return settings.DefaultLMStudioModel
-}
-
-func (t *Tool) DefaultModelSetting() string {
-	if d := t.defaults(); d.Model != "" {
-		return d.Model
-	}
-	return t.DefaultModel()
-}
-
-// BuildCommand is never executed: ShouldUseDirectAPI always returns true and
-// both runner dispatch sites check DirectAPIRunner before building a command
-// (pkg/runner/runner.go:476,578). It exists only to satisfy runner.Tool.
-func (t *Tool) BuildCommand(cfg *runner.Config, workDir, task string) *exec.Cmd {
-	return exec.Command("false")
-}
-
-func (t *Tool) ShowStatus()                                  {}
-func (t *Tool) SupportsStatusTracking() bool                 { return false }
-func (t *Tool) CaptureStatusBefore() interface{}             { return nil }
-func (t *Tool) CaptureStatusAfter() interface{}              { return nil }
-func (t *Tool) PrintStatusSummary(before, after interface{}) {}
-func (t *Tool) ToolSpecificFlags() []runner.FlagDef          { return nil }
-
-func (t *Tool) ApplyToolDefaults(cfg *runner.Config) {
-	if d := t.defaults(); d.Model != "" {
-		cfg.Model = d.Model
-		return
-	}
-	if cfg.Model == "" {
-		cfg.Model = t.DefaultModel()
-	}
-}
-
-func (t *Tool) PrepareForExecution(cfg *runner.Config) {}
-
-func (t *Tool) ValidateConfig(cfg *runner.Config) error {
-	if cfg.Model == "" {
-		return fmt.Errorf("model must be specified (e.g. %s)", t.DefaultModel())
-	}
-	return nil
-}
-
-func (t *Tool) BannerTitle() string {
-	return strings.ToUpper(t.Name())
-}
-
-func (t *Tool) BannerSubtitle() string {
-	return t.flavorName() + " (local OpenAI-compatible API)"
-}
-
-func (t *Tool) PrintToolSpecificBannerFields(cfg *runner.Config)  {}
-func (t *Tool) PrintToolSpecificSummaryFields(cfg *runner.Config) {}
-
-// SecurityWarning is nil: no subprocess is spawned and no permissions are
-// skipped — the tool only POSTs a prompt to a local HTTP endpoint.
-func (t *Tool) SecurityWarning() []string { return nil }
-
-func (t *Tool) ToolSpecificHelpSections() []runner.HelpSection {
-	return []runner.HelpSection{
-		{
-			Title: t.displayName() + " Options",
-			Lines: []string{
-				"  Chat-completion inference against a local runtime at " + t.baseURL() + ".",
-				"  Models are whatever the runtime has installed; GET /v1/models on",
-				"  rserve enumerates them live. No file editing or shell execution:",
-				"  this tool generates text only.",
-			},
-		},
-	}
-}
-
-func (t *Tool) StatsJSONFields(cfg *runner.Config) map[string]interface{} {
-	return map[string]interface{}{
-		"model":    cfg.Model,
-		"base_url": t.baseURL(),
-	}
-}
-
-func (t *Tool) UsesStreamOutput() bool { return false }
-
-func (t *Tool) RunLogFields(cfg *runner.Config) []string {
-	return []string{
-		"Model: " + cfg.Model,
-		"Endpoint: " + t.baseURL(),
-	}
-}
-```
-
-Note: the `var _ runner.DirectAPIRunner` / `UsageReporter` / `DynamicModelLister` assertions will not compile until Tasks 4–5 add those methods. If building this task standalone, comment those three assertions in and out — or simply implement Tasks 3–5 before the first `go test` run. (Recommended: treat Tasks 3–5 as one build unit; the tests are still separate.)
-
-- [ ] **Step 4: Run the Task 3 tests** (after Tasks 4–5 if building as one unit)
-
-Run: `go test ./pkg/tools/localai/ -run 'TestFlavorIdentity|TestDefaultsFromSettings|TestValidateConfigRequiresModel' -v`
-Expected: PASS
-
----
-
-### Task 4: DirectAPI chat call + base-URL policy
-
-**Files:**
-- Create: `pkg/tools/localai/api.go`
-- Test: `pkg/tools/localai/api_test.go`
-
-- [ ] **Step 1: Write the failing tests**
-
-```go
-package localai
-
-import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"testing"
-
-	"rcodegen/pkg/runner"
-	"rcodegen/pkg/settings"
-)
-
-// newTestTool points an Ollama-flavor tool at a fake backend.
-func newTestTool(baseURL string) *Tool {
-	s := settings.GetDefaultSettings()
-	s.Defaults.Ollama.BaseURL = baseURL // httptest URLs are 127.0.0.1 — passes policy
-	s.Defaults.Ollama.TimeoutSeconds = 5
-	tool := NewOllama()
-	tool.SetSettings(s)
-	return tool
-}
-
-func TestRunDirectAPIHappyPath(t *testing.T) {
-	var gotPath string
-	var gotBody map[string]interface{}
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"choices": []map[string]interface{}{
-				{"message": map[string]interface{}{"content": "local hello"}},
-			},
-			"usage": map[string]int{"prompt_tokens": 11, "completion_tokens": 7},
-		})
-	}))
-	defer ts.Close()
-
-	tool := newTestTool(ts.URL)
-	cfg := runner.NewConfig()
-	cfg.Model = "qwen3:14b"
-	var out bytes.Buffer
-	cfg.Output = &out
-
-	code := tool.RunDirectAPI(context.Background(), cfg, "", "say hello")
-	if code != 0 {
-		t.Fatalf("exit code = %d", code)
-	}
-	if gotPath != "/v1/chat/completions" {
-		t.Errorf("path = %q", gotPath)
-	}
-	if !strings.Contains(out.String(), "local hello") {
-		t.Errorf("output missing content: %q", out.String())
-	}
-	if cfg.TokenUsage == nil || cfg.TokenUsage.InputTokens != 11 || cfg.TokenUsage.OutputTokens != 7 {
-		t.Errorf("usage not captured: %+v", cfg.TokenUsage)
-	}
-	// Dialect guard: never send fields Ollama's /v1 rejects or ignores.
-	for _, banned := range []string{"tool_choice", "logit_bias", "n", "user"} {
-		if _, present := gotBody[banned]; present {
-			t.Errorf("request contains unsupported field %q", banned)
-		}
-	}
-}
-
-func TestRunDirectAPIBackendError(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"error":{"message":"model not found"}}`, http.StatusNotFound)
-	}))
-	defer ts.Close()
-
-	tool := newTestTool(ts.URL)
-	cfg := runner.NewConfig()
-	cfg.Model = "nope"
-	var errBuf bytes.Buffer
-	cfg.Stderr = &errBuf
-	if code := tool.RunDirectAPI(context.Background(), cfg, "", "x"); code == 0 {
-		t.Fatal("expected non-zero exit")
-	}
-	if !strings.Contains(errBuf.String(), "model not found") {
-		t.Errorf("stderr should surface backend message, got %q", errBuf.String())
-	}
-}
-
-func TestRunDirectAPIUnreachable(t *testing.T) {
-	tool := newTestTool("http://127.0.0.1:1") // nothing listens on port 1
-	cfg := runner.NewConfig()
-	cfg.Model = "m"
-	cfg.Stderr = &bytes.Buffer{}
-	if code := tool.RunDirectAPI(context.Background(), cfg, "", "x"); code == 0 {
-		t.Fatal("expected non-zero exit for unreachable backend")
-	}
-}
-
-func TestRunDirectAPICancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already cancelled
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	defer ts.Close()
-	tool := newTestTool(ts.URL)
-	cfg := runner.NewConfig()
-	cfg.Model = "m"
-	cfg.Stderr = &bytes.Buffer{}
-	if code := tool.RunDirectAPI(ctx, cfg, "", "x"); code == 0 {
-		t.Fatal("expected non-zero exit for cancelled context")
-	}
-}
-
-func TestCheckBaseURL(t *testing.T) {
-	cases := []struct {
-		url         string
-		allowRemote bool
-		wantErr     bool
-	}{
-		{"http://localhost:11434", false, false},
-		{"http://127.0.0.1:1234", false, false},
-		{"http://[::1]:11434", false, false},
-		{"http://192.168.1.20:11434", false, false}, // RFC 1918 = LAN, allowed
-		{"http://10.0.0.5:1234", false, false},
-		{"http://0.0.0.0:11434", false, false},     // OLLAMA_HOST bind-address form
-		{"http://8.8.8.8:11434", false, true},      // public IP blocked by default
-		{"http://example.com:11434", false, true},  // DNS name blocked by default
-		{"http://example.com:11434", true, false},  // explicit opt-in
-		{"ftp://localhost:11434", false, true},     // scheme
-		{"", false, true},
-	}
-	for _, c := range cases {
-		err := checkBaseURL(c.url, c.allowRemote)
-		if (err != nil) != c.wantErr {
-			t.Errorf("checkBaseURL(%q, %v) err=%v, wantErr=%v", c.url, c.allowRemote, err, c.wantErr)
-		}
-	}
-}
-```
-
-- [ ] **Step 2: Run to verify failure**
-
-Run: `go test ./pkg/tools/localai/ -run 'TestRunDirectAPI|TestCheckBaseURL' -v`
-Expected: FAIL (undefined `RunDirectAPI`, `checkBaseURL`)
-
-- [ ] **Step 3: Implement `api.go`**
-
-```go
-package localai
-
-import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/url"
-	"os"
-	"time"
-
-	"rcodegen/pkg/runner"
-)
-
-// chatMessage is one OpenAI-dialect message.
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// chatRequest is the subset of the chat-completions request both runtimes
-// support. Deliberately minimal: Ollama's /v1 rejects or ignores tool_choice,
-// logit_bias, n, user, and logprobs — never add them here (study §2.1).
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
-}
-
-type chatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-// checkBaseURL enforces the outbound policy: http(s) only, and the host must
-// be loopback or RFC 1918 private unless the operator set allow_remote. The
-// base URL comes only from settings/env (operator-controlled, never from a
-// request), so this is a guard against misconfiguration, not an auth boundary.
-func checkBaseURL(raw string, allowRemote bool) error {
-	if raw == "" {
-		return fmt.Errorf("base URL is empty")
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("invalid base URL %q: %w", raw, err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("base URL scheme must be http or https, got %q", u.Scheme)
-	}
-	if allowRemote {
-		return nil
-	}
-	host := u.Hostname()
-	if host == "localhost" {
-		return nil
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return fmt.Errorf("base URL host %q is a DNS name; set allow_remote: true to permit it", host)
-	}
-	// IsUnspecified covers 0.0.0.0/:: — common when OLLAMA_HOST holds the
-	// server's *bind* address; connecting to it resolves locally, so allow it.
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() {
-		return nil
-	}
-	return fmt.Errorf("base URL host %q is public; set allow_remote: true to permit it", host)
-}
-
-// ShouldUseDirectAPI always returns true: there is no CLI to fall back to.
-func (t *Tool) ShouldUseDirectAPI(cfg *runner.Config) bool { return true }
-
-// RunDirectAPI POSTs a chat completion to the local runtime, writes the
-// response text to cfg.Output, and captures token usage on cfg. Cancelling
-// ctx aborts the in-flight request. The timeout budget deliberately covers
-// LM Studio's JIT model load, which blocks the first request to a model.
-func (t *Tool) RunDirectAPI(ctx context.Context, cfg *runner.Config, workDir, task string) int {
-	out := cfg.Output
-	if out == nil {
-		out = os.Stdout
-	}
-	errw := io.Writer(os.Stderr)
-	if cfg.Stderr != nil {
-		errw = cfg.Stderr
-	}
-
-	base := t.baseURL()
-	if err := checkBaseURL(base, t.defaults().AllowRemote); err != nil {
-		fmt.Fprintf(errw, "%s: %v\n", t.flavorName(), err)
-		return 1
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(t.timeoutSeconds())*time.Second)
-	defer cancel()
-
-	body, err := json.Marshal(chatRequest{
-		Model:    cfg.Model,
-		Messages: []chatMessage{{Role: "user", Content: task}},
-	})
-	if err != nil {
-		fmt.Fprintf(errw, "%s: encoding request: %v\n", t.flavorName(), err)
-		return 1
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		fmt.Fprintf(errw, "%s: building request: %v\n", t.flavorName(), err)
-		return 1
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Fprintf(errw, "%s: request to %s failed: %v\n", t.flavorName(), base, err)
-		fmt.Fprintf(errw, "%s: is the %s server running?\n", t.flavorName(), t.flavorName())
-		return 1
-	}
-	defer resp.Body.Close()
-
-	// Bound the read: a local runtime should never send unbounded output, but
-	// a misbehaving one must not exhaust server memory (rserve holds a run
-	// slot while this executes).
-	const maxResponse = 32 << 20 // 32 MiB
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
-	if err != nil {
-		fmt.Fprintf(errw, "%s: reading response: %v\n", t.flavorName(), err)
-		return 1
-	}
-
-	var parsed chatResponse
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		fmt.Fprintf(errw, "%s: invalid JSON from backend (HTTP %d): %v\n", t.flavorName(), resp.StatusCode, err)
-		return 1
-	}
-	if resp.StatusCode != http.StatusOK {
-		msg := string(raw)
-		if parsed.Error != nil && parsed.Error.Message != "" {
-			msg = parsed.Error.Message
-		}
-		fmt.Fprintf(errw, "%s: backend returned HTTP %d: %s\n", t.flavorName(), resp.StatusCode, msg)
-		return 1
-	}
-	if len(parsed.Choices) == 0 {
-		fmt.Fprintf(errw, "%s: backend returned no choices\n", t.flavorName())
-		return 1
-	}
-
-	fmt.Fprint(out, parsed.Choices[0].Message.Content)
-
-	if parsed.Usage.PromptTokens > 0 || parsed.Usage.CompletionTokens > 0 {
-		cfg.TokenUsage = &runner.TokenUsage{
-			InputTokens:  parsed.Usage.PromptTokens,
-			OutputTokens: parsed.Usage.CompletionTokens,
-		}
-	}
-	return 0
-}
-
-// ReportedUsage reads the usage RunDirectAPI captured. CostUSD stays 0 with
-// ok=true — local inference genuinely is free, the one case where $0.00 is
-// a measurement rather than a fabrication.
-func (t *Tool) ReportedUsage(res *runner.RunResult) (runner.RunUsage, bool) {
-	if res == nil || res.TokenUsage == nil {
-		return runner.RunUsage{}, false
-	}
-	return runner.RunUsage{
-		InputTokens:  res.TokenUsage.InputTokens,
-		OutputTokens: res.TokenUsage.OutputTokens,
-	}, true
+    Model           string        `json:"model"`
+    Messages        []chatMessage `json:"messages"`
+    Stream          bool          `json:"stream"`
+    ReasoningEffort string        `json:"reasoning_effort,omitempty"`
 }
 ```
 
-- [ ] **Step 4: Run the tests**
+Rules:
 
-Run: `go test ./pkg/tools/localai/ -run 'TestRunDirectAPI|TestCheckBaseURL' -v`
-Expected: PASS (all five)
+- Use `cfg.Messages` in order when non-empty.
+- Otherwise send one `user` message containing `task`.
+- Accept only non-empty `system`, `user`, and `assistant` roles in Phase 1; reject rather than silently dropping or rewriting unsupported roles.
+- Send `stream:false` to the backend in Phase 1.
+- Send `reasoning_effort` only for Ollama and only when `cfg.Effort` is non-empty.
+- Use the configured whole-request timeout, including LM Studio JIT loading.
+- Bound response bodies at 32 MiB and explicitly detect overflow rather than silently truncating before JSON parsing.
+- Decode the first text choice and usage tokens.
+- Write content to `cfg.Output`.
+- Write a bounded, control-character-sanitized diagnostic to `cfg.Stderr` and return nonzero for policy, transport, timeout, non-2xx, malformed JSON, oversized response, or missing-choice failures. Prefer a decoded upstream `error.message` when present; never reflect an unbounded raw response body.
+- Do not echo the API key or an authorization header in diagnostics.
+- `ReportedUsage` returns token counts with zero cost and `ok:true` only when usage was actually reported.
 
----
+Tests must exercise both flavors, ordered system/user/assistant history, unsupported/empty roles, task fallback, Ollama effort mapping, LM Studio auth, usage, backend 401/404/500, unreachable server, timeout, cancellation, malformed JSON, missing choices, and oversized bodies.
 
-### Task 5: Live model listing
+**Acceptance:** `go test ./pkg/tools/localai -run 'TestRunDirectAPI|TestChat' -race -v` passes.
 
-**Files:**
-- Create: `pkg/tools/localai/models.go`
-- Test: `pkg/tools/localai/models_test.go`
+### Task 6: Implement available-model inventory
 
-- [ ] **Step 1: Write the failing tests**
+**Files:** `pkg/tools/localai/models.go`, `pkg/tools/localai/models_test.go`
+
+- Ollama requests `/api/tags` and reads `models[].name`.
+- LM Studio requests `/v1/models` and reads `data[].id`.
+- Both use the same client policy and bearer header behavior as inference.
+- Filter empty identifiers, deduplicate, and sort for stable responses/tests.
+- Return an error on policy, transport, non-200, malformed, or oversized responses.
+- Do not reinterpret the returned list as loaded-state information.
+
+Tests cover normal, empty, duplicate, unsorted, authenticated, unreachable, cancelled, malformed, non-200, and oversized responses for both flavors.
+
+**Acceptance:** all `pkg/tools/localai` tests pass with the race detector.
+
+### Task 7: Integrate inventory into `/v1/models`
+
+**Files:** `pkg/server/openai/models.go`, `pkg/server/openai/types.go`, `pkg/server/openai/handler.go`, `pkg/server/openai/models_list_test.go`
+
+1. Treat an empty `BinaryName()` as an API-only registered tool; do not call `exec.LookPath("")`.
+2. Add `context.Context` to `BuildModelList` and pass `r.Context()` from the handler.
+3. Add `Available *bool` to `ModelInfo`; omit it for entries where live availability is not applicable, and set it explicitly for discovered/configured local model entries.
+4. For dynamic tools implementing `DynamicModelLister`, probe concurrently with independent 500 ms child contexts so two stopped runtimes do not impose additive one-second latency.
+5. Inventory failures never fail `/v1/models`.
+6. Update the `Efforts` field/comment to mean accepted effort values; Ollama inventory/default entries advertise `none`, `low`, `medium`, and `high`, while LM Studio entries omit it in Phase 1.
+7. Merge rules:
+   - one bare dynamic tool entry;
+   - one entry per discovered model, explicitly marked `available:true`;
+   - the configured default included exactly once when non-empty;
+   - the default explicitly marked `available:true` only if discovered and `available:false` otherwise;
+   - no fabricated model when no default exists;
+   - stable sort and deduplication.
+
+Tests must use real localai tools against `httptest` backends and cover API-only detection, parallel probes, success, empty inventory, unreachable runtime, deadline, configured default present, configured default absent, no configured default, and omission of `available` on static/bare entries.
+
+**Acceptance:** `go test ./pkg/server/openai -run 'TestDetectAvailableTools|TestBuildModelList' -race -v` passes.
+
+### Task 8: Preserve messages and propagate rserve execution failures
+
+**Files:** `pkg/server/openai/types.go`, `pkg/server/openai/handler.go`, `pkg/server/openai/asyncruns.go`, `pkg/server/openai/errorcodes.go`, related tests
+
+#### Planning/validation
+
+- Add a `ReasoningEffort string` field tagged `json:"reasoning_effort,omitempty"` to `ChatCompletionRequest`.
+- For localai, validate every role as `system`, `user`, or `assistant`, then defensively copy the original request messages into `cfg.Messages`.
+- Continue producing `cfg.Task` through `ExtractTaskPrompt` for CLI tools.
+- Apply explicit `reasoning_effort` after defaults. For fixed namespaces, reject a conflict with an effort suffix; for explicit dynamic model IDs, never attempt suffix parsing.
+- After defaults and request overrides, call `tool.ValidateConfig(cfg)` before acquiring a run slot. This is required because `runner.RunWithContext` is intentionally an execution primitive and does not apply/validate tool configuration.
+- Bare local tool requests without configured defaults return HTTP 400 with `codeInvalidModel`.
+- Replace the unbounded stderr `bytes.Buffer` with a capped diagnostic writer. Preserve the existing 64 KiB cap for retained async results; synchronous HTTP content remains bounded by localai's explicit 32 MiB upstream-response limit rather than being silently reduced to the async retention limit. Synchronous streaming may emit the successful completion chunk directly, but errors remain bounded.
+
+#### Failure contract
+
+Add retryable error code:
 
 ```go
-package localai
-
-import (
-	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"reflect"
-	"testing"
-
-	"rcodegen/pkg/settings"
-)
-
-func TestListModelsLiveOllama(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/tags" {
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"models": []map[string]string{{"name": "llama3.1:8b"}, {"name": "qwen3:14b"}},
-		})
-	}))
-	defer ts.Close()
-
-	tool := newTestTool(ts.URL) // helper from api_test.go
-	got, err := tool.ListModelsLive(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"llama3.1:8b", "qwen3:14b"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %v, want %v", got, want)
-	}
-}
-
-func TestListModelsLiveLMStudio(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"data": []map[string]string{{"id": "qwen/qwen3-14b"}},
-		})
-	}))
-	defer ts.Close()
-
-	s := settings.GetDefaultSettings()
-	s.Defaults.LMStudio.BaseURL = ts.URL
-	tool := NewLMStudio()
-	tool.SetSettings(s)
-
-	got, err := tool.ListModelsLive(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"qwen/qwen3-14b"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %v, want %v", got, want)
-	}
-}
-
-func TestListModelsLiveUnreachable(t *testing.T) {
-	tool := newTestTool("http://127.0.0.1:1")
-	if _, err := tool.ListModelsLive(context.Background()); err == nil {
-		t.Error("expected error for unreachable backend")
-	}
-}
+codeToolExecutionFailed ErrorCode = "tool_execution_failed"
 ```
 
-- [ ] **Step 2: Run to verify failure**
+Refactor non-streaming execution so it returns the `RunResult` plus either a completion or an execution failure; HTTP and async callers must not infer success merely because the helper returned. On nonzero exit:
 
-Run: `go test ./pkg/tools/localai/ -run TestListModelsLive -v`
-Expected: FAIL (undefined `ListModelsLive`)
+- synchronous HTTP returns 502 with an OpenAI error envelope;
+- the message contains a bounded/sanitized stderr diagnostic when available;
+- streaming HTTP emits the error envelope as an SSE event and `[DONE]`, with no false final `finish_reason:"stop"` chunk;
+- async runs end with `status:"failure"`, retain the error, and deliver a failure callback;
+- cancellation/shutdown retains its existing specialized error codes.
 
-- [ ] **Step 3: Implement `models.go`**
+Do not change gRPC's existing exit-code reporting except for the non-nil `RunResult.Error` improvement.
+
+Deterministic tests must cover:
+
+- a complete rserve chat call through a real localai tool and `httptest` backend;
+- original message roles/order reaching the backend;
+- explicit `reasoning_effort`, suffix conflict, and literal dynamic model IDs ending in `-high`;
+- usage propagation;
+- sync unreachable/non-200 backend returning 502 rather than empty 200;
+- streaming failure event with no success terminator;
+- async failed status, retained result, and callback payload;
+- API key redaction from every response;
+- bounded output/stderr behavior;
+- bare tool with and without configured default.
+
+**Acceptance:** all openai handler and async tests pass under `-race`.
+
+### Task 9: Make bundle execution honor DirectAPIRunner
+
+**Files:** `pkg/bundle/bundle.go`, `pkg/bundle/loader_test.go`, `pkg/executor/tool.go`, `pkg/executor/tool_test.go`
+
+Before building a subprocess command:
+
+1. Add optional `effort` to `bundle.Step` and prove JSON decoding. An explicit field takes precedence only when no conflicting fixed-model suffix was supplied; conflicts fail validation.
+2. Configure 64 KiB retained stdout/stderr buffers and the per-step log writer. The log may retain the full stream; the envelope/output artifact records truncation explicitly instead of growing memory without bound.
+3. Set `cfg.WorkDirs` from the resolved bundle work directory.
+4. Apply model/effort overrides, then call `tool.ValidateConfig(cfg)` before execution; return an `INVALID_CONFIG` envelope without calling either execution path on failure.
+5. If the tool implements `DirectAPIRunner` and chooses direct execution, call it through `runner.RunWithContext` using the bundle context.
+6. Populate the step output artifact with stdout/stderr exactly as the subprocess branch does and add an `output_truncated` result field when retained output was capped.
+7. Populate usage from `RunResult.TokenUsage`/`UsageReporter` rather than CLI-output parsing.
+8. Return `EXEC_FAILED` on nonzero exit and `CANCELLED` when the bundle context is cancelled.
+9. Keep the existing subprocess path unchanged for CLI tools.
+
+The primary regression fake must panic or record a failure if `BuildCommand` is called, proving the direct branch is real rather than accidentally passing through `false`.
+
+Tests cover explicit effort, suffix conflict, literal dynamic IDs ending in an effort-like suffix, successful output, usage, backend failure, cancellation, log output, and continued CLI-path behavior.
+
+**Acceptance:** `go test ./pkg/bundle ./pkg/executor -run 'Test.*Effort|Test.*DirectAPI|Test.*ToolExecutor' -race -v` passes.
+
+### Task 10: Make every rbatch mode retain local-model output
+
+**Files:** `pkg/batch/executor_local.go`, `pkg/batch/executor_remote.go`, `pkg/batch/queue.go`, `pkg/batch/manifest.go`, `pkg/batch/reporter.go`, `cmd/rbatch/main.go`, and their tests
+
+Extend `JobResult`:
 
 ```go
-package localai
-
-import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-)
-
-// ListModelsLive asks the runtime what models it has. Ollama exposes its
-// installed set on the native /api/tags; LM Studio exposes its catalog on the
-// OpenAI-compatible /v1/models. Errors mean "backend unreachable" — callers
-// degrade to an empty list rather than failing.
-func (t *Tool) ListModelsLive(ctx context.Context) ([]string, error) {
-	base := t.baseURL()
-	if err := checkBaseURL(base, t.defaults().AllowRemote); err != nil {
-		return nil, err
-	}
-
-	path := "/v1/models"
-	if t.flavor == FlavorOllama {
-		path = "/api/tags"
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s model listing returned HTTP %d", t.flavorName(), resp.StatusCode)
-	}
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return nil, err
-	}
-
-	if t.flavor == FlavorOllama {
-		var body struct {
-			Models []struct {
-				Name string `json:"name"`
-			} `json:"models"`
-		}
-		if err := json.Unmarshal(raw, &body); err != nil {
-			return nil, err
-		}
-		names := make([]string, 0, len(body.Models))
-		for _, m := range body.Models {
-			names = append(names, m.Name)
-		}
-		return names, nil
-	}
-
-	var body struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(body.Data))
-	for _, m := range body.Data {
-		ids = append(ids, m.ID)
-	}
-	return ids, nil
-}
+Output          string `json:"output,omitempty"`
+OutputTruncated bool   `json:"output_truncated,omitempty"`
 ```
 
-- [ ] **Step 4: Run the full package tests**
+Use a bounded writer with a 64 KiB retained-output cap:
 
-Run: `go test ./pkg/tools/localai/ -v`
-Expected: PASS (all tests from Tasks 3–5; interface assertions now compile)
+- preserve the prefix that fits;
+- continue reporting successful writes to the tool after the cap so output truncation does not fail inference;
+- mark `OutputTruncated` when bytes were dropped;
+- capture bounded stderr and populate `JobResult.Error` on nonzero exit;
+- do not include secrets.
 
----
+Local execution calls `tool.ValidateConfig(cfg)` after all defaults/job overrides and before `RunWithContext`.
 
-### Task 6: Server integration — detection and live `/v1/models`
+Remote execution must retain the final gRPC `ResultEvent.Output` and its truncation flag; use bounded text events only as a fallback when the final result has no output, so the same completion is not duplicated. Capture `ErrorEvent`/nonzero result detail in `JobResult.Error` without losing the final exit code.
 
-**Files:**
-- Modify: `pkg/server/openai/models.go`
-- Modify: `pkg/server/openai/types.go`
-- Modify: `pkg/server/openai/handler.go:141`
-- Test: `pkg/server/openai/models_list_test.go`
+Wire the existing `WriteJobResult` helper into successful and failed job events for `run`, `spool`, and `resume`; the current helper exists but is otherwise unused. Ensure concurrent jobs cannot race result persistence. Reuse the package's existing `validBatchName` basename policy for job names, require uniqueness before execution, and keep a defense-in-depth containment check in the writer before using names below `results/`.
 
-- [ ] **Step 1: Write the failing tests** (append to `models_list_test.go`; uses the **real** localai tool against an httptest backend so the merge path is exercised end to end — no fakes needed)
+The output fields apply generically to ordinary/direct output; existing job result JSON remains backward compatible because the fields are optional. Summary files may remain aggregate-only because the per-job files are the durable output contract.
 
-```go
-// Imports to add: "context", "encoding/json", "net/http", "net/http/httptest",
-// "rcodegen/pkg/tools/localai" (no import cycle: localai depends only on
-// runner + settings).
+Tests cover local and remote success, truncation, nonzero failure, cancellation, no duplicate gRPC content, safe/unique result filenames, concurrent persistence, JSON reporter output, and all three command modes writing per-job results.
 
-// newOllamaFactoryAt returns a ToolFactory for an Ollama-flavor tool whose
-// base URL points at the given fake backend.
-func newOllamaFactoryAt(baseURL string) (server.ToolFactory, *settings.Settings) {
-	s := settings.GetDefaultSettings()
-	s.Defaults.Ollama.BaseURL = baseURL
-	return func() runner.Tool { return localai.NewOllama() }, s
-}
+**Acceptance:** `go test ./pkg/batch ./cmd/rbatch -race -v` passes.
 
-func TestDetectAvailableToolsIncludesAPIOnly(t *testing.T) {
-	factory, _ := newOllamaFactoryAt("http://127.0.0.1:1")
-	available := DetectAvailableTools(map[string]server.ToolFactory{"ollama": factory})
-	if len(available) != 1 || available[0] != "ollama" {
-		t.Errorf("available = %v, want [ollama]", available)
-	}
-}
+### Task 11: Register every surface and test registration
 
-func TestBuildModelListMergesLiveModels(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/tags" {
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"models": []map[string]string{{"name": "live-a"}, {"name": "live-b"}},
-		})
-	}))
-	defer ts.Close()
+**Files:** `cmd/rserve/main.go`, `cmd/rserve/main_test.go`, `pkg/server/server.go`, `pkg/server/server_test.go`, `proto/rserve.proto`, generated protobuf files, `pkg/batch/manifest.go`, `pkg/batch/executor_local.go`, `cmd/rbatch/main.go`, `pkg/orchestrator/orchestrator.go`, and related tests
 
-	factory, cfg := newOllamaFactoryAt(ts.URL)
-	list := BuildModelList(context.Background(), []string{"ollama"},
-		map[string]server.ToolFactory{"ollama": factory}, cfg)
+Register keys:
 
-	found := map[string]bool{}
-	for _, m := range list.Data {
-		found[m.ID] = true
-		if m.ID == "ollama:live-a" && !m.Live {
-			t.Error("live entry not flagged Live")
-		}
-	}
-	for _, want := range []string{"ollama", "ollama:live-a", "ollama:live-b"} {
-		if !found[want] {
-			t.Errorf("missing %q in %v", want, found)
-		}
-	}
-}
-
-func TestBuildModelListLiveFailureDegrades(t *testing.T) {
-	// Unreachable backend: the bare tool entry must still appear, with the
-	// configured default model as the fallback entry.
-	factory, cfg := newOllamaFactoryAt("http://127.0.0.1:1")
-	list := BuildModelList(context.Background(), []string{"ollama"},
-		map[string]server.ToolFactory{"ollama": factory}, cfg)
-	if len(list.Data) == 0 || list.Data[0].ID != "ollama" {
-		t.Fatalf("bare tool entry missing when live listing fails: %+v", list.Data)
-	}
-	wantDefault := "ollama:" + settings.DefaultOllamaModel
-	found := false
-	for _, m := range list.Data {
-		if m.ID == wantDefault {
-			found = true
-			if m.Live {
-				t.Error("fallback default must not be flagged Live")
-			}
-		}
-	}
-	if !found {
-		t.Errorf("missing fallback default entry %q", wantDefault)
-	}
-}
+```text
+ollama
+lmstudio
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- Extract rserve's default factory map into a small testable helper.
+- Add both factories to `NewLocalExecutor`.
+- Add both names to rbatch manifest validation and help output; error messages must derive from the accepted set rather than retain a stale hard-coded list.
+- Add both tools to `orchestrator.New` and inject settings as for other settings-aware tools.
+- Add `effort` to `RunTaskRequest` and `output_truncated` to `ResultEvent` using new field numbers; regenerate bindings with `make proto`.
+- Copy the request effort into `cfg.Effort`, build/apply/validate the fully resolved config before acquiring a gRPC run slot, and return `InvalidArgument` for configuration failures.
+- Replace gRPC's unbounded stdout/stderr buffers with bounded captures, mark truncation in the result event, and preserve its existing exit-code contract.
+- Update comments listing supported tools.
+- Add registration tests for all three locations.
 
-Run: `go test ./pkg/server/openai/ -run 'TestDetectAvailableToolsIncludesAPIOnly|TestBuildModelListMerges|TestBuildModelListLiveFailure' -v`
-Expected: FAIL (BuildModelList has no ctx param; empty BinaryName not handled)
+Do not add command directories, Makefile binary targets, or launcher scripts.
 
-- [ ] **Step 3: Implement**
+**Acceptance:** `go test ./pkg/server ./cmd/rserve ./pkg/orchestrator -race -v` and registration tests pass, generated protobuf files are current, and the repository compiles through `make`, not bare `go build`.
 
-`types.go` — add to `ModelInfo` (next to `Dynamic`):
+### Task 12: Documentation and examples
 
-```go
-	Live    bool     `json:"live,omitempty"`    // true when discovered from a running local backend
-```
+**Files:** `README.md`, `API.md`, `settings.json.example`
 
-`models.go` — in `DetectAvailableTools`, before the LookPath call:
+Document:
 
-```go
-		// API-based tools (empty BinaryName) need no CLI on PATH; whether the
-		// backend is up surfaces at request time and in live model listing.
-		if tool.BinaryName() == "" {
-			available = append(available, name)
-			continue
-		}
-```
+- tool names and default origins;
+- optional configured default models;
+- explicit `ollama:<model>` / `lmstudio:<model>` usage;
+- querying rserve `/v1/models` before choosing a model;
+- `available:true` semantics;
+- installed/available versus loaded distinction;
+- LM Studio JIT load latency and 600-second default timeout;
+- LM Studio bearer authentication and environment variables;
+- loopback/private/default security policy, remote opt-in, and redirect rejection;
+- no use of `OLLAMA_HOST` as an rcodegen client setting;
+- HTTP `reasoning_effort`, bundle/gRPC/rbatch `effort`, and the rule that explicit dynamic model IDs are never parsed for suffixes;
+- text-only/no-file-editing behavior;
+- rbatch output retention/truncation;
+- Phase 1 streaming limitation;
+- opencode/other agentic CLI configuration remains the route for local models that must edit files or run shell tools.
 
-`models.go` — change `BuildModelList` signature and add the live merge (imports: add `context`, `time`):
+The settings example includes base URLs and timeouts but does not pretend a particular model is universally installed. Show optional model/API-key fields in prose or with clearly operator-supplied example values.
 
-```go
-func BuildModelList(ctx context.Context, available []string, factories map[string]server.ToolFactory, configured *settings.Settings) ModelList {
-```
-
-Inside the loop, replace the `models := tool.ValidModels()` block handling with:
-
-```go
-		def := tool.DefaultModelSetting()
-		info.Efforts = runner.EffortsForModel(tool, def)
-		models := tool.ValidModels()
-		info.Dynamic = len(models) == 0
-		live := false
-		if len(models) == 0 {
-			if lister, ok := tool.(runner.DynamicModelLister); ok {
-				// A dead local backend must not stall /v1/models: cap the probe.
-				probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-				if names, err := lister.ListModelsLive(probeCtx); err == nil && len(names) > 0 {
-					models, live = names, true
-				}
-				cancel()
-			}
-		}
-		data = append(data, info)
-		if len(models) == 0 && def != "" {
-			models = []string{def}
-		}
-		for _, m := range models {
-			data = append(data, ModelInfo{
-				ID:      name + ":" + m,
-				Object:  "model",
-				Created: now,
-				OwnedBy: "rcodegen",
-				Default: m == def,
-				Live:    live,
-				Efforts: runner.EffortsForModel(tool, m),
-			})
-		}
-```
-
-`handler.go:141` — update the call site:
-
-```go
-	writeJSON(w, http.StatusOK, BuildModelList(r.Context(), h.availableTools, h.toolFactories, h.settings))
-```
-
-Fix any other `BuildModelList` callers the compiler reports (tests included) by passing `context.Background()`.
-
-- [ ] **Step 4: Run the package tests**
-
-Run: `go test ./pkg/server/openai/ -v`
-Expected: PASS — including all pre-existing model-list tests (they now pass ctx).
-
----
-
-### Task 7: Registration in rserve, rbatch, orchestrator
-
-**Files:**
-- Modify: `cmd/rserve/main.go:98-103`
-- Modify: `pkg/batch/executor_local.go:37-42`
-- Modify: `pkg/orchestrator/orchestrator.go:212-217`
-
-- [ ] **Step 1: Add factories at all three sites** (import `"rcodegen/pkg/tools/localai"` in each file)
-
-`cmd/rserve/main.go`:
-
-```go
-		"claude":   func() runner.Tool { return claude.New() },
-		"codex":    func() runner.Tool { return codex.New() },
-		"gemini":   func() runner.Tool { return gemini.New() },
-		"kilocode": func() runner.Tool { return kilocode.New() },
-		"opencode": func() runner.Tool { return opencode.New() },
-		"ollama":   func() runner.Tool { return localai.NewOllama() },
-		"lmstudio": func() runner.Tool { return localai.NewLMStudio() },
-```
-
-`pkg/batch/executor_local.go` — same two lines in its factory map.
-
-`pkg/orchestrator/orchestrator.go`:
-
-```go
-		"claude":   claude.New(),
-		"codex":    codex.New(),
-		"gemini":   gemini.New(),
-		"kilocode": kilocode.New(),
-		"opencode": opencode.New(),
-		"ollama":   localai.NewOllama(),
-		"lmstudio": localai.NewLMStudio(),
-```
-
-- [ ] **Step 2: Build everything**
-
-Run: `go build ./...`
-Expected: success, no output.
-
-- [ ] **Step 3: Smoke-test the wiring end to end** (requires a local Ollama; skip gracefully if absent)
+Use placeholders in curl examples:
 
 ```bash
-make rserve
-./bin/rserve &      # startup log prints the gRPC port; HTTP is gRPC+1
-sleep 1
-# rserve derives its gRPC port from chassis.Port("rserve", chassis.PortGRPC)
-# (cmd/rserve/main.go:46) and serves the OpenAI HTTP API on gRPC+1
-# (main.go:176). Read both from the startup log, then:
-HTTP_PORT=<gRPC port from log + 1>
-curl -s http://localhost:$HTTP_PORT/v1/models | python3 -m json.tool | grep -B1 -A4 'ollama'
-curl -s http://localhost:$HTTP_PORT/v1/chat/completions \
+curl -s http://localhost:PORT/v1/models | python3 -m json.tool
+
+curl -s http://localhost:PORT/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"ollama:qwen3:14b","messages":[{"role":"user","content":"Reply with exactly OK"}]}'
+  -d '{"model":"ollama:MODEL_FROM_V1_MODELS","reasoning_effort":"low","messages":[{"role":"user","content":"Reply with exactly OK"}]}'
 ```
 
-Expected: `/v1/models` lists `ollama` (Dynamic, with live entries if Ollama is running); the chat call returns a completion whose content came from the local model. If no local runtime is installed, verify instead that the request returns a clean JSON error (non-200) mentioning the backend is unreachable — not a hang, not an empty 200.
+### Task 13: Deterministic verification, release metadata, commit, and push
 
----
+#### 13.1 Regenerate protobufs, then verify vendor before building/debugging
 
-### Task 8: Docs — Phase 0 + Phase 1
+Regenerate the gRPC bindings after the schema change. `go.mod` has a local replace directive, so refresh vendor before any build/debug loop:
 
-**Files:**
-- Modify: `README.md`
-- Modify: `settings.json.example`
-
-- [ ] **Step 1: settings.json.example** — add to the `defaults` object:
-
-```json
-    "ollama": {
-      "base_url": "http://localhost:11434",
-      "model": "qwen3:14b",
-      "timeout_seconds": 600
-    },
-    "lmstudio": {
-      "base_url": "http://localhost:1234",
-      "model": "qwen/qwen3-14b",
-      "timeout_seconds": 600
-    }
+```bash
+make proto
+go mod vendor
+git diff --name-only -- '*.go' | xargs gofmt -w
+git status --short
 ```
 
-- [ ] **Step 2: README** — add a "Local models (Ollama / LM Studio)" section covering:
+Generated and vendor changes must be understood and committed if legitimate. A second `make proto` must produce no diff. Do not assume stdlib-only source changes imply the existing vendor tree was already current.
 
-```markdown
-## Local Models (Ollama / LM Studio)
+#### 13.2 Targeted verification
 
-rserve can route chat-completion requests to a local model runtime. Two tool
-names are built in: `ollama` (default endpoint http://localhost:11434) and
-`lmstudio` (default http://localhost:1234).
+Run the focused package tests from Tasks 1-11 with `-race` where supported.
 
-    curl -s http://localhost:PORT/v1/chat/completions \
-      -H 'Content-Type: application/json' \
-      -d '{"model":"ollama:qwen3:14b","messages":[{"role":"user","content":"..."}]}'
+#### 13.3 Full verification
 
-- Model names are whatever the runtime has installed; `GET /v1/models`
-  enumerates them live (entries flagged `"live": true`).
-- These tools generate text only — no file editing, no shell. For *agentic*
-  local-model work (audit/fix tasks), configure Ollama or LM Studio as a
-  provider inside the opencode CLI and use `opencode` with
-  `-m ollama/<model>`; rcodegen passes the provider/model string through.
-- Endpoints are restricted to loopback/private addresses unless
-  `allow_remote: true` is set for that tool in settings.
-- Caveats: Ollama silently truncates prompts beyond the model's context
-  window (set a larger `num_ctx` via a Modelfile); LM Studio JIT-loads
-  models, so the first request to a model may take minutes — the
-  `timeout_seconds` default (600) budgets for this.
+```bash
+make
+make test
+make lint
+go vet ./...
 ```
 
-Also update the README's tool table / `/v1/models` description to mention the two new tool names and the `live` flag.
+`make` must compile every binary currently declared by `Makefile`; do not hard-code an obsolete count. If `make lint` is unavailable because the external linter is not installed, record that validation gap and still run `go vet ./...`.
 
----
+#### 13.4 Deterministic end-to-end test
 
-### Task 9: Full verification
+The automated test suite must already prove behavior with `httptest` and in-process gRPC test servers; a developer machine must not need Ollama or LM Studio installed for the suite to pass.
 
-- [ ] **Step 1: Vendor check** (repo rule)
+#### 13.5 Optional real-runtime smoke tests
 
-Run: `go mod vendor` — expect no changes (stdlib only). `git status` must show no vendor diff.
+If a runtime is running, discover a model dynamically rather than hard-coding one:
 
-- [ ] **Step 2: Full build + tests**
-
-Run: `make && make test`
-Expected: all 6 binaries build; entire test suite passes. Paste failing output verbatim if anything fails — do not proceed to Task 10 until green.
-
----
-
-### Task 10: VERSION, CHANGELOG, commit (single commit per repo rules)
-
-- [ ] **Step 1: Only now read `VERSION`** (never earlier — collision rule), increment per repo convention (revisions roll to minor at 15).
-
-- [ ] **Step 2: CHANGELOG entry**
-
-```markdown
-## X.Y.Z
-- New first-class local-model tools: `ollama` and `lmstudio` (pkg/tools/localai) —
-  direct OpenAI-compatible chat-completion calls, no CLI subprocess.
-- /v1/models now live-enumerates installed local models (Ollama /api/tags,
-  LM Studio /v1/models) with a "live" flag; API-based tools no longer require
-  a CLI binary on PATH to be detected.
-- Settings: defaults.ollama / defaults.lmstudio (base_url, model,
-  timeout_seconds, allow_remote) + RCODEGEN_OLLAMA_BASE_URL /
-  RCODEGEN_LMSTUDIO_BASE_URL env overrides. Base URLs restricted to
-  loopback/private hosts unless allow_remote is set.
+```bash
+curl -s http://localhost:11434/api/tags
+curl -s http://localhost:1234/v1/models
 ```
 
-- [ ] **Step 3: Rebuild with version baked in**
+Then verify rserve model listing and chat completion with the discovered identifier. If neither runtime is installed, the deterministic tests remain the release gate and the smoke-test gap is recorded.
 
-Run: `make`
-Expected: binaries report the new version via `-v`.
+#### 13.6 Bug record
 
-- [ ] **Step 4: Commit and push**
+Create `_bugs_fixed/2026-08-28-local-direct-api-integration-gaps.md` describing:
+
+- bundle execution previously bypassed `DirectAPIRunner`;
+- rserve previously converted nonzero tool exits into successful empty completions;
+- local and remote rbatch previously discarded generated output and did not wire per-job persistence;
+- the regression tests that now prevent all three behaviors.
+
+Do not read unrelated files in `_bugs_fixed`.
+
+#### 13.7 VERSION and CHANGELOG last
+
+Only after every required test/build check is green:
+
+1. Read `VERSION` for the first time during implementation.
+2. Increment it using the repository convention.
+3. Add a CHANGELOG entry covering local tools, message preservation, explicit effort fields, available-model inventory, LM Studio auth, URL policy, correct HTTP failures, gRPC bounds, bundle direct execution, and rbatch output persistence.
+4. Run `make` again so released binaries contain the final version.
+5. Verify representative binaries report the new version.
+
+#### 13.8 Commit and push
 
 ```bash
 git add -A
-git commit -m "Add first-class Ollama and LM Studio tools (X.Y.Z)
+git commit -m "Add first-class Ollama and LM Studio support (X.Y.Z)
 
-Agent: Claude:Opus 4.8"
+Agent: <actual coding agent and model>"
 git push
 ```
 
+Never hard-code another agent's identity. Stage the entire tree as required, including scratch-folder changes created by other actors.
+
 ---
 
-## Follow-up plan (not in this plan): Phase 2
+## Testable Acceptance Criteria
 
-Separate plan after this ships: effort mapping via `/v1` `reasoning_effort` (Ollama), SSE streaming passthrough (stream deltas to `cfg.Output`), LM Studio `/api/v1` model metadata (loaded state/quant/context) in listings, backend health in `/healthz`, and a prompt-size-vs-context-window preflight (Ollama `/api/show`). The preflight is the highest-value item — it closes the silent-truncation hazard.
+- [ ] `ollama:<installed-model>` returns backend-generated text through rserve.
+- [ ] `lmstudio:<visible-model>` returns backend-generated text through rserve.
+- [ ] A configured LM Studio API key is sent as bearer auth and never appears in logs/responses.
+- [ ] System, user, and assistant messages reach the local backend in original order.
+- [ ] HTTP `reasoning_effort` and bundle/gRPC/rbatch `effort` reach Ollama as `reasoning_effort` only when valid.
+- [ ] An explicit dynamic model identifier ending in `-none`, `-low`, `-medium`, or `-high` is preserved byte-for-byte; no effort is inferred from it.
+- [ ] A bare local tool works only with a configured default model.
+- [ ] A bare local tool without a configured default returns HTTP 400 before run-slot acquisition.
+- [ ] An unreachable or rejecting backend returns synchronous HTTP 502, not HTTP 200 with empty content.
+- [ ] Streaming failure produces an SSE error and `[DONE]`, not a false stop completion.
+- [ ] Async backend failure ends in `status:"failure"` and delivers a failure callback.
+- [ ] Cancellation aborts in-flight local HTTP requests and releases run slots.
+- [ ] Bundle direct execution never calls `BuildCommand`.
+- [ ] Bundle output, usage, failure, and cancellation are represented in step envelopes.
+- [ ] Local and remote rbatch retain at most 64 KiB of generated output, mark truncation, and write safe per-job result files in run/spool/resume modes.
+- [ ] `/v1/models` returns available Ollama and LM Studio identifiers when their backends respond.
+- [ ] `/v1/models` remains successful within the bounded probe window when either backend is stopped.
+- [ ] Discovered inventory entries explicitly say `available:true`; configured-but-undiscovered defaults explicitly say `available:false`; static/bare entries omit the field.
+- [ ] The configured default appears exactly once and is marked available only when discovered.
+- [ ] No hard-coded model is fabricated when no local default is configured.
+- [ ] Redirects are rejected and cannot bypass the host policy.
+- [ ] Public/DNS endpoints require `allow_remote:true`; invalid origins are rejected.
+- [ ] Ollama sends only supported configured effort values.
+- [ ] Existing Claude, Codex, Gemini, OpenCode, and KiloCode tests remain green.
+- [ ] `make proto` is idempotent; `go mod vendor`, `make`, `make test`, available linting, and `go vet ./...` complete with no unexplained changes/failures.
+- [ ] VERSION, CHANGELOG, bug record, commit attribution, commit, and push follow repository rules.
 
-## Known risks
+---
 
-1. `BuildModelList` signature change touches existing tests — the compiler will enumerate every call site; mechanical fix.
-2. The 500 ms live-listing probe assumes the runtime answers listing calls fast even while inference runs; both runtimes serve listings from memory, but if `/v1/models` latency becomes an issue, cache the live list for ~10 s.
-3. `orchestrator.go` uses shared tool instances (not factories) — `localai.Tool` holds only immutable flavor + settings, so sharing is safe today; revisit if the tool ever gains per-run state.
-4. Handler `splitToolEffort` fallback: `ollama`/`lmstudio` return nil `ValidEfforts`, so names like `ollama-high` fail with "unknown tool" — correct behavior for Phase 1.
+## Risks and Mitigations
+
+### Public API behavior change
+
+Existing rserve behavior can convert CLI/direct tool failures into empty HTTP 200 responses. Correcting this to 502 is externally visible.
+
+**Mitigation:** Add explicit sync, stream, and async regression tests and document the corrected behavior in CHANGELOG.
+
+### Inventory latency
+
+Two stopped local runtimes could otherwise delay `/v1/models`.
+
+**Mitigation:** Run probes concurrently, give each a 500 ms child context, and degrade without failing the endpoint. Add caching only if measured latency later justifies it.
+
+### JIT load latency
+
+LM Studio's first request may take minutes.
+
+**Mitigation:** Default whole-request timeout to 600 seconds, preserve cancellation, and document the behavior.
+
+### Secret leakage
+
+Tokens stored in settings or environment could leak through diagnostics or stats.
+
+**Mitigation:** Keep credentials in a dedicated field/header, never in the base URL, and add redaction assertions across tool/server tests.
+
+### Bundle executor divergence
+
+Adding a direct branch can drift from subprocess output/envelope behavior.
+
+**Mitigation:** Share output finalization where possible and test both branches in `pkg/executor/tool_test.go`.
+
+### Output memory pressure
+
+Local models can emit large completions.
+
+**Mitigation:** Detect the 32 MiB upstream response cap and retain only 64 KiB in rbatch, bundle envelopes, gRPC result events, and async durable result surfaces. Mark truncation instead of silently dropping bytes. Synchronous HTTP responses remain bounded by the upstream cap.
+
+### Dynamic model/effort ambiguity
+
+Runtime-defined model names may legitimately end with strings such as `-high`.
+
+**Mitigation:** Never infer effort suffixes from explicit models in dynamic namespaces. Carry effort in dedicated HTTP/gRPC/rbatch/bundle fields and add literal-identifier regressions.
+
+### rbatch result-path safety
+
+Wiring the previously unused per-job writer would turn manifest job names into filenames.
+
+**Mitigation:** Reuse the existing `validBatchName` policy, require unique job names before concurrent execution, retain a containment check in the writer, and prove result paths remain inside the batch result directory.
+
+### Runtime API evolution
+
+Ollama and LM Studio APIs continue to add features.
+
+**Mitigation:** Depend only on documented stable endpoints, keep request types deliberately small, and link official sources in code comments/docs where compatibility choices are non-obvious.
+
+---
+
+## Follow-Up Plan
+
+After this plan ships, evaluate a separate Phase 2 for:
+
+1. True upstream SSE token passthrough and usage in the final stream chunk.
+2. LM Studio native `/api/v1/models` metadata: loaded instances, quantization, context, and load configuration.
+3. Ollama `/api/ps` loaded-state metadata.
+4. Ollama `/api/show` prompt-size/context-window preflight to prevent silent truncation.
+5. LM Studio native stateful chat or OpenAI Responses support.
+6. Rich OpenAI parameter forwarding with per-flavor capability tests.
+7. Backend reachability in `/health` without making local runtimes required for rserve health.
+8. Optional model-inventory caching if measurements show `/v1/models` latency is material.
+
+This follow-up must preserve the Phase 1 distinction between **available inventory** and **currently loaded models**.
