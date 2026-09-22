@@ -54,14 +54,21 @@ func (t *Tool) ValidModels() []string {
 	return []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.1-flash-image-preview", "banana"}
 }
 
+// ValidEfforts returns nil: gemini has no reasoning-effort concept.
+func (t *Tool) ValidEfforts() []string {
+	return nil
+}
+
 // DefaultModel returns the default model name
 func (t *Tool) DefaultModel() string {
 	return "gemini-3.1-pro-preview"
 }
 
-// DefaultModelSetting returns the default model from settings
+// DefaultModelSetting returns the default model from settings.
 func (t *Tool) DefaultModelSetting() string {
-	// Gemini doesn't have settings support yet, return default
+	if t.settings != nil && t.settings.Defaults.Gemini.Model != "" {
+		return t.settings.Defaults.Gemini.Model
+	}
 	return t.DefaultModel()
 }
 
@@ -219,7 +226,10 @@ func (t *Tool) ToolSpecificFlags() []runner.FlagDef {
 
 // ApplyToolDefaults applies Gemini-specific defaults from settings
 func (t *Tool) ApplyToolDefaults(cfg *runner.Config) {
-	// Set default model if not specified
+	if t.settings != nil && t.settings.Defaults.Gemini.Model != "" {
+		cfg.Model = t.settings.Defaults.Gemini.Model
+		return
+	}
 	if cfg.Model == "" {
 		cfg.Model = t.DefaultModel()
 	}
@@ -308,6 +318,24 @@ func (t *Tool) StatsJSONFields(cfg *runner.Config) map[string]interface{} {
 // UsesStreamOutput returns true - Gemini uses stream-json format
 func (t *Tool) UsesStreamOutput() bool {
 	return true
+}
+
+// ReportedUsage reads the token counts from the Gemini CLI's stream-json
+// stats. Gemini reports no cost, so CostUSD stays zero and callers omit it
+// rather than publishing a free run.
+func (t *Tool) ReportedUsage(res *runner.RunResult) (runner.RunUsage, bool) {
+	if res == nil || res.TokenUsage == nil {
+		return runner.RunUsage{}, false
+	}
+	usage := runner.RunUsage{
+		InputTokens:  res.TokenUsage.InputTokens,
+		OutputTokens: res.TokenUsage.OutputTokens,
+		CostUSD:      res.TotalCostUSD,
+	}
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.CostUSD == 0 {
+		return runner.RunUsage{}, false
+	}
+	return usage, true
 }
 
 // RunLogFields returns Gemini-specific fields for the .runlog.md file

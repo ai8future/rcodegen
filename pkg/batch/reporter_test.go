@@ -77,6 +77,12 @@ func TestWriteJobResult(t *testing.T) {
 	}
 }
 
+func TestWriteJobResultRejectsUnsafeName(t *testing.T) {
+	if err := WriteJobResult(t.TempDir(), "../escape", &JobResult{}); err == nil {
+		t.Fatal("unsafe job name accepted")
+	}
+}
+
 func TestWriteSummaryCreatesDir(t *testing.T) {
 	base := t.TempDir()
 	nested := filepath.Join(base, "nested", "output")

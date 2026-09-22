@@ -49,12 +49,30 @@ func (t *Tool) ReportPrefix() string {
 
 // ValidModels returns the list of valid model names
 func (t *Tool) ValidModels() []string {
-	return []string{"gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1-codex", "gpt-4o-codex"}
+	return []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1-codex", "gpt-4o-codex"}
+}
+
+// ValidEfforts returns the reasoning-effort levels codex accepts.
+func (t *Tool) ValidEfforts() []string {
+	return []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+}
+
+// ValidEffortsForModel returns the effort matrix exposed by the Codex model
+// catalog. GPT-5.6 Luna supports max but not ultra; older models stop at xhigh.
+func (t *Tool) ValidEffortsForModel(model string) []string {
+	switch model {
+	case "gpt-5.6-sol", "gpt-5.6-terra":
+		return []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+	case "gpt-5.6-luna":
+		return []string{"low", "medium", "high", "xhigh", "max"}
+	default:
+		return []string{"low", "medium", "high", "xhigh"}
+	}
 }
 
 // DefaultModel returns the default model name
 func (t *Tool) DefaultModel() string {
-	return "gpt-5.4"
+	return "gpt-5.6-sol"
 }
 
 // DefaultModelSetting returns the default model from settings
@@ -220,7 +238,7 @@ func (t *Tool) ToolSpecificFlags() []runner.FlagDef {
 		{
 			Short:       "-e",
 			Long:        "--effort",
-			Description: "Reasoning effort: low, medium, high, xhigh",
+			Description: "Reasoning effort: low through ultra (model-dependent)",
 			TakesArg:    true,
 			Default:     "xhigh",
 			Target:      "Effort",
@@ -271,10 +289,9 @@ func (t *Tool) ValidateConfig(cfg *runner.Config) error {
 		return fmt.Errorf("model must be specified")
 	}
 
-	// Validate effort level
-	validEfforts := map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true}
-	if cfg.Effort != "" && !validEfforts[cfg.Effort] {
-		return fmt.Errorf("invalid effort '%s': must be one of low, medium, high, xhigh", cfg.Effort)
+	// Validate effort level for the selected model.
+	if err := runner.ValidateEffort(t, cfg.Model, cfg.Effort); err != nil {
+		return err
 	}
 
 	return nil
@@ -315,7 +332,7 @@ func (t *Tool) ToolSpecificHelpSections() []runner.HelpSection {
 		{
 			Title: "Codex Options",
 			Lines: []string{
-				fmt.Sprintf("  %s-e%s, %s--effort%s %s<lvl>%s    Reasoning effort: low, medium, high, xhigh %s(default: xhigh)%s",
+				fmt.Sprintf("  %s-e%s, %s--effort%s %s<lvl>%s    Reasoning effort: low through ultra, model-dependent %s(default: xhigh)%s",
 					runner.Green, runner.Reset, runner.Green, runner.Reset, runner.Yellow, runner.Reset, runner.Dim, runner.Reset),
 			},
 		},
@@ -342,6 +359,14 @@ func (t *Tool) StatsJSONFields(cfg *runner.Config) map[string]interface{} {
 // UsesStreamOutput returns false - Codex uses regular terminal output
 func (t *Tool) UsesStreamOutput() bool {
 	return false
+}
+
+// ReportedUsage always reports nothing: the Codex CLI's JSON output carries
+// "usage": null, and its terminal output carries no token or cost figures at
+// all. Callers surface that as "unreported" — inventing a zero here would
+// publish a measurement that was never taken.
+func (t *Tool) ReportedUsage(res *runner.RunResult) (runner.RunUsage, bool) {
+	return runner.RunUsage{}, false
 }
 
 // RunLogFields returns Codex-specific fields for the .runlog.md file

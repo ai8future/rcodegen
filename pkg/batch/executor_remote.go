@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
+	"rcodegen/pkg/runner"
 	"rcodegen/pkg/server/pb"
 
 	"google.golang.org/grpc"
@@ -50,6 +52,8 @@ func (r *RemoteExecutor) Execute(ctx context.Context, job *JobDef, sessionID str
 		Model:     job.Model,
 		MaxBudget: job.MaxBudget,
 		WorkDirs:  workDirs,
+		SessionId: sessionID,
+		Effort:    job.Effort,
 	}
 
 	start := time.Now()
@@ -61,6 +65,11 @@ func (r *RemoteExecutor) Execute(ctx context.Context, job *JobDef, sessionID str
 
 	var cost float64
 	var exitCode int32
+	nextSessionID := sessionID
+	textFallback := runner.NewBoundedBuffer(64 << 10)
+	retained := runner.NewBoundedBuffer(64 << 10)
+	errorMessage := ""
+	outputTruncated := false
 
 	for {
 		event, err := stream.Recv()
@@ -74,19 +83,42 @@ func (r *RemoteExecutor) Execute(ctx context.Context, job *JobDef, sessionID str
 		if result := event.GetResult(); result != nil {
 			cost = result.GetTotalCostUsd()
 			exitCode = result.GetExitCode()
+			if result.GetSessionId() != "" {
+				nextSessionID = result.GetSessionId()
+			}
+			if result.GetOutput() != "" {
+				_, _ = retained.Write([]byte(result.GetOutput()))
+			}
+			outputTruncated = result.GetOutputTruncated()
+		}
+		if text := event.GetText(); text != nil {
+			_, _ = textFallback.Write([]byte(text.GetContent()))
+		}
+		if failure := event.GetError(); failure != nil {
+			errorMessage = failure.GetMessage()
 		}
 	}
 
 	elapsed := time.Since(start)
 
-	// TODO: Extract new session ID from RunTask response for proper session chaining.
-	// Currently returns the incoming sessionID unchanged because the gRPC response
-	// does not include the new session ID from the tool.
+	if retained.Len() == 0 {
+		_, _ = retained.Write([]byte(textFallback.String()))
+		outputTruncated = outputTruncated || textFallback.Truncated()
+	}
+	if exitCode != 0 && errorMessage == "" {
+		errorMessage = strings.TrimSpace(retained.String())
+		if errorMessage == "" {
+			errorMessage = fmt.Sprintf("remote tool exited with code %d", exitCode)
+		}
+	}
 	return &JobResult{
-		ExitCode:  int(exitCode),
-		Cost:      cost,
-		Duration:  elapsed.Truncate(time.Millisecond).String(),
-		SessionID: sessionID,
+		ExitCode:        int(exitCode),
+		Cost:            cost,
+		Duration:        elapsed.Truncate(time.Millisecond).String(),
+		SessionID:       nextSessionID,
+		Error:           errorMessage,
+		Output:          retained.String(),
+		OutputTruncated: outputTruncated || retained.Truncated(),
 	}, nil
 }
 

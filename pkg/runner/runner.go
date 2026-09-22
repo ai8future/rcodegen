@@ -36,10 +36,10 @@ var noTrackStatus bool
 
 // Runner orchestrates the execution of a tool
 type Runner struct {
-	Tool         Tool
-	Settings     *settings.Settings
-	TaskConfig   *settings.TaskConfig
-	SettingsOK   bool
+	Tool       Tool
+	Settings   *settings.Settings
+	TaskConfig *settings.TaskConfig
+	SettingsOK bool
 }
 
 // RunResult holds the result of a Run() invocation
@@ -471,9 +471,10 @@ func (r *Runner) runSingleTask(cfg *Config, workDir string) int {
 // executeCommand builds and runs the tool command
 func (r *Runner) executeCommand(cfg *Config, workDir, task string) int {
 	// If the tool supports direct API execution (e.g. image generation models),
-	// bypass the CLI entirely.
+	// bypass the CLI entirely. The CLI entry point owns signal handling, so
+	// there is no run context to hand down here.
 	if dar, ok := r.Tool.(DirectAPIRunner); ok && dar.ShouldUseDirectAPI(cfg) {
-		return dar.RunDirectAPI(cfg, workDir, task)
+		return dar.RunDirectAPI(context.Background(), cfg, workDir, task)
 	}
 
 	cmd := r.Tool.BuildCommand(cfg, workDir, task)
@@ -561,19 +562,30 @@ func (r *Runner) RunWithContext(ctx context.Context, cfg *Config) *RunResult {
 	}
 
 	exitCode := r.executeCommandWithContext(ctx, cfg, workDir, cfg.Task)
+	var runErr error
+	if exitCode != 0 {
+		if ctx.Err() != nil {
+			runErr = ctx.Err()
+		} else {
+			runErr = fmt.Errorf("%s execution failed with exit code %d", r.Tool.Name(), exitCode)
+		}
+	}
 
 	return &RunResult{
 		ExitCode:     exitCode,
 		TokenUsage:   cfg.TokenUsage,
 		TotalCostUSD: cfg.TotalCostUSD,
 		SessionID:    cfg.SessionID,
+		Error:        runErr,
 	}
 }
 
 // executeCommandWithContext builds and runs the tool command with context for cancellation
 func (r *Runner) executeCommandWithContext(ctx context.Context, cfg *Config, workDir, task string) int {
+	// The direct-API path gets the run context too: without it a disconnected
+	// client's run keeps its slot and scratch clone until the API replies.
 	if dar, ok := r.Tool.(DirectAPIRunner); ok && dar.ShouldUseDirectAPI(cfg) {
-		return dar.RunDirectAPI(cfg, workDir, task)
+		return dar.RunDirectAPI(ctx, cfg, workDir, task)
 	}
 
 	origCmd := r.Tool.BuildCommand(cfg, workDir, task)

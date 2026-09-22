@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server'
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
-
-const CODE_DIR = path.resolve(os.homedir(), 'Desktop/_code')
+import { CODE_DIR } from '@/lib/code-dir'
 
 function resolveWithin(baseDir: string, ...segments: string[]): string | null {
   const resolvedBase = path.resolve(baseDir)
@@ -25,7 +23,7 @@ interface ReportDetail {
 }
 
 // Known tool names for format detection
-const KNOWN_TOOLS = ['claude', 'gemini', 'codex']
+const KNOWN_TOOLS = ['claude', 'gemini', 'codex', 'opencode', 'kilocode']
 
 // Supports both old and new filename formats:
 // Old: {tool}-{codebase}-{task}-{date}.md (e.g., claude-dispatch-audit-2026-01-16_2331.md)

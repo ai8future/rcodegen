@@ -14,8 +14,22 @@ import (
 )
 
 const (
-	ConfigDirName  = ".rcodegen"
-	ConfigFileName = "settings.json"
+	ConfigDirName                = ".rcodegen"
+	ConfigFileName               = "settings.json"
+	DefaultClaudeBudget          = "10.00"
+	DefaultClaudeEffort          = "xhigh"
+	DefaultOpenCodeModel         = "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"
+	DefaultOpenCodeProvider      = "deepinfra"
+	DefaultKiloCodeModel         = "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct"
+	DefaultKiloCodeProvider      = "deepinfra"
+	DefaultOllamaBaseURL         = "http://localhost:11434"
+	DefaultLMStudioBaseURL       = "http://localhost:1234"
+	DefaultLocalAITimeoutSeconds = 600
+	DefaultJevBaseURL            = "https://api.typesafe.ai"
+	DefaultJevModel              = "jev-1.13.0"
+	DefaultJevTimeoutSeconds     = 30
+	DefaultJevMaxConcurrent      = 8
+	JevAPIKeyEnv                 = "TYPESAFE_API_KEY"
 )
 
 // TaskDef defines a task shortcut with its prompt
@@ -25,14 +39,15 @@ type TaskDef struct {
 
 // CodexDefaults holds default settings for rcodex
 type CodexDefaults struct {
-	Model  string `json:"model"`  // Default model (e.g., "gpt-5.4")
-	Effort string `json:"effort"` // Default effort level (low, medium, high, xhigh)
+	Model  string `json:"model"`  // Default model (e.g., "gpt-5.6-sol")
+	Effort string `json:"effort"` // Default effort level (low through ultra; model-dependent)
 }
 
 // ClaudeDefaults holds default settings for rclaude
 type ClaudeDefaults struct {
-	Model  string `json:"model"`  // Default model (sonnet, opus, haiku)
+	Model  string `json:"model"`  // Default model (fable, sonnet, opus, haiku)
 	Budget string `json:"budget"` // Default max budget in USD
+	Effort string `json:"effort"` // Default effort level (low, medium, high, xhigh, max)
 }
 
 // GeminiDefaults holds default settings for rgemini
@@ -40,11 +55,59 @@ type GeminiDefaults struct {
 	Model string `json:"model,omitempty"` // Default model (gemini-2.5-pro, etc.)
 }
 
+// OpenCodeDefaults holds default settings for ropencode (opencode CLI).
+type OpenCodeDefaults struct {
+	Model    string `json:"model,omitempty"`    // Default model in opencode "provider/model" form
+	Provider string `json:"provider,omitempty"` // Default provider name; model string carries provider selection
+}
+
+// KiloCodeDefaults holds default settings for rkilo (kilocode CLI).
+type KiloCodeDefaults struct {
+	Model    string `json:"model,omitempty"`    // Default model in kilocode "provider/model" form
+	Provider string `json:"provider,omitempty"` // Default provider name; model string carries provider selection
+}
+
+// LocalAIDefaults configures an OpenAI-compatible local model runtime.
+type LocalAIDefaults struct {
+	BaseURL        string `json:"base_url,omitempty"`
+	Model          string `json:"model,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	AllowRemote    bool   `json:"allow_remote,omitempty"`
+	APIKey         string `json:"api_key,omitempty"`
+}
+
+// JevDefaults configures the TypeSafe Jev decision model behind
+// POST /v1/decisions and bundle "decide" steps. APIKey is the file-configured
+// key only; ResolveAPIKey consults TYPESAFE_API_KEY first. The environment
+// value is deliberately never copied into this struct, because LoadOrSetup
+// serializes the whole struct to disk when no settings file exists.
+type JevDefaults struct {
+	BaseURL        string `json:"base_url,omitempty"`
+	Model          string `json:"model,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	MaxConcurrent  int    `json:"max_concurrent,omitempty"`
+	APIKey         string `json:"api_key,omitempty"`
+}
+
+// ResolveAPIKey returns the key to use: TYPESAFE_API_KEY when set, else the
+// file-configured api_key. It never mutates the receiver.
+func (j JevDefaults) ResolveAPIKey() string {
+	if v := strings.TrimSpace(os.Getenv(JevAPIKeyEnv)); v != "" {
+		return v
+	}
+	return strings.TrimSpace(j.APIKey)
+}
+
 // Defaults holds default settings for all tools
 type Defaults struct {
-	Codex  CodexDefaults  `json:"codex"`
-	Claude ClaudeDefaults `json:"claude"`
-	Gemini GeminiDefaults `json:"gemini,omitempty"`
+	Codex    CodexDefaults    `json:"codex"`
+	Claude   ClaudeDefaults   `json:"claude"`
+	Gemini   GeminiDefaults   `json:"gemini,omitempty"`
+	OpenCode OpenCodeDefaults `json:"opencode,omitempty"`
+	KiloCode KiloCodeDefaults `json:"kilocode,omitempty"`
+	Ollama   LocalAIDefaults  `json:"ollama,omitempty"`
+	LMStudio LocalAIDefaults  `json:"lmstudio,omitempty"`
+	Jev      JevDefaults      `json:"jev,omitempty"`
 }
 
 // Settings holds all configuration for rcodegen tools
@@ -60,12 +123,20 @@ type Settings struct {
 // All fields are optional (required:"false") — only non-empty values apply.
 // Merge order: defaults < settings.json < env vars < CLI flags.
 type EnvOverrides struct {
-	CodeDir   string `env:"RCODEGEN_CODE_DIR" required:"false"`
-	OutputDir string `env:"RCODEGEN_OUTPUT_DIR" required:"false"`
-	Model     string `env:"RCODEGEN_MODEL" required:"false"`
-	Budget    string `env:"RCODEGEN_BUDGET" required:"false"`
-	Effort    string `env:"RCODEGEN_EFFORT" required:"false"`
-	LogLevel  string `env:"RCODEGEN_LOG_LEVEL" required:"false"`
+	CodeDir         string `env:"RCODEGEN_CODE_DIR" required:"false"`
+	OutputDir       string `env:"RCODEGEN_OUTPUT_DIR" required:"false"`
+	Model           string `env:"RCODEGEN_MODEL" required:"false"`
+	Budget          string `env:"RCODEGEN_BUDGET" required:"false"`
+	Effort          string `env:"RCODEGEN_EFFORT" required:"false"`
+	LogLevel        string `env:"RCODEGEN_LOG_LEVEL" required:"false"`
+	OllamaBaseURL   string `env:"RCODEGEN_OLLAMA_BASE_URL" required:"false"`
+	OllamaModel     string `env:"RCODEGEN_OLLAMA_MODEL" required:"false"`
+	OllamaAPIKey    string `env:"RCODEGEN_OLLAMA_API_KEY" required:"false"`
+	LMStudioBaseURL string `env:"RCODEGEN_LMSTUDIO_BASE_URL" required:"false"`
+	LMStudioModel   string `env:"RCODEGEN_LMSTUDIO_MODEL" required:"false"`
+	LMStudioAPIKey  string `env:"RCODEGEN_LMSTUDIO_API_KEY" required:"false"`
+	JevModel        string `env:"RCODEGEN_JEV_MODEL" required:"false"`
+	JevBaseURL      string `env:"RCODEGEN_JEV_BASE_URL" required:"false"`
 }
 
 // applyEnvOverrides loads environment variable overrides and merges them into settings.
@@ -83,12 +154,39 @@ func applyEnvOverrides(s *Settings) {
 		s.Defaults.Claude.Model = env.Model
 		s.Defaults.Codex.Model = env.Model
 		s.Defaults.Gemini.Model = env.Model
+		s.Defaults.OpenCode.Model = env.Model
+		s.Defaults.KiloCode.Model = env.Model
 	}
 	if env.Budget != "" {
 		s.Defaults.Claude.Budget = strings.TrimPrefix(env.Budget, "$")
 	}
 	if env.Effort != "" {
+		s.Defaults.Claude.Effort = env.Effort
 		s.Defaults.Codex.Effort = env.Effort
+	}
+	if env.OllamaBaseURL != "" {
+		s.Defaults.Ollama.BaseURL = env.OllamaBaseURL
+	}
+	if env.OllamaModel != "" {
+		s.Defaults.Ollama.Model = env.OllamaModel
+	}
+	if env.OllamaAPIKey != "" {
+		s.Defaults.Ollama.APIKey = env.OllamaAPIKey
+	}
+	if env.LMStudioBaseURL != "" {
+		s.Defaults.LMStudio.BaseURL = env.LMStudioBaseURL
+	}
+	if env.LMStudioModel != "" {
+		s.Defaults.LMStudio.Model = env.LMStudioModel
+	}
+	if env.LMStudioAPIKey != "" {
+		s.Defaults.LMStudio.APIKey = env.LMStudioAPIKey
+	}
+	if env.JevModel != "" {
+		s.Defaults.Jev.Model = env.JevModel
+	}
+	if env.JevBaseURL != "" {
+		s.Defaults.Jev.BaseURL = env.JevBaseURL
 	}
 }
 
@@ -208,15 +306,38 @@ func GetDefaultSettings() *Settings {
 		DefaultBuildDir: "", // Optional, will use CodeDir if not set
 		Defaults: Defaults{
 			Codex: CodexDefaults{
-				Model:  "gpt-5.4",
+				Model:  "gpt-5.6-sol",
 				Effort: "xhigh",
 			},
 			Claude: ClaudeDefaults{
 				Model:  "sonnet",
-				Budget: "10.00",
+				Budget: DefaultClaudeBudget,
+				Effort: DefaultClaudeEffort,
 			},
 			Gemini: GeminiDefaults{
-				Model: "gemini-3",
+				Model: "gemini-3.1-pro-preview",
+			},
+			OpenCode: OpenCodeDefaults{
+				Model:    DefaultOpenCodeModel,
+				Provider: DefaultOpenCodeProvider,
+			},
+			KiloCode: KiloCodeDefaults{
+				Model:    DefaultKiloCodeModel,
+				Provider: DefaultKiloCodeProvider,
+			},
+			Ollama: LocalAIDefaults{
+				BaseURL:        DefaultOllamaBaseURL,
+				TimeoutSeconds: DefaultLocalAITimeoutSeconds,
+			},
+			LMStudio: LocalAIDefaults{
+				BaseURL:        DefaultLMStudioBaseURL,
+				TimeoutSeconds: DefaultLocalAITimeoutSeconds,
+			},
+			Jev: JevDefaults{
+				BaseURL:        DefaultJevBaseURL,
+				Model:          DefaultJevModel,
+				TimeoutSeconds: DefaultJevTimeoutSeconds,
+				MaxConcurrent:  DefaultJevMaxConcurrent,
 			},
 		},
 		Tasks: make(map[string]TaskDef),
@@ -226,13 +347,15 @@ func GetDefaultSettings() *Settings {
 // LoadWithFallback tries to load settings, falling back to defaults if not found
 // Returns the settings (possibly with defaults), whether the config file existed, and any validation error
 func LoadWithFallback() (*Settings, bool, error) {
-	settings, err := Load()
+	loaded, err := Load()
+	configExisted := err == nil
 	if err != nil {
-		return GetDefaultSettings(), false, nil
+		loaded = GetDefaultSettings()
 	}
+	settings := loaded
 	// Fill in any missing defaults
 	if settings.Defaults.Codex.Model == "" {
-		settings.Defaults.Codex.Model = "gpt-5.4"
+		settings.Defaults.Codex.Model = "gpt-5.6-sol"
 	}
 	if settings.Defaults.Codex.Effort == "" {
 		settings.Defaults.Codex.Effort = "high"
@@ -241,11 +364,29 @@ func LoadWithFallback() (*Settings, bool, error) {
 		settings.Defaults.Claude.Model = "sonnet"
 	}
 	if settings.Defaults.Claude.Budget == "" {
-		settings.Defaults.Claude.Budget = "10.00"
+		settings.Defaults.Claude.Budget = DefaultClaudeBudget
+	}
+	if settings.Defaults.Claude.Effort == "" {
+		settings.Defaults.Claude.Effort = DefaultClaudeEffort
 	}
 	if settings.Defaults.Gemini.Model == "" {
-		settings.Defaults.Gemini.Model = "gemini-3"
+		settings.Defaults.Gemini.Model = "gemini-3.1-pro-preview"
 	}
+	if settings.Defaults.OpenCode.Model == "" {
+		settings.Defaults.OpenCode.Model = DefaultOpenCodeModel
+	}
+	if settings.Defaults.OpenCode.Provider == "" {
+		settings.Defaults.OpenCode.Provider = DefaultOpenCodeProvider
+	}
+	if settings.Defaults.KiloCode.Model == "" {
+		settings.Defaults.KiloCode.Model = DefaultKiloCodeModel
+	}
+	if settings.Defaults.KiloCode.Provider == "" {
+		settings.Defaults.KiloCode.Provider = DefaultKiloCodeProvider
+	}
+	fillLocalAIDefaults(&settings.Defaults.Ollama, DefaultOllamaBaseURL)
+	fillLocalAIDefaults(&settings.Defaults.LMStudio, DefaultLMStudioBaseURL)
+	fillJevDefaults(&settings.Defaults.Jev)
 	if settings.DefaultBuildDir == "" {
 		settings.DefaultBuildDir = settings.CodeDir // Default to code_dir if not set
 	}
@@ -263,7 +404,31 @@ func LoadWithFallback() (*Settings, bool, error) {
 	for name, task := range GetDefaultTasks() {
 		settings.Tasks[name] = task // Always use built-in defaults for reserved names
 	}
-	return settings, true, nil
+	return settings, configExisted, nil
+}
+
+func fillLocalAIDefaults(defaults *LocalAIDefaults, baseURL string) {
+	if defaults.BaseURL == "" {
+		defaults.BaseURL = baseURL
+	}
+	if defaults.TimeoutSeconds <= 0 {
+		defaults.TimeoutSeconds = DefaultLocalAITimeoutSeconds
+	}
+}
+
+func fillJevDefaults(defaults *JevDefaults) {
+	if defaults.BaseURL == "" {
+		defaults.BaseURL = DefaultJevBaseURL
+	}
+	if defaults.Model == "" {
+		defaults.Model = DefaultJevModel
+	}
+	if defaults.TimeoutSeconds <= 0 {
+		defaults.TimeoutSeconds = DefaultJevTimeoutSeconds
+	}
+	if defaults.MaxConcurrent <= 0 {
+		defaults.MaxConcurrent = DefaultJevMaxConcurrent
+	}
 }
 
 // ToTaskConfig converts Settings to the legacy TaskConfig format
@@ -523,10 +688,11 @@ func RunInteractiveSetup() (*Settings, bool) {
 	fmt.Printf("\n%s%s── rclaude (Claude Code) Defaults ──%s\n\n", bold, cyan, reset)
 
 	fmt.Printf("%s%sDefault model for rclaude?%s\n", bold, green, reset)
-	fmt.Printf("%sOpus is the most capable. Sonnet balances cost and capability. Haiku is fastest.%s\n\n", dim, reset)
-	fmt.Printf("  %s1.%s %sopus%s %s(recommended - most capable)%s\n", dim, reset, magenta, reset, dim, reset)
+	fmt.Printf("%sFable is the most powerful. Opus is highly capable. Sonnet balances cost and capability. Haiku is fastest.%s\n\n", dim, reset)
+	fmt.Printf("  %s1.%s %sopus%s %s(recommended - highly capable)%s\n", dim, reset, magenta, reset, dim, reset)
 	fmt.Printf("  %s2.%s %ssonnet%s %s(balanced)%s\n", dim, reset, magenta, reset, dim, reset)
-	fmt.Printf("  %s3.%s %shaiku%s %s(fastest, least capable)%s\n\n", dim, reset, magenta, reset, dim, reset)
+	fmt.Printf("  %s3.%s %shaiku%s %s(fastest, least capable)%s\n", dim, reset, magenta, reset, dim, reset)
+	fmt.Printf("  %s4.%s %sfable%s %s(most powerful, highest cost)%s\n\n", dim, reset, magenta, reset, dim, reset)
 
 	fmt.Printf("%sClaude model%s [%s1%s]: ", bold, reset, yellow, reset)
 	claudeModelInput, _ := reader.ReadString('\n')
@@ -540,9 +706,11 @@ func RunInteractiveSetup() (*Settings, bool) {
 		claudeModel = "sonnet"
 	case "3", "haiku":
 		claudeModel = "haiku"
+	case "4", "fable":
+		claudeModel = "fable"
 	default:
 		// Accept direct input if it's a valid model name
-		if claudeModelInput == "sonnet" || claudeModelInput == "opus" || claudeModelInput == "haiku" {
+		if claudeModelInput == "sonnet" || claudeModelInput == "opus" || claudeModelInput == "haiku" || claudeModelInput == "fable" {
 			claudeModel = claudeModelInput
 		}
 	}
@@ -567,21 +735,30 @@ func RunInteractiveSetup() (*Settings, bool) {
 
 	fmt.Printf("%s%sDefault model for rcodex?%s\n", bold, green, reset)
 	fmt.Printf("%sThe model name used with OpenAI Codex CLI.%s\n\n", dim, reset)
-	fmt.Printf("%sCodex model%s [%sgpt-5.4%s]: ", bold, reset, yellow, reset)
+	fmt.Printf("%sCodex model%s [%sgpt-5.6-sol%s]: ", bold, reset, yellow, reset)
 
 	codexModelInput, _ := reader.ReadString('\n')
 	codexModelInput = strings.TrimSpace(codexModelInput)
-	codexModel := "gpt-5.4"
+	codexModel := "gpt-5.6-sol"
 	if codexModelInput != "" {
 		codexModel = codexModelInput
 	}
+	codexSupportsMax := codexModel == "gpt-5.6-sol" || codexModel == "gpt-5.6-terra" || codexModel == "gpt-5.6-luna"
+	codexSupportsUltra := codexModel == "gpt-5.6-sol" || codexModel == "gpt-5.6-terra"
 
 	fmt.Printf("\n%s%sDefault reasoning effort?%s\n", bold, green, reset)
 	fmt.Printf("%sHigher effort = better results but slower and uses more credits.%s\n\n", dim, reset)
 	fmt.Printf("  %s1.%s %sxhigh%s %s(recommended - most thorough)%s\n", dim, reset, magenta, reset, dim, reset)
 	fmt.Printf("  %s2.%s %shigh%s\n", dim, reset, magenta, reset)
 	fmt.Printf("  %s3.%s %smedium%s\n", dim, reset, magenta, reset)
-	fmt.Printf("  %s4.%s %slow%s %s(fastest)%s\n\n", dim, reset, magenta, reset, dim, reset)
+	fmt.Printf("  %s4.%s %slow%s %s(fastest)%s\n", dim, reset, magenta, reset, dim, reset)
+	if codexSupportsMax {
+		fmt.Printf("  %s5.%s %smax%s %s(GPT-5.6 only)%s\n", dim, reset, magenta, reset, dim, reset)
+	}
+	if codexSupportsUltra {
+		fmt.Printf("  %s6.%s %sultra%s %s(Sol/Terra only)%s\n", dim, reset, magenta, reset, dim, reset)
+	}
+	fmt.Println()
 
 	fmt.Printf("%sEffort level%s [%s1%s]: ", bold, reset, yellow, reset)
 	effortInput, _ := reader.ReadString('\n')
@@ -597,10 +774,13 @@ func RunInteractiveSetup() (*Settings, bool) {
 		codexEffort = "medium"
 	case "4", "low":
 		codexEffort = "low"
-	default:
-		// Accept direct input if it's a valid effort level
-		if effortInput == "xhigh" || effortInput == "high" || effortInput == "medium" || effortInput == "low" {
-			codexEffort = effortInput
+	case "5", "max":
+		if codexSupportsMax {
+			codexEffort = "max"
+		}
+	case "6", "ultra":
+		if codexSupportsUltra {
+			codexEffort = "ultra"
 		}
 	}
 
@@ -615,6 +795,15 @@ func RunInteractiveSetup() (*Settings, bool) {
 			Claude: ClaudeDefaults{
 				Model:  claudeModel,
 				Budget: claudeBudget,
+				Effort: DefaultClaudeEffort,
+			},
+			OpenCode: OpenCodeDefaults{
+				Model:    DefaultOpenCodeModel,
+				Provider: DefaultOpenCodeProvider,
+			},
+			KiloCode: KiloCodeDefaults{
+				Model:    DefaultKiloCodeModel,
+				Provider: DefaultKiloCodeProvider,
 			},
 		},
 		// Tasks intentionally omitted - built-in tasks are loaded from GetDefaultTasks()
@@ -647,7 +836,8 @@ func RunInteractiveSetup() (*Settings, bool) {
 	fmt.Printf("  %sCode directory:%s     %s%s%s\n\n", dim, reset, magenta, codeDir, reset)
 	fmt.Printf("  %s%srclaude defaults:%s\n", bold, cyan, reset)
 	fmt.Printf("    %sModel:%s   %s%s%s\n", dim, reset, magenta, claudeModel, reset)
-	fmt.Printf("    %sBudget:%s  %s$%s%s\n\n", dim, reset, magenta, claudeBudget, reset)
+	fmt.Printf("    %sBudget:%s  %s$%s%s\n", dim, reset, magenta, claudeBudget, reset)
+	fmt.Printf("    %sEffort:%s  %s%s%s\n\n", dim, reset, magenta, DefaultClaudeEffort, reset)
 	fmt.Printf("  %s%srcodex defaults:%s\n", bold, cyan, reset)
 	fmt.Printf("    %sModel:%s   %s%s%s\n", dim, reset, magenta, codexModel, reset)
 	fmt.Printf("    %sEffort:%s  %s%s%s\n", dim, reset, magenta, codexEffort, reset)
@@ -666,6 +856,7 @@ func RunInteractiveSetup() (*Settings, bool) {
 func LoadOrSetup() (*Settings, bool, error) {
 	settings, err := Load()
 	if err == nil {
+		fillJevDefaults(&settings.Defaults.Jev)
 		// Apply environment variable overrides (RCODEGEN_* vars override settings.json)
 		applyEnvOverrides(settings)
 

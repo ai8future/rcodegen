@@ -31,6 +31,9 @@ func WriteSummary(batchDir string, result *BatchResult) error {
 
 // WriteJobResult writes a per-job result file into batchDir/results/<name>.json.
 func WriteJobResult(batchDir, jobName string, result *JobResult) error {
+	if !validBatchName.MatchString(jobName) {
+		return fmt.Errorf("invalid job name %q", jobName)
+	}
 	dir := filepath.Join(batchDir, "results")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating results dir: %w", err)

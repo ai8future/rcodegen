@@ -1,12 +1,70 @@
 package runner
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"testing"
+
+	chassis "github.com/ai8future/chassis-go/v11"
 )
+
+func TestMain(m *testing.M) {
+	chassis.RequireMajor(11)
+	os.Exit(m.Run())
+}
+
+type directRunnerTestTool struct {
+	validationTool
+	exitCode int
+}
+
+func (t *directRunnerTestTool) ShouldUseDirectAPI(*Config) bool { return true }
+func (t *directRunnerTestTool) RunDirectAPI(ctx context.Context, cfg *Config, _, _ string) int {
+	if ctx.Err() != nil {
+		return 130
+	}
+	_, _ = fmt.Fprint(cfg.Output, "direct output")
+	return t.exitCode
+}
+
+func TestRunWithContextDirectAPIResultAndMessages(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		exitCode int
+		wantErr  bool
+	}{
+		{name: "success"},
+		{name: "failure", exitCode: 7, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tool := &directRunnerTestTool{validationTool: validationTool{efforts: []string{"high"}}, exitCode: tc.exitCode}
+			var output bytes.Buffer
+			cfg := &Config{Task: "hello", Model: "dynamic-high", Output: &output, Messages: []ChatMessage{
+				{Role: "system", Content: "rules"}, {Role: "user", Content: "question"}, {Role: "assistant", Content: "prior"},
+			}}
+			result := NewRunner(tool).RunWithContext(context.Background(), cfg)
+			if result.ExitCode != tc.exitCode || (result.Error != nil) != tc.wantErr {
+				t.Fatalf("result = %+v", result)
+			}
+			if output.String() != "direct output" || len(cfg.Messages) != 3 || cfg.Messages[2].Role != "assistant" {
+				t.Fatalf("output/messages = %q %+v", output.String(), cfg.Messages)
+			}
+		})
+	}
+}
+
+func TestRunWithContextDirectAPICancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := NewRunner(&directRunnerTestTool{}).RunWithContext(ctx, &Config{Task: "hello", Output: &bytes.Buffer{}})
+	if result.ExitCode != 130 || result.Error != context.Canceled {
+		t.Fatalf("cancelled result = %+v", result)
+	}
+}
 
 func TestRunError(t *testing.T) {
 	result := runError(1, fmt.Errorf("test error"))

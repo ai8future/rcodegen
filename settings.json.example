@@ -3,15 +3,45 @@
   "output_dir": "",
   "defaults": {
     "codex": {
-      "model": "gpt-5.4",
+      "model": "gpt-5.6-sol",
       "effort": "xhigh"
     },
     "claude": {
       "model": "sonnet",
-      "budget": "10.00"
+      "budget": "10.00",
+      "effort": "xhigh"
     },
     "gemini": {
-      "model": "gemini-3-pro-preview"
+      "model": "gemini-3.1-pro-preview"
+    },
+    "opencode": {
+      "model": "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      "provider": "deepinfra"
+    },
+    "kilocode": {
+      "model": "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      "provider": "deepinfra"
+    },
+    "ollama": {
+      "base_url": "http://localhost:11434",
+      "model": "",
+      "timeout_seconds": 600,
+      "allow_remote": false,
+      "api_key": ""
+    },
+    "lmstudio": {
+      "base_url": "http://localhost:1234",
+      "model": "",
+      "timeout_seconds": 600,
+      "allow_remote": false,
+      "api_key": ""
+    },
+    "jev": {
+      "base_url": "https://api.typesafe.ai",
+      "model": "jev-1.13.0",
+      "timeout_seconds": 30,
+      "max_concurrent": 8,
+      "api_key": ""
     }
   }
 }

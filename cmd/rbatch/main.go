@@ -82,6 +82,13 @@ func cmdRun(args []string) int {
 		fs.PrintDefaults()
 	}
 
+	args = reorderSubcommandArgs(args, map[string]bool{
+		"-concurrency": true, "--concurrency": true,
+		"-threshold": true, "--threshold": true,
+		"-on-budget": true, "--on-budget": true,
+		"-max-wait": true, "--max-wait": true,
+		"-server": true, "--server": true,
+	})
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -166,6 +173,7 @@ func cmdSpool(args []string) int {
 		fs.PrintDefaults()
 	}
 
+	args = reorderSubcommandArgs(args, map[string]bool{"-server": true, "--server": true})
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -276,6 +284,10 @@ func cmdResume(args []string) int {
 		fs.PrintDefaults()
 	}
 
+	args = reorderSubcommandArgs(args, map[string]bool{
+		"-server": true, "--server": true,
+		"-concurrency": true, "--concurrency": true,
+	})
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -587,6 +599,7 @@ func makeEventHandler(m *batch.Manifest, verbose bool, start time.Time) func(bat
 			completed++
 			if e.Result != nil {
 				cost += e.Result.Cost
+				persistJobResult(m, e.JobName, e.Result)
 			}
 			registry.Progress(completed+failed, total, failed)
 			if verbose {
@@ -603,6 +616,7 @@ func makeEventHandler(m *batch.Manifest, verbose bool, start time.Time) func(bat
 			failed++
 			if e.Result != nil {
 				cost += e.Result.Cost
+				persistJobResult(m, e.JobName, e.Result)
 			}
 			registry.Progress(completed+failed, total, failed)
 			errMsg := ""
@@ -617,6 +631,21 @@ func makeEventHandler(m *batch.Manifest, verbose bool, start time.Time) func(bat
 				fmt.Fprintf(os.Stderr, "\n  budget check: %d%% remaining\n", e.Remaining)
 			}
 		}
+	}
+}
+
+func persistJobResult(m *batch.Manifest, jobName string, result *batch.JobResult) {
+	batchName := m.Name
+	if batchName == "" {
+		batchName = "unnamed"
+	}
+	dir, err := batch.BatchDir(batchName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not resolve result directory: %v\n", err)
+		return
+	}
+	if err := batch.WriteJobResult(dir, jobName, result); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write result for %s: %v\n", jobName, err)
 	}
 }
 
@@ -666,6 +695,41 @@ Examples:
   %s spool /path/to/spool/dir
   %s resume
   %s status
-`, strings.Join([]string{"claude", "codex", "gemini"}, ", "),
+`, strings.Join([]string{"claude", "codex", "gemini", "opencode", "kilocode", "ollama", "lmstudio"}, ", "),
 		name, name, name, name, name, name)
+}
+
+// reorderSubcommandArgs lets rbatch honor its documented
+// "command <positional> [flags]" syntax even though Go's flag package stops at
+// the first positional argument. valueFlags identifies flags whose following
+// argument must move with the flag; --flag=value needs no special handling.
+func reorderSubcommandArgs(args []string, valueFlags map[string]bool) []string {
+	flags := make([]string, 0, len(args))
+	positionals := make([]string, 0, len(args))
+	hasTerminator := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			hasTerminator = true
+			positionals = append(positionals, args[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			positionals = append(positionals, arg)
+			continue
+		}
+		flags = append(flags, arg)
+		name := arg
+		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			name = name[:eq]
+		}
+		if valueFlags[name] && !strings.Contains(arg, "=") && i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	if hasTerminator {
+		flags = append(flags, "--")
+	}
+	return append(flags, positionals...)
 }

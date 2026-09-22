@@ -1,15 +1,16 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
 	rcodegenpkg "rcodegen"
 	"rcodegen/pkg/bundle"
+	"rcodegen/pkg/envelope"
 	_ "rcodegen/pkg/executor" // Register dispatcher factory via init()
 	"rcodegen/pkg/orchestrator"
 	"rcodegen/pkg/runner"
@@ -23,6 +24,26 @@ import (
 // ToolFactory creates a fresh tool instance to avoid shared mutable state.
 type ToolFactory func() runner.Tool
 
+// BundleRunFunc executes a bundle for the gRPC service. Keeping this boundary
+// injectable lets cancellation and stream behavior be tested without spawning
+// external AI CLIs.
+type BundleRunFunc func(context.Context, *bundle.Bundle, map[string]string, bool, bool) (*envelope.Envelope, error)
+
+// AsyncCanceller cancels a run owned by the async store rather than by the run
+// registry. An async run is published — and cancellable — before it holds a
+// slot, and its worker takes its lifecycle from the store's context rather than
+// from the registry's, so cancelling the registry entry alone stops the CLI
+// without ending the run: the worker would go on to report the outcome as an
+// ordinary completion.
+//
+// The gRPC server takes this as an interface because the async store lives in
+// the openai package, which imports this one. main wires the HTTP handler in.
+type AsyncCanceller interface {
+	// CancelAsyncRun reports whether the async store owns this ID, and whether
+	// there was live work to stop.
+	CancelAsyncRun(runID string) (owned, cancelled bool)
+}
+
 // Server implements the RServe gRPC service.
 type Server struct {
 	pb.UnimplementedRServeServer
@@ -30,7 +51,15 @@ type Server struct {
 	toolFactories map[string]ToolFactory
 	registry      *RunRegistry
 	sessions      *SessionStore
+	runBundle     BundleRunFunc
+	// async owns cancellation for async run IDs. Nil on a server built without
+	// the HTTP API, in which case every ID is the registry's.
+	async AsyncCanceller
 }
+
+// SetAsyncCanceller makes the async store the cancellation authority for the
+// IDs it owns. Call it during startup, before serving.
+func (s *Server) SetAsyncCanceller(a AsyncCanceller) { s.async = a }
 
 // NewServer creates a new gRPC server instance.
 // toolFactories maps tool names to factory functions that create fresh instances.
@@ -40,6 +69,17 @@ func NewServer(s *settings.Settings, toolFactories map[string]ToolFactory, regis
 		toolFactories: toolFactories,
 		registry:      registry,
 		sessions:      sessions,
+		runBundle:     runBundleWithOrchestrator(s),
+	}
+}
+
+func runBundleWithOrchestrator(s *settings.Settings) BundleRunFunc {
+	return func(ctx context.Context, b *bundle.Bundle, inputs map[string]string, opusOnly, flashOnly bool) (*envelope.Envelope, error) {
+		orch := orchestrator.New(s)
+		orch.SetLiveMode(false) // No animated display for gRPC.
+		orch.SetOpusOnly(opusOnly)
+		orch.SetFlashOnly(flashOnly)
+		return orch.RunWithContext(ctx, b, inputs)
 	}
 }
 
@@ -53,23 +93,6 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 
 	// Create a fresh tool instance (avoids shared mutable state between requests)
 	tool := factory()
-
-	// Acquire a concurrency slot
-	runID, runCtx, cancel, err := s.registry.Acquire(stream.Context(), req.Tool, req.Task)
-	if err != nil {
-		return cerrors.Errorf(cerrors.RateLimitError, "failed to acquire run slot: %v", err).GRPCStatus().Err()
-	}
-	defer cancel()
-	defer s.registry.Release(runID)
-
-	// Send init event
-	if err := stream.Send(&pb.RunEvent{
-		RunId:       runID,
-		TimestampMs: time.Now().UnixMilli(),
-		Event:       &pb.RunEvent_Init{Init: &pb.InitEvent{Tool: req.Tool, Model: req.Model}},
-	}); err != nil {
-		return err
-	}
 
 	// Inject settings into the tool (mirrors CLI's SettingsAware path)
 	if sa, ok := tool.(runner.SettingsAware); ok && s.settings != nil {
@@ -87,7 +110,7 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 			cfg.Vars[k] = v
 		}
 	}
-	cfg.Output = io.Discard // CLI-formatted output suppressed; events go via callback
+	cfg.Output = io.Discard // Stream-aware tools publish structured events via callback.
 	cfg.Logger = logz.New("warn")
 
 	// Resume existing session if session_id provided (validate tool matches)
@@ -98,8 +121,14 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	}
 
 	// Capture stderr so we can report errors to the client
-	var stderrBuf bytes.Buffer
-	cfg.Stderr = &stderrBuf
+	stderrBuf := runner.NewBoundedBuffer(64 << 10)
+	cfg.Stderr = stderrBuf
+	stdoutBuf := runner.NewBoundedBuffer(64 << 10)
+	if !tool.UsesStreamOutput() {
+		// Codex, OpenCode, and KiloCode emit ordinary stdout rather than the
+		// stream-json events handled below. Preserve it for their clients.
+		cfg.Output = stdoutBuf
+	}
 
 	// Look up task shortcut if task matches a known shortcut name
 	if s.settings != nil && s.settings.Tasks != nil {
@@ -119,10 +148,39 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	if req.MaxBudget != "" {
 		cfg.MaxBudget = req.MaxBudget
 	}
+	if req.Effort != "" {
+		cfg.Effort = req.Effort
+	}
 
 	// If model is still empty, use the tool's built-in default
 	if cfg.Model == "" {
 		cfg.Model = tool.DefaultModel()
+	}
+	if err := runner.ValidateModel(tool, cfg.Model); err != nil {
+		return cerrors.ValidationError(err.Error()).GRPCStatus().Err()
+	}
+	if err := runner.ValidateEffort(tool, cfg.Model, cfg.Effort); err != nil {
+		return cerrors.ValidationError(err.Error()).GRPCStatus().Err()
+	}
+	if err := tool.ValidateConfig(cfg); err != nil {
+		return cerrors.ValidationError(err.Error()).GRPCStatus().Err()
+	}
+
+	// Acquire only after configuration validation, so invalid work never queues
+	// behind real runs or consumes a slot.
+	runID, runCtx, cancel, err := s.registry.Acquire(stream.Context(), req.Tool, req.Task)
+	if err != nil {
+		return cerrors.Errorf(cerrors.RateLimitError, "failed to acquire run slot: %v", err).GRPCStatus().Err()
+	}
+	defer cancel()
+	defer s.registry.Release(runID)
+
+	if err := stream.Send(&pb.RunEvent{
+		RunId:       runID,
+		TimestampMs: time.Now().UnixMilli(),
+		Event:       &pb.RunEvent_Init{Init: &pb.InitEvent{Tool: req.Tool, Model: cfg.Model}},
+	}); err != nil {
+		return err
 	}
 
 	// Mutex-protected send to guard against future concurrency
@@ -152,6 +210,15 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 
 	// Run with context for cancellation support
 	result := r.RunWithContext(runCtx, cfg)
+	if stdoutBuf.Len() > 0 {
+		if err := safeSend(&pb.RunEvent{
+			RunId:       runID,
+			TimestampMs: time.Now().UnixMilli(),
+			Event:       &pb.RunEvent_Text{Text: &pb.TextEvent{Content: stdoutBuf.String()}},
+		}); err != nil {
+			return err
+		}
+	}
 
 	// Store session ID for multi-turn reuse
 	sessionID := ""
@@ -161,13 +228,22 @@ func (s *Server) RunTask(req *pb.RunTaskRequest, stream pb.RServe_RunTaskServer)
 	}
 
 	// Send result event
-	resultEvent := &pb.ResultEvent{
-		ExitCode:     int32(result.ExitCode),
-		TotalCostUsd: result.TotalCostUSD,
-		SessionId:    sessionID,
+	retained := runner.NewBoundedBuffer(64 << 10)
+	if stdoutBuf.Len() > 0 {
+		_, _ = retained.Write([]byte(stdoutBuf.String()))
 	}
 	if stderrBuf.Len() > 0 {
-		resultEvent.Output = stderrBuf.String()
+		if retained.Len() > 0 && !strings.HasSuffix(retained.String(), "\n") {
+			_, _ = retained.Write([]byte("\n"))
+		}
+		_, _ = retained.Write([]byte(stderrBuf.String()))
+	}
+	resultEvent := &pb.ResultEvent{
+		ExitCode:        int32(result.ExitCode),
+		TotalCostUsd:    result.TotalCostUSD,
+		SessionId:       sessionID,
+		Output:          retained.String(),
+		OutputTruncated: stdoutBuf.Truncated() || stderrBuf.Truncated() || retained.Truncated(),
 	}
 	if result.TokenUsage != nil {
 		resultEvent.Usage = &pb.TokenUsage{
@@ -255,7 +331,7 @@ func streamEventToProto(runID string, event *runner.StreamEvent) []*pb.RunEvent 
 // RunBundle executes a multi-step bundle and streams progress events.
 func (s *Server) RunBundle(req *pb.RunBundleRequest, stream pb.RServe_RunBundleServer) error {
 	// Acquire concurrency slot
-	runID, _, cancel, err := s.registry.Acquire(stream.Context(), "bundle", req.Bundle)
+	runID, runCtx, cancel, err := s.registry.Acquire(stream.Context(), "bundle", req.Bundle)
 	if err != nil {
 		return cerrors.Errorf(cerrors.RateLimitError, "failed to acquire run slot: %v", err).GRPCStatus().Err()
 	}
@@ -283,19 +359,10 @@ func (s *Server) RunBundle(req *pb.RunBundleRequest, stream pb.RServe_RunBundleS
 		inputs[k] = v
 	}
 
-	// Create orchestrator
-	// NOTE: orchestrator.Run creates its own signal context internally.
-	// Proper context propagation requires orchestrator API changes (future work).
-	orch := orchestrator.New(s.settings)
-	orch.SetLiveMode(false) // No animated display for gRPC
-	if req.OpusOnly {
-		orch.SetOpusOnly(true)
-	}
-	if req.FlashOnly {
-		orch.SetFlashOnly(true)
-	}
-
-	env, runErr := orch.Run(b, inputs)
+	// runCtx is derived from the stream context and is also registered with
+	// CancelRun, so either a client disconnect or an explicit cancellation stops
+	// the orchestrator and its in-flight CLI process.
+	env, runErr := s.runBundle(runCtx, b, inputs, req.OpusOnly, req.FlashOnly)
 
 	// Send result
 	resultEvent := &pb.ResultEvent{
@@ -372,10 +439,17 @@ func (s *Server) GetStatus(ctx context.Context, req *pb.GetStatusRequest) (*pb.G
 	}
 
 	for _, run := range s.registry.List() {
+		// The proto has no correlation field, so an external caller's ID rides
+		// the task string — the same "task corr=id" form GetStatus has always
+		// shown for bundle runs.
+		task := run.Task
+		if run.CorrelationID != "" {
+			task += " corr=" + run.CorrelationID
+		}
 		resp.Runs = append(resp.Runs, &pb.ActiveRun{
 			RunId:       run.ID,
 			Tool:        run.Tool,
-			Task:        run.Task,
+			Task:        task,
 			StartedAtMs: run.StartedAt.UnixMilli(),
 		})
 	}
@@ -384,7 +458,27 @@ func (s *Server) GetStatus(ctx context.Context, req *pb.GetStatusRequest) (*pb.G
 }
 
 // CancelRun cancels a running task by its run ID.
+//
+// The async store is asked first. It owns its IDs for the whole run — including
+// while the run is still queued, when the registry has never heard of it — and
+// it is the only thing that can end an async run rather than merely stopping
+// the process the run had reached. Whatever it owns, it answers for; everything
+// else is an ordinary registry run.
 func (s *Server) CancelRun(ctx context.Context, req *pb.CancelRunRequest) (*pb.CancelRunResponse, error) {
+	if s.async != nil {
+		if owned, cancelled := s.async.CancelAsyncRun(req.RunId); owned {
+			if cancelled {
+				return &pb.CancelRunResponse{Cancelled: true, Message: "async run cancelled"}, nil
+			}
+			// Saying "cancelled" here would claim credit for killing work that
+			// had already ended, which is the claim this release exists to stop
+			// making.
+			return &pb.CancelRunResponse{
+				Cancelled: false,
+				Message:   "async run already finished; GET /v1/runs/" + req.RunId + " holds its outcome",
+			}, nil
+		}
+	}
 	if s.registry.Cancel(req.RunId) {
 		return &pb.CancelRunResponse{Cancelled: true, Message: "run cancelled"}, nil
 	}

@@ -1,6 +1,6 @@
 "use client"
 
-import { ColumnDef } from "@tanstack/react-table"
+import { Column, ColumnDef } from "@tanstack/react-table"
 import Link from "next/link"
 import { useRowExpansion } from "@/components/ui/data-table"
 
@@ -340,8 +340,6 @@ function LargeSparkline({ points, color, title }: { points: GradeHistoryPoint[];
         {tools.map((tool) => {
           const toolPoints = toolGroups[tool]
           const toolColor = TOOL_COLORS[tool] || color
-          const toolName = tool.charAt(0).toUpperCase() + tool.slice(1)
-
           const pathData = toolPoints.length > 1
             ? toolPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${scaleX(p.date)} ${scaleY(p.grade)}`).join(' ')
             : null
@@ -507,7 +505,7 @@ function TaskGradeCell({ grades, history, color, lastUpdated, rowId }: { grades:
   )
 }
 
-function SortableHeader({ column, children, className }: { column: any; children: React.ReactNode; className?: string }) {
+function SortableHeader({ column, children, className }: { column: Column<RepoSummary, unknown>; children: React.ReactNode; className?: string }) {
   const sorted = column.getIsSorted()
   return (
     <button
@@ -528,7 +526,7 @@ function getAvgGrade(grades: TaskGradeInfo[]): number {
   return validGrades.reduce((sum, g) => sum + g, 0) / validGrades.length
 }
 
-export const repoColumns: ColumnDef<RepoSummary, any>[] = [
+export const repoColumns: ColumnDef<RepoSummary>[] = [
   {
     accessorKey: "name",
     header: ({ column }) => <SortableHeader column={column}>Repo</SortableHeader>,

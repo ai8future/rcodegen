@@ -72,10 +72,7 @@ type LiveStep struct {
 func NewLiveDisplay(b *bundle.Bundle, jobID string, inputs map[string]string) *LiveDisplay {
 	steps := make([]LiveStep, len(b.Steps))
 	for i, step := range b.Steps {
-		tool := step.Tool
-		if tool == "" && len(step.Parallel) > 0 {
-			tool = "parallel"
-		}
+		tool := step.ToolLabel()
 		steps[i] = LiveStep{
 			Name:  step.Name,
 			Tool:  tool,
@@ -405,6 +402,8 @@ func (d *LiveDisplay) renderStep(index int, step *LiveStep) {
 		modelName := capitalizeWord(step.Model)
 		// Shorten common model names
 		switch step.Model {
+		case "fable":
+			modelName = "Fable"
 		case "sonnet":
 			modelName = "Sonnet"
 		case "opus":
@@ -417,12 +416,28 @@ func (d *LiveDisplay) renderStep(index int, step *LiveStep) {
 			modelName = "3-flash"
 		case "gemini-2":
 			modelName = "2"
+		case "gpt-5.6-sol":
+			modelName = "5.6-sol"
+		case "gpt-5.6-terra":
+			modelName = "5.6-terra"
+		case "gpt-5.6-luna":
+			modelName = "5.6-luna"
+		case "gpt-5.5":
+			modelName = "5.5"
 		case "gpt-5.4":
 			modelName = "5.4"
 		case "gpt-5.3-codex":
 			modelName = "5.3"
 		case "gpt-5.2-codex":
 			modelName = "5.2"
+		default:
+			if strings.Contains(step.Model, "/") {
+				parts := strings.Split(step.Model, "/")
+				modelName = parts[len(parts)-1]
+				if len(modelName) > 18 {
+					modelName = modelName[:15] + "..."
+				}
+			}
 		}
 		toolDisplay = fmt.Sprintf("%s/%s", toolName, modelName)
 	}

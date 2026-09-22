@@ -44,9 +44,11 @@ var reportFilenamePattern = regexp.MustCompile(`(?i)^(.+)-([a-z]+)-([a-z]+)-(\d{
 
 // Known tool names for format detection
 var knownTools = map[string]bool{
-	"claude": true,
-	"gemini": true,
-	"codex":  true,
+	"claude":   true,
+	"gemini":   true,
+	"codex":    true,
+	"kilocode": true,
+	"opencode": true,
 }
 
 // File lock for grades.json operations

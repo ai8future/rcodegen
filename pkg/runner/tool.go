@@ -2,6 +2,7 @@
 package runner
 
 import (
+	"context"
 	"os/exec"
 )
 
@@ -19,8 +20,14 @@ type Tool interface {
 	// ReportPrefix returns the tool-specific prefix for report filenames (e.g., "claude-", "codex-")
 	ReportPrefix() string
 
-	// ValidModels returns the list of valid model names for this tool
+	// ValidModels returns the fixed model names for this tool. Nil or empty
+	// means the tool accepts a dynamic model namespace.
 	ValidModels() []string
+
+	// ValidEfforts returns every reasoning-effort name this tool may accept,
+	// lowest to highest. Nil means the tool has no effort concept. Tools whose
+	// capabilities vary by model can also implement ModelEffortProvider.
+	ValidEfforts() []string
 
 	// DefaultModel returns the default model name
 	DefaultModel() string
@@ -98,8 +105,43 @@ type DirectAPIRunner interface {
 	ShouldUseDirectAPI(cfg *Config) bool
 
 	// RunDirectAPI executes the task by calling the API directly, writes output
-	// to cfg.Output (or os.Stdout), and returns the exit code.
-	RunDirectAPI(cfg *Config, workDir, task string) int
+	// to cfg.Output (or os.Stdout), and returns the exit code. It must abort
+	// when ctx is cancelled: a server run holds a concurrency slot (and any
+	// scratch clone) until this returns.
+	RunDirectAPI(ctx context.Context, cfg *Config, workDir, task string) int
+}
+
+// DynamicModelLister is implemented by API-backed tools whose model inventory
+// is supplied by a live runtime instead of a fixed compile-time list.
+type DynamicModelLister interface {
+	ListAvailableModels(ctx context.Context) ([]string, error)
+}
+
+// ModelEffortProvider is an optional interface for tools whose supported
+// reasoning efforts vary by model. Tools that do not implement it use the
+// tool-wide ValidEfforts list for every model.
+type ModelEffortProvider interface {
+	ValidEffortsForModel(model string) []string
+}
+
+// RunUsage is one run's usage as the tool's own CLI reported it. Zero fields
+// mean the CLI said nothing about them, never that the run was free.
+type RunUsage struct {
+	InputTokens  int
+	OutputTokens int
+	CostUSD      float64
+}
+
+// UsageReporter is the optional Tool interface for reading usage out of a
+// finished run. Each adapter knows what its CLI publishes and where, so the
+// knowledge lives with the tool rather than in the callers.
+//
+// ok is false when this run has nothing to report — the CLI publishes no usage
+// at all (codex), or this particular run produced none. Callers must then say
+// so rather than reporting zeros: a fabricated $0.00 is worse than an honest
+// "unreported", because it looks like a measurement.
+type UsageReporter interface {
+	ReportedUsage(res *RunResult) (RunUsage, bool)
 }
 
 // FlagDef defines a command-line flag

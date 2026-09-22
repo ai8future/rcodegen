@@ -1,0 +1,60 @@
+{
+  "name": "gated-build",
+  "description": "Claude builds, Jev triages the builder's own completion report, Claude finishes only if the triage says the objective is not met, Gemini tests. The gate is advisory triage, not verification",
+  "inputs": [
+    {
+      "name": "output_dir",
+      "required": false,
+      "description": "Base directory for generated files (default from settings)"
+    },
+    {
+      "name": "project_name",
+      "required": true,
+      "description": "Project subdirectory name"
+    },
+    {
+      "name": "task",
+      "required": true,
+      "description": "What to build"
+    }
+  ],
+  "steps": [
+    {
+      "name": "build",
+      "tool": "claude",
+      "task": "${inputs.task}\n\nRequirements:\n- Create well-structured, production-ready code\n- Include error handling and input validation\n- Add a README with usage instructions\n\nSave code to: ${inputs.output_dir}/${inputs.project_name}/src/\nSave README to: ${inputs.output_dir}/${inputs.project_name}/README.md\n\nEnd your reply with a section titled COMPLETION SUMMARY that lists: what was built, what you verified and how, and every known gap or unimplemented requirement. Write 'Known gaps: none' only after checking."
+    },
+    {
+      "name": "gate",
+      "decide": {
+        "state": "OBJECTIVE:\n${inputs.task}\n\nBUILDER REPORT:\n${steps.build.stdout}",
+        "questions": {
+          "verdict": {
+            "type": "choice",
+            "instructions": "Compare the BUILDER REPORT against the OBJECTIVE. Choose complete only if every requirement in the objective is reported as built and verified. Choose verify_more if everything is reported as built but verification is missing or partial. Choose incomplete if any requirement is missing, deferred, or listed as a gap.",
+            "criteria": {
+              "complete": "Every requirement is reported as built and verified.",
+              "verify_more": "Built, but verification is missing or partial.",
+              "incomplete": "At least one requirement is missing or listed as a gap."
+            }
+          },
+          "has_known_gaps": {
+            "type": "noul",
+            "instructions": "Does the BUILDER REPORT list any known gaps, TODOs, or unimplemented requirements?"
+          }
+        }
+      }
+    },
+    {
+      "name": "finish",
+      "if": "${steps.gate.result.verdict} != 'complete'",
+      "tool": "claude",
+      "task": "A completion judge rated the previous build attempt as: ${steps.gate.result.verdict} (known gaps probability ${steps.gate.result.has_known_gaps}).\n\nObjective:\n${inputs.task}\n\nPrevious builder report:\n${steps.build.stdout}\n\n1. Read the code in ${inputs.output_dir}/${inputs.project_name}/src/\n2. Implement every missing requirement and run the verification that was skipped\n3. End with an updated COMPLETION SUMMARY in the same format"
+    },
+    {
+      "name": "test",
+      "tool": "gemini",
+      "task": "Test the implementation.\n\n1. Navigate to ${inputs.output_dir}/${inputs.project_name}/\n2. Run the code against sample inputs\n3. Verify it works correctly\n4. Note any issues\n\nSave test results to: ${inputs.output_dir}/${inputs.project_name}/test-results.md"
+    }
+  ]
+}

@@ -27,6 +27,7 @@ message RunTaskRequest {
   repeated string work_dirs = 5; // Target directories
   map<string, string> variables = 6; // Template variables (-x key=val)
   string session_id = 7;           // Resume existing session (multi-turn)
+  string effort = 8;               // Explicit reasoning effort (optional)
 }
 
 message RunBundleRequest {
@@ -81,6 +82,7 @@ message ResultEvent {
   double total_cost_usd = 4;
   string grade = 5;          // Extracted grade if present
   string session_id = 6;          // Session ID for multi-turn continuation
+  bool output_truncated = 7;      // Output exceeded the retained result cap
 }
 
 message ErrorEvent {

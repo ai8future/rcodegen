@@ -22,6 +22,8 @@ const (
 	colorBlue    = colors.Blue
 	colorMagenta = colors.Magenta
 	colorWhite   = colors.White
+
+	colorBrightMagenta = colors.BrightMagenta
 )
 
 // capitalizeWord returns s with first letter uppercased (replaces deprecated strings.Title)
@@ -44,11 +46,11 @@ const (
 
 // Status icons
 const (
-	iconPending  = "○"
-	iconRunning  = "●"
-	iconSuccess  = "✓"
-	iconFailure  = "✗"
-	iconSkipped  = "◌"
+	iconPending = "○"
+	iconRunning = "●"
+	iconSuccess = "✓"
+	iconFailure = "✗"
+	iconSkipped = "◌"
 )
 
 // StepState represents the execution state of a step
@@ -89,11 +91,7 @@ type ProgressDisplay struct {
 func NewProgressDisplay(b *bundle.Bundle, jobID string, inputs map[string]string) *ProgressDisplay {
 	steps := make([]StepProgress, len(b.Steps))
 	for i, step := range b.Steps {
-		tool := step.Tool
-		if tool == "" && len(step.Parallel) > 0 {
-			// For parallel steps, show "parallel" or combine tool names
-			tool = "parallel"
-		}
+		tool := step.ToolLabel()
 		steps[i] = StepProgress{
 			Name:  step.Name,
 			Tool:  tool,
@@ -130,6 +128,16 @@ func toolColor(tool string) string {
 		return colorYellow
 	case "codex":
 		return colorBlue
+	case "opencode":
+		return colorWhite
+	case "kilocode":
+		return colorBrightMagenta
+	case "ollama":
+		return colorGreen
+	case "lmstudio":
+		return colorCyan
+	case "jev":
+		return colorGreen
 	case "parallel":
 		return colorCyan
 	default:

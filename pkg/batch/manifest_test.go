@@ -40,6 +40,16 @@ func TestLoadManifest(t *testing.T) {
 				"task": "Generate documentation",
 				"tool": "gemini",
 			},
+			{
+				"name": "deepinfra",
+				"task": "Run opencode",
+				"tool": "opencode",
+			},
+			{
+				"name": "kilocode",
+				"task": "Run kilocode",
+				"tool": "kilocode",
+			},
 		},
 	}
 
@@ -68,8 +78,8 @@ func TestLoadManifest(t *testing.T) {
 		t.Errorf("Budget.MaxWait = %q, want %q", m.Budget.MaxWait, "30m")
 	}
 
-	if len(m.Jobs) != 3 {
-		t.Fatalf("len(Jobs) = %d, want 3", len(m.Jobs))
+	if len(m.Jobs) != 5 {
+		t.Fatalf("len(Jobs) = %d, want 5", len(m.Jobs))
 	}
 
 	// Check first job has all fields
@@ -112,6 +122,14 @@ func TestLoadManifest(t *testing.T) {
 		t.Errorf("Jobs[2].Tool = %q, want %q", m.Jobs[2].Tool, "gemini")
 	}
 
+	if m.Jobs[3].Tool != "opencode" {
+		t.Errorf("Jobs[3].Tool = %q, want %q", m.Jobs[3].Tool, "opencode")
+	}
+
+	if m.Jobs[4].Tool != "kilocode" {
+		t.Errorf("Jobs[4].Tool = %q, want %q", m.Jobs[4].Tool, "kilocode")
+	}
+
 	// Verify duration methods
 	ci, err := m.Budget.CheckIntervalDuration()
 	if err != nil {
@@ -127,6 +145,50 @@ func TestLoadManifest(t *testing.T) {
 	}
 	if mw != 30*time.Minute {
 		t.Errorf("MaxWaitDuration() = %v, want %v", mw, 30*time.Minute)
+	}
+}
+
+func TestLoadManifestAcceptsLocalRuntimeTools(t *testing.T) {
+	for _, tool := range []string{"ollama", "lmstudio"} {
+		path := writeManifestJSON(t, map[string]any{"name": "local", "jobs": []map[string]any{{"name": tool, "task": "hi", "tool": tool, "model": "model"}}})
+		if _, err := LoadManifest(path); err != nil {
+			t.Fatalf("%s manifest: %v", tool, err)
+		}
+	}
+}
+
+func TestLoadManifestRejectsUnsafeOrDuplicateNames(t *testing.T) {
+	for _, manifest := range []map[string]any{
+		{"name": "../escape", "jobs": []map[string]any{{"name": "job", "task": "hi"}}},
+		{"name": "safe", "jobs": []map[string]any{{"name": "../job", "task": "hi"}}},
+		{"name": "safe", "jobs": []map[string]any{{"name": "same", "task": "hi"}, {"name": "same", "task": "hi"}}},
+	} {
+		if _, err := LoadManifest(writeManifestJSON(t, manifest)); err == nil {
+			t.Fatalf("unsafe manifest accepted: %+v", manifest)
+		}
+	}
+}
+
+func TestLoadManifest_KilocodeIsValidTool(t *testing.T) {
+	manifest := map[string]any{
+		"name": "smoke",
+		"jobs": []map[string]any{
+			{
+				"name": "j1",
+				"task": "echo",
+				"tool": "kilocode",
+				"dir":  "/tmp",
+			},
+		},
+	}
+
+	path := writeManifestJSON(t, manifest)
+	m, err := LoadManifest(path)
+	if err != nil {
+		t.Fatalf("LoadManifest() error = %v", err)
+	}
+	if m.Jobs[0].Tool != "kilocode" {
+		t.Errorf("Jobs[0].Tool = %q, want %q", m.Jobs[0].Tool, "kilocode")
 	}
 }
 

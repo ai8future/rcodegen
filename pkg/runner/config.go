@@ -21,6 +21,13 @@ const (
 	Reset   = colors.Reset
 )
 
+// ChatMessage preserves structured chat history for tools that call a chat API
+// directly. CLI-backed tools continue to consume the flattened Task field.
+type ChatMessage struct {
+	Role    string
+	Content string
+}
+
 // Display formatting constants
 const (
 	MaxDisplayTaskLen = 50 // Max length for task display in banner
@@ -33,6 +40,7 @@ const (
 type Config struct {
 	// Common fields
 	Task          string            // The task/prompt to execute
+	Messages      []ChatMessage     // Ordered chat history for direct API tools
 	TaskShortcut  string            // The shortcut name if a shortcut was used
 	WorkDirs      []string          // Working directories (supports multiple codebases)
 	Codebase      string            // Codebase name from -c flag (used in report filenames)
@@ -55,16 +63,16 @@ type Config struct {
 	DirAll        string // Comma-separated directories: run all git repos within (--dir-all)
 
 	// Tool-specific fields (only some tools use these)
-	MaxBudget   string // Claude: max budget in USD
-	Effort      string // Codex: reasoning effort level
-	TrackStatus   bool // Codex: track credit usage before/after
-	NoTrackStatus bool // User explicitly disabled status tracking via -S flag
-	SessionID   string // Session ID for resuming previous session
-	Flash       bool   // Gemini: use flash model variant
-	ImagePath   string // Gemini: input image file to include in request
+	MaxBudget     string // Claude: max budget in USD
+	Effort        string // Claude/Codex: reasoning effort level
+	TrackStatus   bool   // Codex: track credit usage before/after
+	NoTrackStatus bool   // User explicitly disabled status tracking via -S flag
+	SessionID     string // Session ID for resuming previous session
+	Flash         bool   // Gemini: use flash model variant
+	ImagePath     string // Gemini: input image file to include in request
 
 	// Logging
-	Verbose bool        // Enable verbose/debug logging
+	Verbose bool         // Enable verbose/debug logging
 	Logger  *slog.Logger // Structured logger (nil-safe: callers should check before use)
 
 	// Execution control

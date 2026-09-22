@@ -1,14 +1,18 @@
 # rcodegen
 
-Unified automation framework for AI-powered code analysis, generation, and reporting. Run multiple AI coding assistants (Claude, Codex, Gemini) in unattended, automated workflows against your codebases.
+Unified automation framework for AI-powered code analysis, generation, reporting, batch execution, and remote serving. Run Claude, Codex, Gemini, opencode, kilocode, Ollama, and LM Studio in unattended workflows against one or many codebases.
 
 ## What It Does
 
-rcodegen provides two layers of automation:
+rcodegen provides four connected surfaces:
 
-**Single-tool wrappers** (`rclaude`, `rcodex`, `rgemini`) add task shortcuts, automated reporting, cost tracking, file locking, grading, and multi-codebase support on top of each tool's native CLI.
+**Single-tool wrappers** (`rclaude`, `rcodex`, `rgemini`, `ropencode`, `rkilo`) add task shortcuts, automated reporting, cost tracking, file locking, grading, and multi-codebase support on top of each tool's native CLI.
 
-**Multi-tool orchestrator** (`rcodegen`) chains multiple AI tools together in defined workflows called "bundles" -- one model builds code, another reviews it, another tests it, with parallel execution, voting, and merging.
+**Multi-tool orchestrator** (`rcodegen`) chains multiple AI tools together in defined workflows called "bundles" -- one model builds code, another reviews it, another tests it, with parallel execution, voting, and merging. Ollama and LM Studio participate through direct local APIs rather than wrapper binaries.
+
+**Operational tools** (`rbatch`, `rserve`) execute large job manifests locally or remotely and expose the tools through streaming gRPC and OpenAI-compatible HTTP APIs.
+
+**Dashboard and scheduler** provide local report browsing, grade history, and cron-driven task execution.
 
 ## Binaries
 
@@ -17,26 +21,33 @@ rcodegen provides two layers of automation:
 | `rclaude` | Claude Code CLI automation wrapper |
 | `rcodex` | OpenAI Codex CLI automation wrapper |
 | `rgemini` | Google Gemini CLI automation wrapper |
+| `ropencode` | opencode CLI wrapper for OpenAI-compatible providers, defaulting to DeepInfra Qwen3-Coder |
+| `rkilo` | kilocode CLI wrapper for OpenAI-compatible providers, defaulting to DeepInfra Qwen3-Coder |
 | `rcodegen` | Multi-tool orchestrator for bundles |
-| `rbatch` | Batch job runner for executing multiple coding agent tasks with concurrency control, session chaining, and checkpoint/resume |
+| `rbatch` | Batch runner with concurrency control, session-group ordering/reuse, budget policies, spool processing, and checkpoint/resume |
 | `rserve` | gRPC + OpenAI-compatible HTTP server exposing all tools and bundles (default gRPC port 14260, HTTP port 14261) |
 
 ## Prerequisites
 
-- Go 1.25.5+
-- One or more AI CLIs installed: `claude`, `codex`, `gemini`
+- Go 1.26.5+
+- One or more AI CLIs installed: `claude`, `codex`, `gemini`, `opencode`, `kilocode`
+- Ollama and/or LM Studio running locally (optional, for direct local-model execution)
 - Python 3.11+ (optional, for credit tracking via iTerm2)
+- Node.js 20+ and npm (optional, for the dashboard and scheduler)
+- `GEMINI_API_KEY` (only for Gemini image generation with `banana` / `gemini-3.1-flash-image-preview`)
 
 ## Installation
 
 ```bash
-# Build all 6 binaries into bin/
+# Build Linux amd64 + Darwin arm64 variants and launcher scripts for all 8 binaries
 make
 
 # Build individually
 make rclaude
 make rcodex
 make rgemini
+make ropencode
+make rkilo
 make rcodegen
 make rbatch
 make rserve
@@ -48,15 +59,47 @@ make test
 make clean
 ```
 
-Binaries are built with `-ldflags` to embed the version so `-v` works from any directory. Do not use bare `go build`.
+The root `VERSION` file is embedded at compile time so version reporting works from any directory. The five single-tool wrappers accept `-v` or `--version`, `rserve` accepts `-v`, and `rcodegen`/`rbatch` accept `--version`. The Makefile also applies release linker flags and creates platform launchers. Use `make` rather than bare `go build` for distributable binaries.
+
+### Guarded Ollama and LM Studio E2E tests
+
+Live local-runtime tests are opt-in and must be run through the Make targets, not by invoking the tagged Go test directly:
+
+```bash
+make e2e-localai-preflight # inventory and resource checks; does not load a model
+make e2e-ollama            # full Ollama protocol suite only
+make e2e-lmstudio          # full LM Studio protocol suite only
+make e2e-localai-smoke     # both runtimes, one completion each
+make e2e-localai-full      # both runtimes, all protocol and batch paths
+```
+
+The guarded harness is macOS-specific because its load gate uses `memory_pressure`. Every target requires `curl`, Python 3, a reachable Ollama server, and the `lms` CLI, even when testing only one provider: refusing to overlap models depends on verifying both runtimes' loaded-model state. The preflight target may temporarily start an empty LM Studio server for inventory checks, but it does not load a model and restores a server it started to stopped.
+
+The wrapper acquires a process lock, refuses to start if either runtime already has a loaded model, checks memory pressure and model-size limits, and runs the providers serially with an empty-state barrier between them. It unloads only the exact model instance it loaded, preserves a previously running LM Studio server, uses a temporary `HOME` for rserve/rbatch state, and verifies that both runtimes are empty on exit. It never intentionally keeps Ollama and LM Studio models loaded at the same time.
+
+The default test models are `qwen3.5:4b` for Ollama and `gemma-4-31b-it-abliterated` for LM Studio. Override them when needed:
+
+```bash
+RCODEGEN_E2E_OLLAMA_MODEL=installed-model make e2e-ollama
+RCODEGEN_E2E_LMSTUDIO_MODEL=installed-model make e2e-lmstudio
+```
+
+Safety thresholds can be tightened or deliberately raised with `RCODEGEN_E2E_MIN_FREE_PERCENT`, `RCODEGEN_E2E_MAX_OLLAMA_GIB`, `RCODEGEN_E2E_MAX_LM_DISK_GIB`, and `RCODEGEN_E2E_MAX_LM_ESTIMATE_GIB`. LM Studio context defaults to 2048 and can be changed with `RCODEGEN_E2E_LMSTUDIO_CONTEXT`. The harness uses rserve ports 18260/18261 by default; change the gRPC port with `RCODEGEN_E2E_RSERVE_PORT` and the HTTP port follows at port+1. Non-default runtime origins use `RCODEGEN_E2E_OLLAMA_BASE_URL` and `RCODEGEN_E2E_LMSTUDIO_BASE_URL`. The full suite validates model discovery, invalid-effort rejection, synchronous HTTP, SSE termination, streaming gRPC usage, and persisted local and remote `rbatch` results.
+
+Add the launchers to your `PATH`, for example:
+
+```bash
+export PATH="$PWD/bin:$PATH"
+```
 
 ## First Run
 
-If no settings file exists at `~/.rcodegen/settings.json`, an interactive setup wizard runs automatically. It asks for your code directory, preferred models, and budget/effort defaults. You can also copy the example:
+If `~/.rcodegen/settings.json` does not exist, the single-tool wrappers create a secure (`0600`) file with sensible defaults and auto-detect `~/Desktop/_code` or `~/_code`. Edit that file, or install the example explicitly:
 
 ```bash
 mkdir -p ~/.rcodegen
 cp settings.json.example ~/.rcodegen/settings.json
+chmod 600 ~/.rcodegen/settings.json
 ```
 
 ## Quick Start
@@ -87,6 +130,10 @@ rclaude -d ~/code --list proj1,proj2 audit
 
 # Dry run (show command without executing)
 rclaude -n -c myproject audit
+
+# Generate or edit an image through Gemini's direct API
+GEMINI_API_KEY=... rgemini -d /path/to/project -m banana -i reference.png \
+  "Create a polished variation"
 ```
 
 ### Multi-Tool Orchestration
@@ -100,7 +147,16 @@ rcodegen build-review-audit -c myproject "task" --opus-only
 
 # List available bundles
 rcodegen list
+
+# Preview and run a batch manifest
+rbatch run batch.json --dry-run
+rbatch run batch.json --concurrency 4
+
+# Start gRPC on 14260 and HTTP on 14261
+rserve
 ```
+
+`rcodegen run <bundle>` and `rcodegen bundle <bundle>` are equivalent to the direct `rcodegen <bundle>` form.
 
 ## Task Shortcuts
 
@@ -150,6 +206,7 @@ Custom tasks can be added in `~/.rcodegen/settings.json`. Built-in task names ar
 ```
 -D, --delete-old        Delete previous reports with same pattern after run
 -R, --require-review    Skip if previous report unreviewed
+--no-runlog             Suppress .runlog.md generation
 ```
 
 ### Other
@@ -160,6 +217,8 @@ Custom tasks can be added in `~/.rcodegen/settings.json`. Built-in task names ar
 -t, --tasks             List available task shortcuts
 -f, --force             Bypass VERSION state check and force run
 --status-only           Show status and exit
+--migrate-grades        Backfill .grades.json in the selected/current repo
+--migrate-grades-all    Backfill grades for all repos under code_dir
 -h, --help              Show help
 ```
 
@@ -168,13 +227,14 @@ Custom tasks can be added in `~/.rcodegen/settings.json`. Built-in task names ar
 **rclaude:**
 ```
 -b, --budget <usd>      Max budget in USD per run (default: 10.00, max: 1000.00)
+-e, --effort <level>    Effort level: low, medium, high, xhigh, max (default: xhigh)
 -s, --status            Track credit usage before/after task
 -S, --no-status         Disable credit usage tracking
 ```
 
 **rcodex:**
 ```
--e, --effort <lvl>      Reasoning effort: low, medium, high, xhigh (default: xhigh)
+-e, --effort <lvl>      Reasoning effort: low through ultra, model-dependent (default: xhigh)
 -s, --status            Track credit usage before/after task
 -S, --no-status         Disable credit usage tracking
 ```
@@ -182,20 +242,25 @@ Custom tasks can be added in `~/.rcodegen/settings.json`. Built-in task names ar
 **rgemini:**
 ```
 --flash                 Use gemini-3-flash-preview model
+-i, --image <files>     Input image(s), comma-separated
 -s, --status            Track usage before/after task
 -S, --no-status         Disable usage tracking
 ```
+
+Use `-m banana` (alias for `gemini-3.1-flash-image-preview`) for image generation. That mode calls the Gemini REST API directly, requires `GEMINI_API_KEY`, accepts PNG/JPEG/GIF/WebP inputs, downscales edges above 1568px, and saves returned images in the working directory.
 
 **rcodegen:**
 ```
 --opus-only             Force all Claude steps to use Opus model
 --flash                 Force all Gemini steps to use flash model
 --static                Use static display instead of animated TUI
+--live=false            Disable the animated display (equivalent intent to --static)
+-j                      Emit the final envelope as JSON
 ```
 
 ## Bundles (Multi-Tool Workflows)
 
-Bundles are JSON workflow definitions that orchestrate multiple AI tools in sequence or parallel. There are 9 built-in bundles:
+Bundles are JSON workflow definitions that orchestrate multiple AI tools in sequence or parallel. There are 10 built-in bundles:
 
 | Bundle | Description |
 |--------|-------------|
@@ -208,8 +273,33 @@ Bundles are JSON workflow definitions that orchestrate multiple AI tools in sequ
 | `article` | Gemini researches style, Codex drafts, Gemini edits |
 | `article-parallel` | Research, 2 parallel drafts, 2 parallel edits |
 | `summary` | Claude summarizes, Gemini verifies accuracy |
+| `gated-build` | Claude builds, Jev triages the completion report, Claude addresses reported gaps, Gemini tests |
 
 Custom bundles can be placed in `~/.rcodegen/bundles/`.
+
+Minimal custom bundle (`~/.rcodegen/bundles/draft-review.json`):
+
+```json
+{
+  "name": "draft-review",
+  "description": "Draft with Claude, review with Gemini",
+  "inputs": [{"name": "task", "required": true}],
+  "steps": [
+    {
+      "name": "draft",
+      "tool": "claude",
+      "task": "${inputs.task}"
+    },
+    {
+      "name": "review",
+      "tool": "gemini",
+      "task": "Review this draft:\n${steps.draft.stdout}"
+    }
+  ]
+}
+```
+
+Bundle names are limited to letters, digits, hyphens, and underscores (100 characters maximum). A user bundle with the same filename as a built-in bundle takes precedence.
 
 ### Bundle Features
 
@@ -217,15 +307,18 @@ Custom bundles can be placed in `~/.rcodegen/bundles/`.
 - **Voting** -- Majority or unanimous voting across model outputs
 - **Merging** -- Concatenate or deduplicate outputs from multiple steps
 - **Conditional steps** -- `if`/`then`/`else` branching based on step results
+- **Decision gates** -- `decide` asks TypeSafe Jev typed questions and exposes answers as `${steps.name.result.<question>}` for conditions; see `gated-build`
 - **Variable resolution** -- `${inputs.name}`, `${steps.stepname.stdout}`, `${steps.stepname.status}`
-- **Session reuse** -- Pass session IDs between steps for context continuity
-- **Cost tracking** -- Per-step and aggregate cost/token tracking
+- **Session reuse** -- Pass native session IDs between compatible steps (Claude, Gemini, and Codex; automatic extraction is not yet implemented for OpenCode/KiloCode)
+- **Cost tracking** -- Per-step and aggregate cost/token tracking where the underlying CLI reports usage
+
+Step types are selected by their fields: `tool` executes one CLI, `parallel` runs nested steps concurrently, `merge` combines named outputs (`concat`, `union`, or `dedupe`), `vote` selects among named outputs (`majority`, `unanimous`, or `ranked`), `decide` evaluates typed questions through Jev, and `if` with `then`/`else` selects a branch. See `pkg/bundle/builtin/` for complete examples.
 
 ## Reports
 
 ### Output Location
 
-Reports are saved as markdown files in `_rcodegen/` within each project directory.
+Reports are saved as markdown files in `_rcodegen/` within each project directory by default. `-o`/`--output` or `RCODEGEN_OUTPUT_DIR` replaces that report directory.
 
 ### Filename Format
 
@@ -238,6 +331,8 @@ Example: `myproject-claude-audit-2026-01-20_1430.md`
 ### Grading System
 
 Each report type extracts a grade (0-100) from the AI's output using patterns like `TOTAL_SCORE: N/100`. Grades are persisted to `_rcodegen/.grades.json` with cross-process file locking for safe concurrent access.
+
+Unless `--no-runlog` is set, each wrapper also maintains `_rcodegen/.runlog.md` with run metadata. Use `--migrate-grades` or `--migrate-grades-all` to backfill `.grades.json` from older report files.
 
 The `build-review-audit` bundle uses a structured rubric:
 - Functionality (20), Code Quality (20), User Experience (20)
@@ -266,9 +361,20 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
   "output_dir": "",
   "default_build_dir": "",
   "defaults": {
-    "codex": { "model": "gpt-5.4", "effort": "xhigh" },
-    "claude": { "model": "sonnet", "budget": "10.00" },
-    "gemini": { "model": "gemini-3-pro-preview" }
+    "codex": { "model": "gpt-5.6-sol", "effort": "xhigh" },
+    "claude": { "model": "sonnet", "budget": "10.00", "effort": "xhigh" },
+    "gemini": { "model": "gemini-3.1-pro-preview" },
+    "opencode": {
+      "model": "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      "provider": "deepinfra"
+    },
+    "kilocode": {
+      "model": "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      "provider": "deepinfra"
+    },
+    "ollama": { "base_url": "http://localhost:11434", "model": "", "timeout_seconds": 600, "allow_remote": false, "api_key": "" },
+    "lmstudio": { "base_url": "http://localhost:1234", "model": "", "timeout_seconds": 600, "allow_remote": false, "api_key": "" },
+    "jev": { "base_url": "https://api.typesafe.ai", "model": "jev-1.13.0", "timeout_seconds": 30, "max_concurrent": 8, "api_key": "" }
   },
   "tasks": {
     "my-custom-task": {
@@ -282,29 +388,52 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
 
 1. Hardcoded defaults
 2. `~/.rcodegen/settings.json`
-3. Environment variables (`RCODEGEN_CODE_DIR`, `RCODEGEN_OUTPUT_DIR`, `RCODEGEN_MODEL`, `RCODEGEN_BUDGET`, `RCODEGEN_EFFORT`, `RCODEGEN_LOG_LEVEL`)
+3. Environment variables (`RCODEGEN_CODE_DIR`, `RCODEGEN_OUTPUT_DIR`, `RCODEGEN_MODEL`, `RCODEGEN_BUDGET`, `RCODEGEN_EFFORT`, `RCODEGEN_LOG_LEVEL`, and the local-runtime variables documented below; the global model and effort variables do not override Ollama, LM Studio, or Jev)
 4. CLI flags (highest priority)
+
+Local runtime overrides are `RCODEGEN_OLLAMA_BASE_URL`, `RCODEGEN_OLLAMA_MODEL`, `RCODEGEN_OLLAMA_API_KEY`, `RCODEGEN_LMSTUDIO_BASE_URL`, `RCODEGEN_LMSTUDIO_MODEL`, and `RCODEGEN_LMSTUDIO_API_KEY`.
+
+`TYPESAFE_API_KEY` overrides `defaults.jev.api_key` when a Jev client is created. The environment key is never copied into settings or persisted by automatic setup. `RCODEGEN_JEV_MODEL` and `RCODEGEN_JEV_BASE_URL` override the Jev model and origin.
 
 ### Task Template Variables
 
 | Variable | Expands To |
 |----------|------------|
 | `{report_file}` | Auto-generated filename |
-| `{report_dir}` | `_rcodegen` |
+| `{report_dir}` | Configured report directory (default: `_rcodegen`) |
 | `{codebase}` | Codebase name from `-c` |
 | `{timestamp}` | Current timestamp |
 | `{variable}` | Custom value from `-x variable=value` |
 
+In task text, `@path/to/file` is expanded to that file's contents before execution. Quote prompts containing spaces so they remain one task argument.
+
 ## Supported Models
 
 ### Claude
-`sonnet`, `opus`, `haiku` (default: `opus`)
+`fable`, `sonnet`, `opus`, `haiku` (settings default: `sonnet`). Effort levels: `low`, `medium`, `high`, `xhigh`, `max` (default: `xhigh`).
 
 ### Codex
-`gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex` (default: `gpt-5.4`)
+`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-4.1-codex`, `gpt-4o-codex` (default: `gpt-5.6-sol`). The configured default effort is `xhigh`. Sol and Terra support `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; Luna supports through `max`; older models support through `xhigh`.
 
 ### Gemini
-`gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` (default: `gemini-3.1-pro-preview`)
+`gemini-3.1-pro-preview`, `gemini-3.1-flash-image-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, plus the `banana` alias for the image-preview model (default: `gemini-3.1-pro-preview`)
+
+### OpenCode / KiloCode
+Any opencode or kilocode `provider/model` string, for example `deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct` (default). Run `opencode providers login` or `kilocode auth login` once per provider before first use.
+
+### Ollama / LM Studio
+Use HTTP selectors such as `ollama:<model>` or `lmstudio:<model>`. Structured bundle, batch, and gRPC requests put `ollama` / `lmstudio` in `tool` and the raw runtime identifier in `model`. No model is fabricated when the configured default is empty; callers must name one or set `defaults.ollama.model` / `defaults.lmstudio.model`.
+
+```bash
+curl -s http://localhost:14261/v1/models | python3 -m json.tool
+curl -s http://localhost:14261/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"ollama:MODEL_FROM_V1_MODELS","reasoning_effort":"low","messages":[{"role":"user","content":"Reply with exactly OK"}]}'
+```
+
+`available:true` means the model identifier appeared in that runtime's live inventory response; it does not mean the model is already loaded. [LM Studio may JIT-load](https://lmstudio.ai/docs/developer/core/headless#just-in-time-jit-model-loading-for-rest-endpoints) an available model, so local requests default to a 600-second whole-request timeout. Ollama accepts efforts `none`, `low`, `medium`, `high`, and `max`; LM Studio accepts no effort override in Phase 1. Explicit dynamic identifiers are never suffix-parsed, even when they end in `-high` or `-max`.
+
+Both adapters send a deliberately minimal, non-streaming OpenAI-compatible request and return text only. They do not edit files, call tools, or execute shell commands; use OpenCode or another agentic CLI configured for a local provider when the model must act on a repository. Ollama's current [OpenAI compatibility page](https://docs.ollama.com/api/openai-compatibility) lists `tool_choice`, `logit_bias`, `user`, and `n` as supported request fields and Logprobs as a supported feature; Phase 1 still does not expose or forward them because its payload is intentionally limited to the fields rcodegen uses. rcodegen intentionally ignores `OLLAMA_HOST`; configure its client origin through settings or `RCODEGEN_OLLAMA_BASE_URL`. LM Studio bearer authentication uses `api_key` or `RCODEGEN_LMSTUDIO_API_KEY`.
 
 ## Locking & Concurrency
 
@@ -327,21 +456,21 @@ The `rcodegen` orchestrator features an animated TUI with:
 - Braille dot spinner animation at 100ms intervals
 - Real-time elapsed time and cost counters
 - Per-step status with tool/model indicators
-- Color-coded by tool: magenta (Claude), yellow (Gemini), blue (Codex)
+- Color-coded by tool: magenta (Claude), yellow (Gemini), blue (Codex), white (opencode), bright magenta (kilocode)
 - Live activity feed parsed from stream-json output (e.g., "Reading files...", "Writing code...")
 
 Use `--static` to disable animation.
 
 ## Tool Comparison
 
-| Feature | rclaude | rcodex | rgemini |
-|---------|---------|--------|---------|
-| CLI Command | `claude -p` | `codex exec` | `gemini -p` |
-| Permission Bypass | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--yolo` |
-| Output Format | stream-json | --json | stream-json |
-| Cost Tracking | iTerm2 API | iTerm2 API | iTerm2 API |
-| Budget Control | `--max-budget-usd` | None | None |
-| Default Model | opus | gpt-5.4 | gemini-3.1-pro-preview |
+| Feature | rclaude | rcodex | rgemini | ropencode | rkilo |
+|---------|---------|--------|---------|-----------|-------|
+| CLI Command | `claude -p` | `codex exec` | `gemini -p` | `opencode run` | `kilocode run` |
+| Permission Bypass | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--yolo` | `--dangerously-skip-permissions` | `--dangerously-skip-permissions` |
+| Output Format | stream-json | --json | stream-json | json | json |
+| Cost Tracking | iTerm2 API | iTerm2 API | iTerm2 API | None in v1 | None in v1 |
+| Budget Control | `--max-budget-usd` | None | None | Provider-side | Provider-side |
+| Default Model | sonnet | gpt-5.6-sol | gemini-3.1-pro-preview | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct | deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct |
 
 ## Project Structure
 
@@ -351,12 +480,14 @@ rcodegen/
 │   ├── rclaude/main.go              # Claude CLI entry point (~15 lines)
 │   ├── rcodex/main.go               # Codex CLI entry point (~15 lines)
 │   ├── rgemini/main.go              # Gemini CLI entry point (~15 lines)
+│   ├── ropencode/main.go            # opencode CLI entry point (~15 lines)
+│   ├── rkilo/main.go                # kilocode CLI entry point (~15 lines)
 │   ├── rcodegen/main.go             # Orchestrator entry point
 │   ├── rbatch/main.go               # Batch job runner entry point
-│   └── rserve/main.go               # gRPC + HTTP server entry point (default port 14260)
+│   └── rserve/main.go               # gRPC + HTTP server entry point
 ├── pkg/
 │   ├── runner/                      # Core execution framework
-│   │   ├── tool.go                  # Tool interface (27 methods)
+│   │   ├── tool.go                  # Tool interface
 │   │   ├── runner.go                # Main run loop
 │   │   ├── config.go                # Config struct & colors
 │   │   ├── flags.go                 # Flag parsing & reordering
@@ -364,13 +495,17 @@ rcodegen/
 │   │   ├── tasks.go                 # Task type constants
 │   │   ├── output.go                # Banners, summaries, stats
 │   │   ├── stream.go                # Stream-JSON parser
+│   │   ├── bounded_buffer.go        # Bounded subprocess output capture
 │   │   ├── validate.go              # Model validation
 │   │   ├── versionstate.go          # VERSION-based skip state (per tool+task)
 │   │   └── migrate.go               # Grade migration utilities
 │   ├── tools/
 │   │   ├── claude/claude.go         # Claude tool implementation
 │   │   ├── codex/codex.go           # Codex tool implementation
-│   │   └── gemini/gemini.go         # Gemini tool implementation
+│   │   ├── gemini/gemini.go         # Gemini tool implementation
+│   │   ├── opencode/opencode.go     # opencode tool implementation
+│   │   ├── kilocode/kilocode.go     # kilocode tool implementation
+│   │   └── localai/                  # Shared Ollama/LM Studio direct-API adapter
 │   ├── orchestrator/                # Multi-step workflow engine
 │   │   ├── orchestrator.go          # Main orchestration loop
 │   │   ├── context.go               # Variable resolution
@@ -386,13 +521,19 @@ rcodegen/
 │   ├── bundle/                      # Workflow definitions
 │   │   ├── bundle.go                # Bundle/Step structs
 │   │   ├── loader.go                # Load from disk or builtin
-│   │   └── builtin/                 # 9 embedded JSON bundles
+│   │   └── builtin/                 # 10 embedded JSON bundles
 │   ├── server/                      # gRPC + HTTP server implementation
 │   │   ├── server.go                # RServe gRPC service handler
 │   │   ├── registry.go              # Run concurrency registry
 │   │   ├── session.go               # Multi-turn session store (TTL-based)
 │   │   ├── openai/                  # OpenAI-compatible HTTP API
 │   │   │   ├── handler.go           # /v1/chat/completions, /v1/models, /health
+│   │   │   ├── bundles.go           # Bundle list/detail/run endpoints and artifacts
+│   │   │   ├── asyncruns.go         # Callback mode, /v1/runs endpoints, result retention
+│   │   │   ├── workdirclone.go      # Per-run scratch copies of work_dirs
+│   │   │   ├── cloneartifacts.go    # Files a run wrote inside its clone
+│   │   │   ├── clonesweep.go        # Startup cleanup for orphaned clone roots
+│   │   │   ├── errorcodes.go        # Error codes and their retryability
 │   │   │   ├── types.go             # Request/response types
 │   │   │   ├── models.go            # Model name parsing
 │   │   │   ├── sse.go               # Server-sent events writer
@@ -417,7 +558,12 @@ rcodegen/
 │   ├── reports/                     # Report management
 │   ├── tracking/                    # Credit/cost tracking (iTerm2)
 │   └── colors/                      # ANSI color constants
+├── e2e/
+│   └── localai/                     # Opt-in live local-runtime black-box tests
 ├── dashboard/                       # Web-based reporting dashboard
+├── scheduler/                       # Cron daemon used by dashboard schedules
+├── scripts/
+│   └── e2e-localai.sh               # Serialized, resource-guarded E2E lifecycle
 ├── bin/                             # Compiled binaries
 ├── Makefile                         # Build system with ldflags
 ├── settings.json.example            # Example config
@@ -427,6 +573,71 @@ rcodegen/
 ├── claude_question_handler.py       # Claude question detection/answering
 └── codex_pty_wrapper.py             # Codex PTY wrapper for session resume
 ```
+
+## rbatch (Batch Runner)
+
+`rbatch` runs JSON job manifests with bounded concurrency. Jobs that share a non-empty `session` value form one sequential group; independent groups can run concurrently. Execution is local by default or delegated to `rserve` with `--server`.
+
+### Manifest Format
+
+```json
+{
+  "name": "nightly-audits",
+  "concurrency": 2,
+  "budget": {
+    "threshold_pct": 20,
+    "on_budget": "stop",
+    "check_interval": "3m",
+    "max_wait": "1h"
+  },
+  "jobs": [
+    {
+      "name": "audit-api",
+      "task": "audit",
+      "tool": "claude",
+      "dir": "/path/to/api",
+      "model": "sonnet",
+      "effort": "xhigh",
+      "max_budget": "5.00"
+    },
+    {
+      "name": "review-api",
+      "task": "review the prior findings",
+      "tool": "claude",
+      "dir": "/path/to/api",
+      "session": "api-review"
+    }
+  ]
+}
+```
+
+Manifest defaults: `concurrency=1`, `tool=claude`, generated job names, `on_budget=stop`, `check_interval=3m`, and `max_wait=1h`. Valid tools are `claude`, `codex`, `gemini`, `opencode`, `kilocode`, `ollama`, and `lmstudio`. `on_budget` accepts `stop`, `wait`, or `ask`; `ask` behaves as `stop` because batch mode is non-interactive.
+
+### Commands
+
+```bash
+# Execute locally; flags may appear before or after the manifest path
+rbatch run batch.json --concurrency 4 --dry-run
+rbatch run batch.json --threshold 20 --on-budget wait --max-wait 2h
+
+# Execute jobs through plaintext gRPC
+rbatch run batch.json --server 127.0.0.1:14260
+
+# Process pending/*.json in filename order and move each manifest to done/ or failed/
+rbatch spool /path/to/spool --server 127.0.0.1:14260
+
+# Resume an explicit checkpoint, or omit it to select the newest checkpoint
+rbatch resume ~/.rcodegen/batches/nightly-audits/state.json --concurrency 2
+rbatch resume
+
+# List all stored batches or inspect one
+rbatch status
+rbatch status nightly-audits
+```
+
+`rbatch run` flags: `--concurrency`, `--threshold`, `--on-budget`, `--max-wait`, `--server`, `--dry-run`, and `-v`. `spool` accepts `--server` and `-v`; `resume` accepts `--server`, `--concurrency`, and `-v`. `watch` is reserved but not implemented.
+
+Summaries and checkpoints are stored under `~/.rcodegen/batches/<name>/`. Every terminal job also writes a bounded result record containing `output`, `output_truncated`, and `error`; job and batch names are validated before they become paths. A failed job stops only its session group; other groups finish. `Ctrl+C` creates a resumable checkpoint. Native conversation reuse works when the selected tool reports a session ID (currently the stream-parsed Claude and Gemini paths); group ordering still applies to every tool. Budget percentages use locally available Claude credit tracking; remote execution cannot query that budget and therefore continues when budget data is unavailable.
 
 ## rserve (gRPC + HTTP Server)
 
@@ -438,8 +649,8 @@ rcodegen/
 # Start with defaults
 rserve
 
-# Custom port, concurrency, and bind address
-rserve -port 9000 -max-concurrent 5 -bind 0.0.0.0
+# Custom port and concurrency, still loopback-only
+rserve -port 9000 -max-concurrent 5 -bind 127.0.0.1
 
 # Show version
 rserve -v
@@ -450,15 +661,29 @@ rserve -v
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-port` | gRPC listen port (HTTP is port+1) | `14260` |
-| `-bind` | Bind address (`0.0.0.0` for all interfaces) | `127.0.0.1` |
+| `-bind` | Listen address; non-loopback values require an explicit unsafe-remote override | `127.0.0.1` |
 | `-max-concurrent` | Max simultaneous runs | `3` |
+| `-session-ttl` | Session inactivity TTL in minutes (`0` disables expiry) | `30` |
 | `-v` | Show version and exit | |
+
+Optional server environment variables:
+
+| Variable | Effect |
+|----------|--------|
+| `RSERVE_TOKEN` | Require a bearer token on HTTP endpoints except `/health`, and on gRPC calls from non-loopback peers |
+| `RSERVE_WORK_ROOT` | Absolute root that confines HTTP bundle `work_dir` values |
+| `RSERVE_ALLOW_INSECURE_REMOTE=1` | Permit a non-loopback native bind after acknowledging that both listeners are plaintext; prefer a loopback TLS gateway |
+| `RSERVE_ASYNC_MAX_LIVE` | Override the maximum number of accepted non-terminal async runs; must be a positive integer |
+| `RSERVE_ASYNC_MAX_BYTES` | Override the estimated retained-request byte budget for live async runs; must be a positive integer |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Enable OpenTelemetry export to an OTLP endpoint |
+| `KAFKAKIT_BOOTSTRAP_SERVERS` | Enable the optional kafkakit/lifecycle integration for Kafka/Redpanda brokers |
+| `KAFKAKIT_TENANT_ID` | Set the event tenant ID (default: `ai8`) |
 
 ### gRPC API
 
 | RPC | Description |
 |-----|-------------|
-| `RunTask` | Run a single tool (claude/codex/gemini), stream events |
+| `RunTask` | Run a single tool (claude/codex/gemini/opencode/kilocode/ollama/lmstudio), stream events |
 | `RunBundle` | Run a named bundle, stream events |
 | `ListTasks` | List task shortcuts and bundles |
 | `GetStatus` | Server health, active run count, run details |
@@ -472,18 +697,28 @@ grpcurl -plaintext -d '{"tool":"claude","task":"hello","work_dirs":["/tmp"]}' \
   127.0.0.1:14260 rserve.RServe/RunTask
 ```
 
+The gRPC listener is plaintext. When `RSERVE_TOKEN` is set it also requires a bearer token from non-loopback peers — see [Authentication](#authentication) — but plaintext means the token is readable by anything that can see the traffic, so a LAN bind still wants authenticated TLS transport in front of it.
+
 ### OpenAI-Compatible HTTP API
 
-The HTTP API on port+1 is compatible with any OpenAI SDK. Model names follow the format `{tool}` or `{tool}:{model}` (e.g., `claude`, `claude:opus`, `gemini:gemini-3.1-pro-preview`).
+The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus rcodegen-specific `work_dirs`, `clone_work_dirs`, `return_artifacts`, `session_id`, and `callback_url` fields. Model names follow `{tool}` or `{tool}:{model}` (for example `claude`, `claude:opus`, `ollama:qwen3`, or `lmstudio:openai/gpt-oss-20b`). Fixed model selectors may carry a supported **`-{effort}` suffix**; a bare Ollama selector may too when a default model is configured. Explicit dynamic identifiers such as `ollama:qwen3-high` are always literal, so use the top-level `reasoning_effort` field with them. Supplying conflicting effort forms is rejected. Supported suffixes also work on fixed `model` fields in bundle step definitions. `/v1/models` enumerates fixed CLI models for binaries found on `PATH`; Ollama and LM Studio are API-only dynamic namespaces that are always listed, probe their live model inventories, and set `"available": false` when a configured default cannot be confirmed. OpenCode and KiloCode remain dynamic without probing. Chat request bodies are limited to 10MB; local-runtime responses to rcodegen are limited to 32MiB.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/v1/chat/completions` | POST | Chat completion (streaming and non-streaming) |
-| `/v1/models` | GET | List available tool/model combinations |
+| `/v1/models` | GET | Available tools, fixed models, dynamic namespaces, configured defaults, and model-specific efforts |
+| `/v1/bundles` | GET | List available bundles with their inputs |
+| `/v1/bundles/{name}` | GET | Bundle detail: full step DAG (parallel groups, vote/merge, conditionals) |
+| `/v1/bundles/{name}` | POST | Run a bundle, return per-step results + inline artifacts (SSE streaming optional) |
+| `/v1/decisions` | POST | Typed Jev decisions with a server-held vendor key and independent capacity |
 | `/v1/files` | POST | Upload a file (multipart, 50MB limit) |
 | `/v1/files` | GET | List uploaded files |
-| `/v1/files/{id}` | GET | Download a file |
+| `/v1/files/{id}` | GET | Get uploaded-file metadata |
 | `/v1/files/{id}` | DELETE | Delete a file |
+| `/v1/runs/{run_id}` | GET | Async run status and timings |
+| `/v1/runs/{run_id}/result` | GET | Retained completion of a finished async run |
+| `/v1/runs` | GET | Async run summaries, filterable by `?correlation_id=` |
+| `/v1/runs/{run_id}` | DELETE | Cancel a queued or running async run |
 | `/health` | GET | Server health and active run count |
 
 ```bash
@@ -501,11 +736,115 @@ curl http://127.0.0.1:14261/v1/chat/completions \
 curl http://127.0.0.1:14261/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"claude","messages":[{"role":"user","content":"audit this code"}],"work_dirs":["/path/to/project"]}'
+
+# Direct Ollama request; ordered messages are forwarded without flattening
+curl http://127.0.0.1:14261/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"ollama:qwen3","reasoning_effort":"high","messages":[{"role":"system","content":"Be concise."},{"role":"user","content":"Explain this patch."}]}'
+
+# Against a throwaway copy, leaving the source tree untouched
+curl http://127.0.0.1:14261/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude","messages":[{"role":"user","content":"audit this code"}],"work_dirs":["/path/to/project"],"clone_work_dirs":true}'
 ```
+
+Local runtime origins must be `http` or `https` origins without credentials, paths, query strings, or fragments. Loopback and private IP literals plus `localhost` are accepted by default; other hostnames and public addresses require the runtime's explicit `allow_remote` setting. Requests ignore ambient HTTP proxies, never follow redirects, apply a per-request timeout, and redact configured API keys from diagnostics.
+
+### Ephemeral Work Directories
+
+Chat requests accept `"clone_work_dirs": true`, which copies every `work_dirs` entry into a private scratch root under `$TMPDIR` (`rserve-clone-{run_id}-*`, mode 0700) and runs the tool against the copy. Agent state such as `.omc/` therefore lands in the throwaway tree instead of the shared source, which is what keeps concurrent workers pointed at the same repo from colliding. The scratch root is deleted when the run ends — success, failure, or client disconnect — and a cleanup failure is logged rather than failing the run. That cleanup cannot run when the process is killed, so **rserve also sweeps orphaned `rserve-clone-*` directories out of `$TMPDIR` at startup**, immediately after binding its port and before serving anything. Retained run results live only in memory, so no run survives a restart and every leftover scratch root is stale by definition; binding the port first is what proves no other instance owns them (one rserve per machine, enforced by the fixed ports). The sweep logs one line with the number removed, skips anything that is not a directory, and treats a removal failure as a warning — leftover disk is never a reason to refuse to serve. On macOS the copy is an APFS copy-on-write clone (`cp -Rc`): near-instant, no extra disk until something is written, dotfiles included; filesystems that reject it fall back to a real recursive copy, and the choice is logged per directory as `method=cow` or `method=copy`. The flag defaults to `false` (unchanged behaviour: the tool runs in the caller's directories) and is a no-op when `work_dirs` is absent. When cloning happens the response carries `"cloned_work_dirs": {n}` — on the completion object, or on the final chunk when streaming. Bundle `work_dir` semantics are unchanged.
+
+Sources are validated before the request queues for a run slot, so an unusable directory comes back right away instead of waiting behind other work. A missing or non-directory source is rejected with `400 invalid_work_dir`, and two shapes are refused because copying cannot isolate them. A tree containing an absolute symlink, or a relative symlink resolving above its root, is rejected with `400 unsafe_symlink`: the copy preserves symlinks, so the link would still aim at the original tree and a write through it would escape the scratch root. A source containing a regular file named `.git` — at the root or at any depth — is rejected with `400 unsupported_git_worktree`: that file is a gitdir pointer (a linked worktree at the root, a submodule checkout below it), so the clone would keep using the original repository and work inside it would mutate the caller's. Point `work_dirs` at a main worktree with no submodule checkouts, or let git create the working copy instead of copying one. Symlinks that stay inside the source are fine and keep working inside the clone, a `.git` **directory** clones normally at any depth (a vendored repository is fine), and a symlinked source root is resolved before any of this is checked.
+
+```json
+{
+  "model": "claude:opus",
+  "messages": [{"role": "user", "content": "audit this code"}],
+  "work_dirs": ["/path/to/project"],
+  "clone_work_dirs": true
+}
+```
+
+### Artifacts from a clone
+
+A clone is a sandbox the agent may write anything into, and cleanup destroys all of it — so "write the report to `report.md`" produces a report nobody can read, and message text is the only channel out. Add `"return_artifacts": true` to a cloned request and the files the run created or modified come back inline:
+
+```json
+{
+  "artifacts": [{"path": "out/report.md", "content": "# Digest\n...", "bytes": 4182}],
+  "artifacts_skipped": [{"path": "out/chart.png", "reason": "binary"}]
+}
+```
+
+The diff is against a manifest of paths, sizes, and mtimes taken after the clone finishes and before the CLI starts, so what comes back is this run's work and not the source tree it was given. Hidden entries are out of scope at any depth (a clone's `.git` index churns on every run). Paths are relative to the clone that holds them, prefixed with its directory name when more than one `work_dirs` entry was cloned. Text files only, decided from the first 8KB — a NUL byte or invalid UTF-8 means binary. The caps are the bundle artifact caps reused verbatim: 512KB per file, 2MB of content per response, 100 artifacts; a file over the per-file cap is **skipped, not truncated**, so an artifact that arrives is always the whole file. Everything found but not returned is named in `artifacts_skipped` with a reason (`binary`, `oversize`, `response_cap`, `too_many_files`, `collection_error`, `scan_limit`, `inspection_cap`).
+
+Inspection is bounded separately from the response: at most 1,000 candidate files opened and 16MiB read per run. The response caps bound the answer, not the cost of producing it — a binary file consumes neither the artifact count nor the content budget, so a clone holding many binaries, or many hard links to one binary, would otherwise be read in full once per name while collection holds the run slot. Each candidate is charged its 8KB text probe first and a binary is never read further; a file reached after the budget is spent is reported as `inspection_cap` rather than dropped silently. Candidates are opened non-blocking and re-checked as regular files, so one that has become a FIFO by the time it is read is refused rather than waited on.
+
+`return_artifacts` requires `clone_work_dirs` and at least one `work_dirs` entry, else `400 artifacts_require_clone` — an uncloned run writes into the caller's own tree, where the files already are. Collection runs strictly before cleanup, can never fail a run (an unreadable file becomes a `collection_error` entry and a log line), and **still happens when the run failed**: a failed or cancelled run's half-written output is usually the most diagnostic thing it produced. In async callback mode the artifacts ride the callback in full; the retained copy holds them only while their total stays inside the 64KB retention budget, and past it keeps their names with reason `evicted_from_retention`. The retained result always agrees with the callback on the run's outcome — same `status`, same `error.code` — but is not byte-for-byte the callback body, precisely because of that divergence. Take the bytes off the callback, not off `GET /v1/runs/{id}/result`.
+
+For streaming requests, `X-Show-Tool-Use: true` includes Claude/Gemini tool-use summaries as text chunks. Claude and Gemini expose structured streaming events; Codex, OpenCode, and KiloCode stdout is forwarded as raw content chunks.
+
+Chat requests also accept `X-Correlation-ID` — an external run identifier such as a Windmill job UUID. It is sanitized to `[A-Za-z0-9._-]` and capped at 128 characters, echoed back as the `X-Correlation-ID` response header and as `"correlation_id"` in the body (on the completion object, or the final chunk when streaming), and attached to the run registry entry so `GetStatus` shows which external job owns each slot. This is the same handling bundle runs have always had; the header echo now happens for every endpoint, including error responses.
+
+### Async callback mode
+
+A synchronous chat completion holds one connection for the entire run, ties the client's read timeout to the caller's step timeout to the instance timeout, and dies with the connection — a client disconnect cancels the run. For runs measured in minutes, that coupling is the biggest reliability gap there is. Send `"callback_url"` and the run is detached from the request instead:
+
+```bash
+curl http://127.0.0.1:14261/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: windmill-job-42" \
+  -d '{"model":"claude:opus","messages":[{"role":"user","content":"audit this code"}],
+       "work_dirs":["/path/to/project"],"clone_work_dirs":true,
+       "callback_url":"https://windmill.example.com/api/w/aows/jobs_u/resume/..."}'
+# → 202 {"run_id":"a1b2c3d4e5f60718","status":"queued","correlation_id":"windmill-job-42"}
+```
+
+The request is validated in full first — model, effort, `work_dirs` policies, the callback URL itself — so a bad request still comes back as the same `400` on the same connection. Only then does rserve answer `202` and let go. The run then proceeds exactly as the synchronous path does (same queue accounting, same cloning, same completion shape), and when it ends rserve POSTs the completion — the synchronous body plus `"run_id"` and `"status": "success"|"failure"` — to the callback URL: 10s per attempt, 3 attempts, backoff 2s then 8s, then it gives up and logs. A failure payload embeds the usual error envelope, `retryable` included. Delivery happens after the run slot is freed, so a slow receiver never holds capacity.
+
+`callback_url` must be `https`, or plain `http` for a loopback or RFC1918 host — an address literal, `localhost`, or **a hostname that resolves to a private address**, which is what makes an ingress URL like `http://windmill.10.0.4.224.nip.io/api/w/.../resume/...` work. Anything else is `400 invalid_callback_url`. A hostname is resolved twice: once at submit (2s budget) so a public or unresolvable one comes back as a `400` on that connection, and again inside the delivery dialer, which refuses the connection unless every address the host answers with is still private and then connects to a vetted address directly. The second check is the real control — it closes the DNS-rebinding window an async run holds open between validation and delivery — and a refusal there is logged as an undelivered callback, leaving the result pollable. Link-local is excluded on purpose (`169.254.169.254` is the cloud metadata endpoint). Plaintext delivery is also **direct only**: `HTTP_PROXY`/`http_proxy` have no effect on an `http` callback, because a selected proxy would be what the dialer connects to — so the address check would vet the proxy while the absolute callback URL, the completion, and the caller's headers went to it to forward as it liked. `https` callbacks keep ordinary proxy behaviour, since their guarantee is the certificate. **Redirects are never followed** on either scheme, so a receiver cannot `302` the payload and the caller's headers to somewhere the policy would have refused. `callback_url` cannot be combined with `"stream": true` (`400 callback_stream_conflict`). Optional `callback_headers` ride the POST verbatim for receivers that need their own auth. Header values are never logged, and neither is the callback URL's path or query — a Windmill resume URL is a secret in path form, so logs name only its scheme and host.
+
+Poll or manage a run through `/v1/runs`: `GET /v1/runs/{run_id}` for `queued|running|success|failure` plus timings, `GET /v1/runs/{run_id}/result` for the retained payload, `GET /v1/runs?correlation_id=` to find the runs one job owns, and `DELETE /v1/runs/{run_id}` to cancel — which kills the CLI subprocess, removes the scratch clone, frees the slot, and delivers a `run_cancelled` failure callback. `DELETE` is what replaces "client disconnect cancels the run" once there is no connection to drop. gRPC `CancelRun` cancels the same run IDs with the same outcome, from the moment they are issued — including while the run is still queued and holds no slot — and a run that has already finished is reported as such rather than claimed as killed. Whichever API arrives first owns the ending, and exactly one callback is sent.
+
+**Admission is bounded before the `202`.** Accepted async work outlives the connection that submitted it, so two limits bound what one server will hold: live async runs (`max(8, 4 × max_concurrent)`, override `RSERVE_ASYNC_MAX_LIVE`) and their estimated retained request payload (64MiB, override `RSERVE_ASYNC_MAX_BYTES`). A submission past either is refused with `503`, `Retry-After: 1`, and `async_capacity` (`retryable: true`) — with no `run_id` and no goroutine, so there is nothing to poll or cancel. An override that is not a positive integer stops the server at startup rather than being ignored. `/health` reports current usage against both ceilings.
+
+**A run ends exactly once.** Status, retained result, and delivered callback are chosen by one atomic transition, and only the caller that wins it delivers — so a run finishing as the server shuts down either reports its own outcome or reports `server_shutdown`, never storing one while delivering the other, and exactly one callback goes out per run whatever raced.
+
+**Retention is in-memory and non-durable — this is deliberate.** Results are bounded to 100 or 1 hour, whichever binds first, with least-recently-used eviction; queued and running runs are never evicted; message content is capped at 64KB and truncated with `"output_truncated": true` rather than dropped. **A restart loses every pending run and every retained result.** In-flight runs get one best-effort `server_shutdown` failure callback (retryable) if their receiver is up, and nothing at all if it is not. rserve holds no durable state by design — the fleet keeps that in Postgres — so the caller's own timeout is the real guard. For a Windmill flow, that is the step's suspend timeout: submit with the step's resume URL as `callback_url`, suspend, and rserve resumes the flow with the completion. No held connection, no timeout coupling, and a worker restart no longer kills the run. `API.md` has the full pairing example.
+
+### Cost, usage, and queue visibility
+
+Chat completions report where their numbers came from. `"usage_source": "cli"` means the tool's CLI reported usage: `usage` is populated, and `"cost_usd"` too when the CLI reports a cost (Claude does; Gemini reports tokens only, so `cost_usd` is omitted rather than sent as zero). `"usage_source": "unreported"` means the CLI publishes none — Codex's JSON carries `usage: null`, and OpenCode and KiloCode have no usage channel at all — and then `usage` and `cost_usd` are omitted entirely. rserve never invents these numbers: an omitted `cost_usd` means "not measured", not "free", so anything summing costs across runs must treat `unreported` as unknown. Each tool adapter implements `runner.UsageReporter`, so a CLI that starts reporting usage is a one-adapter change.
+
+When every run slot is busy, a request waits — which from outside is indistinguishable from a slow run. Streaming requests that wait now get told, before any completion chunk and only when a wait actually happened:
+
+```
+data: {"type": "queued", "position": 1}
+
+data: {"type": "started"}
+```
+
+Non-streaming requests get the total afterwards as the `X-Queue-Wait-Ms` response header, omitted when there was no wait. `/health` gains `"queued": N` alongside `active_runs`, counting waiters from every entry point, so a saturated server is visible as saturated rather than as slow.
+
+### Error retryability
+
+Every error response carries `"retryable"` alongside `message`, `type`, and `code`:
+
+```json
+{"error": {"message": "unknown tool: foo", "type": "invalid_request_error", "code": "unknown_tool", "retryable": false}}
+```
+
+It exists so an automatic retry policy — Windmill's per-step `retry`, for one — can tell "try again" from "doomed" without pattern-matching messages or guessing from the HTTP status, which cannot distinguish a transient 500 from a permanent one. The field is always present; `false` is a verdict, not a missing field.
+
+`retryable: false` covers the malformed, the non-existent, and the refused-on-policy: `method_not_allowed`, `unauthorized`, `invalid_json`, `unknown_tool`, `empty_task`, `invalid_model`, `invalid_effort`, `invalid_work_dir`, `unsafe_symlink`, `unsupported_git_worktree`, `unknown_bundle`, `missing_input`, `invalid_upload`, `missing_file`, `invalid_id`, `not_found`, `no_file_store`, `invalid_callback_url`, `invalid_callback_headers`, `callback_stream_conflict`, `artifacts_require_clone`, and `run_cancelled` (the caller asked for it; retrying is a new decision, not a recovery).
+
+`retryable: true` covers the transient: `concurrency_limit` (a slot wait interrupted before the work started), `async_capacity` (the server already holds its configured limit of live async work; nothing was accepted), `clone_failed` and `work_dir_failed` (filesystem failures that are not policy rejections), `bundle_failed` (a CLI that crashed, exited unexpectedly, timed out, or hit a provider limit), `bundle_list_failed`, `save_failed`, and `server_shutdown` (an async run caught in flight by a restart).
+
+The classification lives in one map in `pkg/server/openai/errorcodes.go`, and the tests parse the package to assert that every code it can emit is classified there — an unclassified code fails the build rather than defaulting quietly.
 
 ### Multi-Turn Sessions
 
-Both the gRPC and HTTP APIs support multi-turn conversations via `session_id`. The first response includes a `session_id`; send it back in subsequent requests to resume the conversation. Sessions expire after 30 minutes of inactivity.
+Both the gRPC and HTTP APIs accept `session_id`. When a tool reports a native session identifier, the final response includes an opaque client-facing `session_id`; send it back with the **same tool** to resume the conversation. Automatic session discovery currently works for Claude and Gemini. Sessions are in memory only, expire after 30 minutes of inactivity by default, and are lost when `rserve` restarts. Change the TTL with `-session-ttl`.
 
 ```bash
 # First request — get session_id from response
@@ -518,11 +857,91 @@ curl http://127.0.0.1:14261/v1/chat/completions \
   -d '{"model":"claude","messages":[{"role":"user","content":"now add tests"}],"session_id":"abc123..."}'
 ```
 
-Under the hood, `session_id` maps to the underlying CLI tool's native session resume mechanism (`claude --resume`, `codex` session resume, `gemini --resume`).
+Unknown, expired, or tool-mismatched IDs are ignored and start a fresh run. The ID maps to the underlying CLI's native resume mechanism rather than exposing that native identifier to clients.
+
+### Bundle Execution API
+
+Bundles can be run over the native loopback HTTP API (in addition to gRPC `RunBundle`). Remote orchestration layers such as Windmill must reach it through authenticated TLS transport:
+
+```bash
+# List bundles with their inputs
+curl http://127.0.0.1:14261/v1/bundles
+
+# Run a bundle
+curl -X POST http://127.0.0.1:14261/v1/bundles/ensemble \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: windmill-job-42" \
+  -d '{"inputs":{"task":"Design a rate limiter"},"work_dir":"/tmp/ensemble-run"}'
+```
+
+- `work_dir` (optional, absolute path): created if missing, and injected as the `output_dir` bundle input unless one is set explicitly.
+- **Per-step results:** the response includes a `steps` array (name, tool, model, status, cost, tokens, duration, and per-step output up to 64KB) plus a top-level `output` field carrying the last successful step's output — the natural place for a bundle's final answer or verdict.
+- **Streaming:** set `"stream": true` for Server-Sent Events — `step_started`, `step_completed`, and `step_skipped` events during execution, then a final `bundle_completed` event carrying the full response. Lets callers (e.g. Windmill) show live per-step progress on long runs.
+- **Options:** `"options": {"opus_only": true, "flash_only": true}` forces Claude steps to Opus / Gemini steps to flash (parity with gRPC `RunBundle`).
+- **Inline artifacts:** text files (`.md`, `.txt`, `.json`, `.csv`, `.html`, `.htm`, `.xml`, `.yaml`, `.yml`, `.log`) created or modified under `work_dir` during the run are returned inline in the response (512KB/file, 2MB/response, and 100-artifact caps), so remote callers can review and publish reports without filesystem access to this host.
+- **`X-Correlation-ID`:** pass an external run identifier (e.g. a Windmill job UUID); it is echoed in the response body and header, and attached to the run registry entry so `GetStatus` shows which external run owns each slot. Chat completions accept and echo it the same way.
+- **`GET /v1/bundles/{name}`** returns the bundle's full step DAG (parallel groups, vote/merge nodes, `if/then/else`) for introspection or rendering by external UIs.
+- **Cancellation:** disconnecting the HTTP request (or calling gRPC `CancelRun`) cancels the run — the orchestrator stops between steps and the in-flight step's CLI process is killed. Processes spawned *by* that CLI may survive.
+- **Bounds and confinement:** the artifact scan inspects at most 10,000 directory entries. Set `RSERVE_WORK_ROOT` to an absolute directory to require every `work_dir` to live beneath it. Rooted filesystem operations prevent pre-existing symlink components from escaping that directory, and symlinks, FIFOs, and other non-regular files are never collected.
+- Status mapping: missing required input → 400, unknown bundle → 404, bundle-logic failure → 200 with `"status": "failure"`. When all run slots are busy the request **queues** for a free slot; 503 is returned only if the client cancels or disconnects while waiting. In streaming mode all post-start outcomes (including errors) arrive as the `bundle_completed` event.
+
+### Jev Decisions
+
+Set `TYPESAFE_API_KEY` in the server environment, or configure `defaults.jev.api_key`, to enable `POST /v1/decisions`. It uses the same `RSERVE_TOKEN` authentication and correlation header as the other HTTP endpoints. The default model is pinned to `jev-1.13.0`; use `model: "jev-latest"` only when you want a moving alias.
+
+```bash
+curl -X POST http://127.0.0.1:14261/v1/decisions \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $RSERVE_TOKEN" \
+  -d '{"state":"OBJECTIVE: add retries\nREPORT: added retries; tests not run",
+       "questions":{"verdict":{"type":"choice","instructions":"Is the objective reported as built and verified?",
+       "criteria":{"complete":"built and verified","incomplete":"missing or unverified"}}}}'
+```
+
+Responses contain validated `answers`, the model used, token `usage`, `cost_usd`, scrubbed `state_bytes`, `latency_ms`, and an optional `correlation_id`. Question types are `noul` (probability), `choice` (one named option), and `score` (a fractional position across rubric levels). The endpoint has its own concurrency limit, default 8, with immediate retryable 503 responses when full; it does not occupy CLI run slots. `/health` reports its configuration, activity, failures, and reported cost. There is no streaming or gRPC decision endpoint.
+
+Request bodies are limited to 512 KiB. State has a byte budget of 64 KiB minus the longest question; one question is limited to 16 KiB of instructions plus criteria and all questions to 48 KiB combined. These local byte bounds are heuristics for the vendor's token limits. The server rejects oversized state; bundle steps preserve the head and tail with a truncation marker. State scrubbing masks the home directory and account name, including ordinary JSON-escaped home paths; it does not anonymize other identifiers or question text.
+
+A bundle step can branch on the same answers:
+
+```json
+{
+  "name": "gate",
+  "decide": {
+    "state": "OBJECTIVE: ${inputs.task}\nREPORT: ${steps.build.stdout}",
+    "questions": {
+      "done": {"type": "noul", "instructions": "Does the report state that every requirement was built and verified?"}
+    }
+  }
+}
+```
+
+Use `${steps.gate.result.done}` in an `if` condition, for example `${steps.gate.result.done} < 0.8`. Each question has its own result key, plus confidence/probabilities where available; there is no synthesized `decision` key. `${steps.gate.stdout}` contains JSON under an `answers` key. Reserved result names and derived suffixes are rejected. A `decide` step cannot appear inside `parallel`, combine with another executable step type, or carry its own `then`/`else` branches; it can be placed inside a conditional branch. Configuration errors, invalid vendor replies, and output-write failures stop the bundle.
+
+`gated-build` demonstrates report triage. It judges the builder's account of completion, and does not judge again after remediation. Jev's reliability on this workload is unmeasured; deterministic checks and independent verification remain necessary for consequential actions. See [API.md](API.md#post-v1decisions) for the full contract.
+
+### Authentication
+
+Set the `RSERVE_TOKEN` environment variable before starting `rserve` to require a bearer token on **both** listeners. Unset means no authentication on either, which is the historical behavior.
+
+- **HTTP:** every endpoint except `/health` (left open for monitoring) requires the `Authorization: Bearer <token>` header, from every caller including loopback.
+- **gRPC:** calls from **non-loopback** peers require the same credential in the `authorization` metadata key, again as `Bearer <token>`. Missing or wrong tokens are rejected with `Unauthenticated`. Tokens are compared in constant time.
+
+**Loopback peers are exempt on gRPC.** A caller connecting over `127.0.0.0/8`, `::1`, or a unix socket is already on the machine and could invoke the underlying CLIs directly, so requiring a token from it would buy nothing and would break every local script and tool. Adding a token to an existing server therefore changes nothing for local workflows; it only closes the LAN. A connection whose peer address cannot be determined is treated as remote and must authenticate.
+
+Two gRPC services stay open to all peers, mirroring the open HTTP `/health`: **reflection** (`grpc.reflection.v1`/`v1alpha`, which is how the docs above tell you to point `grpcurl` at the server) and **health** (`grpc.health.v1.Health`). Both answer only "is this alive and what does it speak" — neither can run a model, read run state, or cancel a run.
+
+```bash
+# From another host, with RSERVE_TOKEN set on the server:
+grpcurl -plaintext -H "authorization: Bearer $RSERVE_TOKEN" \
+  192.168.1.10:14260 rserve.RServe/GetStatus
+```
+
+Both listeners remain plaintext regardless of the token, so the credential travels in the clear. A token makes a `-bind 0.0.0.0` deployment survivable on a trusted LAN; it is not a substitute for TLS on an untrusted one.
 
 ### File Uploads
 
-Upload files to reference them in chat completions. Files are stored in `/tmp/rserve-files/` and automatically purged after 24 hours.
+Upload files to reference them in chat completions. Uploads are limited to 50MB, stored beneath `rserve-files` in the operating system's temporary directory (`os.TempDir()`), tracked in memory, and automatically purged after 24 hours. The response's `path` field is the authoritative path to use in a prompt.
 
 ```bash
 # Upload a file
@@ -532,8 +951,32 @@ curl http://127.0.0.1:14261/v1/files \
 
 # Reference it in a prompt (use the returned path)
 curl http://127.0.0.1:14261/v1/chat/completions \
-  -d '{"model":"claude","messages":[{"role":"user","content":"analyze /tmp/rserve-files/.../data.csv"}]}'
+  -d '{"model":"claude","messages":[{"role":"user","content":"analyze <path returned by upload>"}]}'
 ```
+
+The optional multipart `purpose` field defaults to `user_data`. File metadata is reconstructed from disk after a restart, but active chat sessions are not.
+
+## Dashboard and Scheduler
+
+The local Next.js dashboard scans repositories for `_rcodegen` reports and `.grades.json`, displays report and grade history, and manages recurring schedules.
+
+```bash
+# Dashboard: http://127.0.0.1:4847
+(cd dashboard && npm ci && npm run dev -- --hostname 127.0.0.1)
+
+# In another terminal, start the scheduler daemon
+(cd scheduler && npm ci && npm start)
+```
+
+The dashboard scans `~/Desktop/_code` by default. Set `RCODEGEN_CODE_DIR` before starting it to use a different repository root:
+
+```bash
+RCODEGEN_CODE_DIR="$HOME/code" npm --prefix dashboard run dev -- --hostname 127.0.0.1
+```
+
+Schedules are stored in `~/.rcodegen/schedules.json`. The scheduler polls that file every 60 seconds, writes heartbeat and recent-run state to `~/.rcodegen/scheduler-status.json`, and invokes `rcodex <task>` in the selected repository. Cron evaluation currently uses the fixed `America/New_York` timezone. Added, enabled, disabled, or deleted schedules are detected while running; restart the scheduler after changing the cron expression or task of an already-active schedule.
+
+The dashboard and scheduler have no authentication and can read reports or launch unattended Codex tasks. Keep the dashboard bound to localhost and use them only with trusted repositories.
 
 ## Adding a New Tool
 
@@ -546,15 +989,15 @@ curl http://127.0.0.1:14261/v1/chat/completions \
        "fmt"
        "os"
 
-       chassis "github.com/ai8future/chassis-go/v10"
-       "github.com/ai8future/chassis-go/v10/logz"
-       "github.com/ai8future/chassis-go/v10/registry"
+       chassis "github.com/ai8future/chassis-go/v11"
+       "github.com/ai8future/chassis-go/v11/logz"
+       "github.com/ai8future/chassis-go/v11/registry"
        "rcodegen/pkg/runner"
        "rcodegen/pkg/tools/newtool"
    )
 
    func main() {
-       chassis.RequireMajor(10)
+       chassis.RequireMajor(11)
        logger := logz.New("info")
        if err := registry.InitCLI(chassis.Version); err != nil {
            logger.Error("registry init failed", "error", err)
@@ -590,11 +1033,13 @@ All tools disable permission prompts for unattended operation:
 - `rclaude` uses `--dangerously-skip-permissions`
 - `rcodex` uses `--dangerously-bypass-approvals-and-sandbox`
 - `rgemini` uses `--yolo`
+- `ropencode` uses `--dangerously-skip-permissions`
+- `rkilo` uses `--dangerously-skip-permissions`
 
 Only use on trusted codebases in controlled environments. Lock files are stored in `~/.rcodegen/locks/` (not `/tmp/`) to prevent symlink attacks. Settings files are created with 0600 permissions.
 
 ## Version
 
-Current version: **4.0.14**
+Current version: **4.4.3**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.

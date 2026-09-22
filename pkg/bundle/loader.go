@@ -49,6 +49,9 @@ func Load(name string) (*Bundle, error) {
 			return nil, fmt.Errorf("invalid bundle %s: %w", name, err)
 		}
 		b.SourcePath = userPath
+		if err := b.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid bundle %s: %w", name, err)
+		}
 		return &b, nil
 	}
 
@@ -64,6 +67,9 @@ func Load(name string) (*Bundle, error) {
 	}
 	// For builtin bundles, find the source path relative to the executable
 	b.SourcePath = findBuiltinBundlePath(name)
+	if err := b.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid builtin bundle %s: %w", name, err)
+	}
 	return &b, nil
 }
 

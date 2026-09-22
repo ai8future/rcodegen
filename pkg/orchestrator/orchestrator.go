@@ -21,6 +21,9 @@ import (
 	"rcodegen/pkg/tools/claude"
 	"rcodegen/pkg/tools/codex"
 	"rcodegen/pkg/tools/gemini"
+	"rcodegen/pkg/tools/kilocode"
+	"rcodegen/pkg/tools/localai"
+	"rcodegen/pkg/tools/opencode"
 	"rcodegen/pkg/workspace"
 )
 
@@ -58,13 +61,42 @@ type Display interface {
 // This is set by the executor package to break the circular dependency.
 var DispatcherFactory func(tools map[string]runner.Tool) StepExecutor
 
+// StepEventType identifies the lifecycle moment a StepEvent describes.
+type StepEventType string
+
+const (
+	StepEventStarted   StepEventType = "started"
+	StepEventCompleted StepEventType = "completed"
+	StepEventSkipped   StepEventType = "skipped"
+)
+
+// StepEvent is a top-level step lifecycle notification, delivered synchronously
+// during Run via the callback registered with SetStepCallback. Completed events
+// carry the step's result envelope (including Result["stdout"]) plus cost and
+// token stats, enabling callers (e.g. rserve) to stream per-step progress and
+// surface per-step results.
+type StepEvent struct {
+	Type         StepEventType
+	Index        int
+	Name         string
+	Tool         string
+	Model        string
+	Status       string // completed events: success, failure, partial
+	CostUSD      float64
+	InputTokens  int
+	OutputTokens int
+	DurationMs   int64
+	Envelope     *envelope.Envelope // completed events only
+}
+
 type Orchestrator struct {
-	settings   *settings.Settings
-	dispatcher StepExecutor
-	tools      map[string]runner.Tool
-	liveMode   bool
-	opusOnly   bool
-	flashOnly  bool
+	settings     *settings.Settings
+	dispatcher   StepExecutor
+	tools        map[string]runner.Tool
+	liveMode     bool
+	opusOnly     bool
+	flashOnly    bool
+	stepCallback func(StepEvent)
 }
 
 // SetLiveMode enables or disables the animated live display
@@ -82,17 +114,122 @@ func (o *Orchestrator) SetFlashOnly(enabled bool) {
 	o.flashOnly = enabled
 }
 
+// SetStepCallback registers a callback invoked synchronously for each top-level
+// step lifecycle event during Run. Pass nil to disable.
+func (o *Orchestrator) SetStepCallback(cb func(StepEvent)) {
+	o.stepCallback = cb
+}
+
+// emitStep delivers a StepEvent to the registered callback, if any.
+func (o *Orchestrator) emitStep(ev StepEvent) {
+	if o.stepCallback != nil {
+		o.stepCallback(ev)
+	}
+}
+
+// stepCompletedEvent builds a completed StepEvent, pulling cost, tokens, and
+// the actual model from the envelope when present.
+func stepCompletedEvent(i int, step bundle.Step, env *envelope.Envelope, d time.Duration) StepEvent {
+	ev := StepEvent{
+		Type:       StepEventCompleted,
+		Index:      i,
+		Name:       step.Name,
+		Tool:       step.ToolLabel(),
+		DurationMs: d.Milliseconds(),
+		Envelope:   env,
+	}
+	if env == nil {
+		ev.Status = string(envelope.StatusFailure)
+		return ev
+	}
+	ev.Status = string(env.Status)
+	if c, ok := env.Result["cost_usd"].(float64); ok {
+		ev.CostUSD = c
+	}
+	if m, ok := env.Result["model"].(string); ok {
+		ev.Model = m
+	}
+	if t, ok := env.Result["input_tokens"].(int); ok {
+		ev.InputTokens = t
+	}
+	if t, ok := env.Result["output_tokens"].(int); ok {
+		ev.OutputTokens = t
+	}
+	return ev
+}
+
+func annotateRunTotals(env *envelope.Envelope, cost float64, inputTokens, outputTokens, cacheRead, cacheWrite int) {
+	if env == nil {
+		return
+	}
+	if env.Result == nil {
+		env.Result = make(map[string]interface{})
+	}
+	env.Result["total_cost_usd"] = cost
+	env.Result["input_tokens"] = inputTokens
+	env.Result["output_tokens"] = outputTokens
+	env.Result["cache_read_tokens"] = cacheRead
+	env.Result["cache_write_tokens"] = cacheWrite
+}
+
+// StepOutput returns the textual output of a step envelope. Tool, merge, and
+// vote executors persist their output to the OutputRef JSON file rather than
+// the envelope itself; this reads it back and unwraps stream-JSON results the
+// same way ${steps.X.stdout} resolution does (see Context.Resolve). A
+// Result["stdout"] string, if present, takes precedence.
+func StepOutput(env *envelope.Envelope) string {
+	if env == nil {
+		return ""
+	}
+	if s, ok := env.Result["stdout"].(string); ok && s != "" {
+		return extractStreamingResult(s)
+	}
+	if env.OutputRef == "" {
+		return ""
+	}
+	data, err := os.ReadFile(env.OutputRef)
+	if err != nil {
+		return ""
+	}
+	var output map[string]interface{}
+	if err := json.Unmarshal(data, &output); err != nil {
+		return ""
+	}
+	// Key order matches executor conventions: tool steps write "stdout",
+	// merge steps "merged", vote steps "decision".
+	for _, key := range []string{"stdout", "merged", "decision"} {
+		if v, ok := output[key]; ok {
+			if s := fmt.Sprintf("%v", v); s != "" {
+				return extractStreamingResult(s)
+			}
+		}
+	}
+	return ""
+}
+
 func New(s *settings.Settings) *Orchestrator {
 	// Build tool registry
 	tools := map[string]runner.Tool{
-		"claude": claude.New(),
-		"codex":  codex.New(),
-		"gemini": gemini.New(),
+		"claude":   claude.New(),
+		"codex":    codex.New(),
+		"gemini":   gemini.New(),
+		"kilocode": kilocode.New(),
+		"opencode": opencode.New(),
+		"ollama":   localai.NewOllama(),
+		"lmstudio": localai.NewLMStudio(),
+	}
+	for _, tool := range tools {
+		if aware, ok := tool.(runner.SettingsAware); ok {
+			aware.SetSettings(s)
+		}
 	}
 
 	var dispatcher StepExecutor
 	if DispatcherFactory != nil {
 		dispatcher = DispatcherFactory(tools)
+		if aware, ok := dispatcher.(runner.SettingsAware); ok {
+			aware.SetSettings(s)
+		}
 	}
 	if dispatcher == nil {
 		fmt.Fprintf(os.Stderr, "Warning: no step dispatcher registered — bundle execution will fail\n")
@@ -119,18 +256,32 @@ func (o *Orchestrator) getStepModel(toolName, stepModel string) string {
 	if stepModel != "" {
 		return stepModel
 	}
-	// Use tool's default model
+	if toolName == "jev" {
+		if o.settings == nil {
+			return ""
+		}
+		return o.settings.Defaults.Jev.Model
+	}
+	// Use the configured tool default.
 	if tool, ok := o.tools[toolName]; ok {
-		return tool.DefaultModel()
+		return tool.DefaultModelSetting()
 	}
 	return ""
 }
 
+// Run executes a bundle without external cancellation (Ctrl+C only).
 func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelope.Envelope, error) {
+	return o.RunWithContext(context.Background(), b, inputs)
+}
+
+// RunWithContext executes a bundle; cancelling parent (e.g. an HTTP request
+// context or gRPC stream context) stops the run between steps and kills the
+// in-flight step's process.
+func (o *Orchestrator) RunWithContext(parent context.Context, b *bundle.Bundle, inputs map[string]string) (*envelope.Envelope, error) {
 	start := time.Now()
 
-	// Set up signal-aware context for graceful cancellation (Ctrl+C)
-	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// Signal-aware context: cancellation propagates from Ctrl+C or the parent.
+	sigCtx, stop := signal.NotifyContext(parent, os.Interrupt)
 	defer stop()
 
 	// Validate required inputs and apply defaults
@@ -192,7 +343,7 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 
 	// Set models for ALL steps upfront so they show immediately
 	for i, step := range b.Steps {
-		display.SetStepModel(i, o.getStepModel(step.Tool, step.Model))
+		display.SetStepModel(i, o.getStepModel(step.ToolLabel(), step.ModelHint()))
 	}
 
 	display.Start()
@@ -218,92 +369,98 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 		// Check for cancellation (e.g., Ctrl+C) before starting each step
 		if sigCtx.Err() != nil {
 			fmt.Fprintf(os.Stderr, "\n%sInterrupted — skipping remaining steps%s\n", colorYellow, colorReset)
-			return envelope.New().
+			env := envelope.New().
 				Failure("INTERRUPTED", "execution cancelled by signal").
 				WithResult("steps_completed", i).
-				WithResult("total_cost_usd", totalCost).
-				Build(), sigCtx.Err()
+				Build()
+			annotateRunTotals(env, totalCost, totalInputTokens, totalOutputTokens, totalCacheRead, totalCacheWrite)
+			return env, sigCtx.Err()
 		}
 
 		stepStart := time.Now()
-		display.SetStepRunning(i)
-		// Set model immediately so it shows while running
-		display.SetStepModel(i, o.getStepModel(step.Tool, step.Model))
+		execStep := &step
+		skip := false
 
-		// Check condition
-		if step.If != "" && !EvaluateCondition(step.If, ctx) {
-			display.SetStepSkipped(i)
-			ctx.SetResult(step.Name, &envelope.Envelope{Status: envelope.StatusSkipped})
-			continue
-		}
-
-		// Handle conditional step
+		// A step with then/else is a conditional container. A plain step with
+		// only "if" is either executed directly or skipped.
 		if step.Then != nil {
 			if EvaluateCondition(step.If, ctx) {
-				env, err := o.dispatcher.Execute(step.Then, ctx, ws)
-				ctx.SetResult(step.Name, env)
-				if err != nil {
-					return env, err
-				}
+				execStep = step.Then
 			} else if step.Else != nil {
-				env, err := o.dispatcher.Execute(step.Else, ctx, ws)
-				ctx.SetResult(step.Name, env)
-				if err != nil {
-					return env, err
-				}
+				execStep = step.Else
+			} else {
+				skip = true
 			}
-			continue
+		} else if step.If != "" && !EvaluateCondition(step.If, ctx) {
+			skip = true
 		}
 
-		// Apply model overrides
-		execStep := &step
-		if o.opusOnly && step.Tool == "claude" {
-			// Create a copy with opus model
-			stepCopy := step
+		// Apply model overrides to the actual branch, not just top-level tool
+		// steps. Copy before changing so the loaded bundle remains immutable.
+		if o.opusOnly && execStep.Tool == "claude" {
+			stepCopy := *execStep
 			stepCopy.Model = "opus"
 			execStep = &stepCopy
 		}
-		if o.flashOnly && step.Tool == "gemini" {
-			// Create a copy with flash preview model
-			stepCopy := step
+		if o.flashOnly && execStep.Tool == "gemini" {
+			stepCopy := *execStep
 			stepCopy.Model = "gemini-3-flash-preview"
 			execStep = &stepCopy
 		}
 
-		// Execute step
-		env, err := o.dispatcher.Execute(execStep, ctx, ws)
-		if err != nil {
-			return env, err
+		display.SetStepRunning(i)
+		display.SetStepModel(i, o.getStepModel(execStep.ToolLabel(), execStep.ModelHint()))
+		o.emitStep(StepEvent{
+			Type:  StepEventStarted,
+			Index: i,
+			Name:  step.Name,
+			Tool:  execStep.ToolLabel(),
+			Model: o.getStepModel(execStep.ToolLabel(), execStep.ModelHint()),
+		})
+
+		if skip {
+			display.SetStepSkipped(i)
+			ctx.SetResult(step.Name, &envelope.Envelope{Status: envelope.StatusSkipped})
+			o.emitStep(StepEvent{Type: StepEventSkipped, Index: i, Name: step.Name, Tool: execStep.ToolLabel()})
+			continue
 		}
 
-		ctx.SetResult(step.Name, env)
+		// Execute step
+		env, err := o.dispatcher.Execute(execStep, ctx, ws)
+		if env != nil {
+			ctx.SetResult(step.Name, env)
+		}
 
 		// Extract and display cost info
 		stepCost := 0.0
 		stepIn, stepOut := 0, 0
-		if c, ok := env.Result["cost_usd"].(float64); ok {
-			stepCost = c
-			totalCost += c
-		}
-		if t, ok := env.Result["input_tokens"].(int); ok {
-			stepIn = t
-			totalInputTokens += t
-		}
-		if t, ok := env.Result["output_tokens"].(int); ok {
-			stepOut = t
-			totalOutputTokens += t
-		}
-		if t, ok := env.Result["cache_read_tokens"].(int); ok {
-			totalCacheRead += t
-		}
-		if t, ok := env.Result["cache_write_tokens"].(int); ok {
-			totalCacheWrite += t
+		if env != nil {
+			if c, ok := env.Result["cost_usd"].(float64); ok {
+				stepCost = c
+				totalCost += c
+			}
+			if t, ok := env.Result["input_tokens"].(int); ok {
+				stepIn = t
+				totalInputTokens += t
+			}
+			if t, ok := env.Result["output_tokens"].(int); ok {
+				stepOut = t
+				totalOutputTokens += t
+			}
+			if t, ok := env.Result["cache_read_tokens"].(int); ok {
+				totalCacheRead += t
+			}
+			if t, ok := env.Result["cache_write_tokens"].(int); ok {
+				totalCacheWrite += t
+			}
 		}
 
 		// Extract model used
 		stepModel := ""
-		if m, ok := env.Result["model"].(string); ok {
-			stepModel = m
+		if env != nil {
+			if m, ok := env.Result["model"].(string); ok {
+				stepModel = m
+			}
 		}
 
 		// Track step stats for report
@@ -311,7 +468,7 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 		isParallel := len(step.Parallel) > 0
 		stepStats = append(stepStats, StepStats{
 			Name:         step.Name,
-			Tool:         step.Tool,
+			Tool:         execStep.ToolLabel(),
 			Model:        stepModel,
 			Parallel:     isParallel,
 			Cost:         stepCost,
@@ -320,12 +477,26 @@ func (o *Orchestrator) Run(b *bundle.Bundle, inputs map[string]string) (*envelop
 			Duration:     stepDuration,
 		})
 
+		eventStep := *execStep
+		eventStep.Name = step.Name
+		o.emitStep(stepCompletedEvent(i, eventStep, env, stepDuration))
+
 		// Update display
 		display.SetStepModel(i, stepModel)
-		success := env.Status != envelope.StatusFailure
+		success := env != nil && env.Status != envelope.StatusFailure && err == nil
 		display.SetStepComplete(i, stepCost, stepDuration, stepIn+stepOut, success)
 
+		if err != nil {
+			annotateRunTotals(env, totalCost, totalInputTokens, totalOutputTokens, totalCacheRead, totalCacheWrite)
+			return env, err
+		}
+		if env == nil {
+			env = envelope.New().Failure("STEP_ERROR", "step returned no result").Build()
+			annotateRunTotals(env, totalCost, totalInputTokens, totalOutputTokens, totalCacheRead, totalCacheWrite)
+			return env, fmt.Errorf("step %s returned no result", step.Name)
+		}
 		if env.Status == envelope.StatusFailure {
+			annotateRunTotals(env, totalCost, totalInputTokens, totalOutputTokens, totalCacheRead, totalCacheWrite)
 			return env, fmt.Errorf("step %s failed", step.Name)
 		}
 	}
@@ -946,13 +1117,13 @@ func extractOpening(path string) string {
 
 // FinalReportJSON is the structure for the machine-readable final report
 type FinalReportJSON struct {
-	Meta    MetaInfo               `json:"meta"`
-	Summary SummaryInfo            `json:"summary"`
-	Costs   CostsInfo              `json:"costs"`
-	Steps   []StepInfo             `json:"steps"`
-	Outputs OutputsInfo            `json:"outputs"`
-	Grade   *GradeInfo             `json:"grade,omitempty"`
-	Inputs  map[string]string      `json:"inputs"`
+	Meta    MetaInfo          `json:"meta"`
+	Summary SummaryInfo       `json:"summary"`
+	Costs   CostsInfo         `json:"costs"`
+	Steps   []StepInfo        `json:"steps"`
+	Outputs OutputsInfo       `json:"outputs"`
+	Grade   *GradeInfo        `json:"grade,omitempty"`
+	Inputs  map[string]string `json:"inputs"`
 }
 
 type MetaInfo struct {
@@ -1011,8 +1182,8 @@ type StepInfo struct {
 }
 
 type OutputsInfo struct {
-	Directory string     `json:"directory"`
-	Files     []FileInfo `json:"files"`
+	Directory string      `json:"directory"`
+	Files     []FileInfo  `json:"files"`
 	Stats     OutputStats `json:"stats"`
 }
 
@@ -1030,16 +1201,16 @@ type OutputStats struct {
 }
 
 type GradeInfo struct {
-	Score          int `json:"score"`
+	Score          int    `json:"score"`
 	Letter         string `json:"letter"`
-	Functionality  int `json:"functionality"`
-	CodeQuality    int `json:"code_quality"`
-	Security       int `json:"security"`
-	UserExperience int `json:"user_experience"`
-	Architecture   int `json:"architecture"`
-	Testing        int `json:"testing"`
-	Innovation     int `json:"innovation"`
-	Documentation  int `json:"documentation"`
+	Functionality  int    `json:"functionality"`
+	CodeQuality    int    `json:"code_quality"`
+	Security       int    `json:"security"`
+	UserExperience int    `json:"user_experience"`
+	Architecture   int    `json:"architecture"`
+	Testing        int    `json:"testing"`
+	Innovation     int    `json:"innovation"`
+	Documentation  int    `json:"documentation"`
 }
 
 // generateFinalReportJSON creates a machine-readable JSON report for build bundles
@@ -1130,7 +1301,7 @@ func generateFinalReportJSON(
 				CacheWriteTokens: totalCacheWrite,
 			},
 		},
-		Steps:   steps,
+		Steps: steps,
 		Outputs: OutputsInfo{
 			Directory: projectDir,
 			Files:     files,
@@ -1314,4 +1485,3 @@ func extractOverviewFromSummary(path string) string {
 	}
 	return overview
 }
-

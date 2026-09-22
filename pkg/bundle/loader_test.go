@@ -1,9 +1,27 @@
 package bundle
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestStepEffortJSONRoundTrip(t *testing.T) {
+	var step Step
+	if err := json.Unmarshal([]byte(`{"name":"local","tool":"ollama","model":"qwen3","effort":"max","task":"hi"}`), &step); err != nil {
+		t.Fatal(err)
+	}
+	if step.Effort != "max" || step.Model != "qwen3" {
+		t.Fatalf("decoded step = %+v", step)
+	}
+	encoded, err := json.Marshal(step)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"effort":"max"`) {
+		t.Fatalf("encoded step = %s", encoded)
+	}
+}
 
 func TestLoad_RejectsPathTraversal(t *testing.T) {
 	maliciousNames := []string{
