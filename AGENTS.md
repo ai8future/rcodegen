@@ -29,4 +29,4 @@ This uses `-ldflags` to embed the VERSION file into the binary so that `-v` work
 
 - Before building or debugging, verify vendor/ is current: run go mod vendor if using local replace directives.
 
-- At the beginning of a session, always assume your local .git could be out of date with the remote. Run `git fetch` and check status against the upstream branch before you branch, commit, or reason about what the current code looks like. Once per session is enough — no need to re-check before every operation.
+- At the beginning of a session, assume this machine's .git may be out of date: ~/Desktop/_code is synced between Macs by Syncthing but .git is not, so work committed on another machine can show up here as uncommitted changes. Run `/bin/bash ~/Desktop/_code/_scripts/git_realign.sh .` (a dry run; `--apply` fixes only cases that cannot lose work) before you branch, commit, or reason about what the current code looks like. Keep the default branch checked out in the shared folder and do branch work in a worktree under `.omx/`. Once per session is enough.
