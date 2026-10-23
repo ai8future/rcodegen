@@ -258,6 +258,20 @@ type HealthResponse struct {
 	AsyncMaxLive  int   `json:"async_max_live"`
 	AsyncBytes    int64 `json:"async_bytes"`
 	AsyncMaxBytes int64 `json:"async_max_bytes"`
+	// Decisions describes the Jev decisions gateway. Configured is false when
+	// the server has no vendor key.
+	Decisions *DecisionHealth `json:"decisions,omitempty"`
+}
+
+// DecisionHealth is the /health view of POST /v1/decisions.
+type DecisionHealth struct {
+	Configured    bool    `json:"configured"`
+	Model         string  `json:"model,omitempty"`
+	Total         int64   `json:"total"`
+	Failed        int64   `json:"failed"`
+	InFlight      int     `json:"in_flight"`
+	MaxConcurrent int     `json:"max_concurrent"`
+	CostUSD       float64 `json:"cost_usd"`
 }
 
 // Queue progress events, written to a streaming response when — and only

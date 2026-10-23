@@ -72,10 +72,7 @@ type LiveStep struct {
 func NewLiveDisplay(b *bundle.Bundle, jobID string, inputs map[string]string) *LiveDisplay {
 	steps := make([]LiveStep, len(b.Steps))
 	for i, step := range b.Steps {
-		tool := step.Tool
-		if tool == "" && len(step.Parallel) > 0 {
-			tool = "parallel"
-		}
+		tool := step.ToolLabel()
 		steps[i] = LiveStep{
 			Name:  step.Name,
 			Tool:  tool,

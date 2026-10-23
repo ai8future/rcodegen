@@ -8,6 +8,7 @@ import (
 
 	"rcodegen/pkg/bundle"
 	"rcodegen/pkg/envelope"
+	"rcodegen/pkg/jev"
 	"rcodegen/pkg/runner"
 	"rcodegen/pkg/settings"
 	"rcodegen/pkg/workspace"
@@ -16,6 +17,52 @@ import (
 // stubExecutor returns canned success envelopes without spawning tools.
 type stubExecutor struct {
 	outputs map[string]string
+}
+
+func TestRun_DecideStepIsLabeledJev(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	old := DispatcherFactory
+	DispatcherFactory = func(tools map[string]runner.Tool) StepExecutor {
+		return stubFuncExecutor(func(step *bundle.Step) (*envelope.Envelope, error) {
+			return envelope.New().Success().
+				WithResult("verdict", "complete").
+				WithResult("cost_usd", 0.00001).
+				WithResult("input_tokens", 12).
+				WithResult("output_tokens", 0).
+				WithResult("model", "jev-1.13.0").
+				Build(), nil
+		})
+	}
+	defer func() { DispatcherFactory = old }()
+
+	s := settings.GetDefaultSettings()
+	o := New(s)
+	var events []StepEvent
+	o.SetStepCallback(func(ev StepEvent) { events = append(events, ev) })
+	b := &bundle.Bundle{Name: "gate-bundle", Steps: []bundle.Step{
+		{Name: "gate", Decide: &bundle.DecideDef{State: "s", Questions: map[string]jev.Question{"q": {Type: "noul", Instructions: "x"}}}},
+		{Name: "gate2", Decide: &bundle.DecideDef{State: "s", Model: "jev-latest", Questions: map[string]jev.Question{"q": {Type: "noul", Instructions: "x"}}}},
+	}}
+	if _, err := o.Run(b, map[string]string{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(events) != 4 {
+		t.Fatalf("events = %d, want started+completed for two steps", len(events))
+	}
+	for _, ev := range events {
+		if ev.Tool != "jev" {
+			t.Fatalf("event %s tool = %q, want jev", ev.Type, ev.Tool)
+		}
+	}
+	if events[0].Model != settings.DefaultJevModel {
+		t.Fatalf("started model = %q, want configured default %q", events[0].Model, settings.DefaultJevModel)
+	}
+	if events[1].Model != "jev-1.13.0" || events[1].InputTokens != 12 {
+		t.Fatalf("completed event = %+v", events[1])
+	}
+	if events[2].Model != "jev-latest" {
+		t.Fatalf("started model for explicit override = %q, want jev-latest", events[2].Model)
+	}
 }
 
 func (s *stubExecutor) Execute(step *bundle.Step, ctx *Context, ws *workspace.Workspace) (*envelope.Envelope, error) {

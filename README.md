@@ -260,7 +260,7 @@ Use `-m banana` (alias for `gemini-3.1-flash-image-preview`) for image generatio
 
 ## Bundles (Multi-Tool Workflows)
 
-Bundles are JSON workflow definitions that orchestrate multiple AI tools in sequence or parallel. There are 9 built-in bundles:
+Bundles are JSON workflow definitions that orchestrate multiple AI tools in sequence or parallel. There are 10 built-in bundles:
 
 | Bundle | Description |
 |--------|-------------|
@@ -273,6 +273,7 @@ Bundles are JSON workflow definitions that orchestrate multiple AI tools in sequ
 | `article` | Gemini researches style, Codex drafts, Gemini edits |
 | `article-parallel` | Research, 2 parallel drafts, 2 parallel edits |
 | `summary` | Claude summarizes, Gemini verifies accuracy |
+| `gated-build` | Claude builds, Jev triages the completion report, Claude addresses reported gaps, Gemini tests |
 
 Custom bundles can be placed in `~/.rcodegen/bundles/`.
 
@@ -306,11 +307,12 @@ Bundle names are limited to letters, digits, hyphens, and underscores (100 chara
 - **Voting** -- Majority or unanimous voting across model outputs
 - **Merging** -- Concatenate or deduplicate outputs from multiple steps
 - **Conditional steps** -- `if`/`then`/`else` branching based on step results
+- **Decision gates** -- `decide` asks TypeSafe Jev typed questions and exposes answers as `${steps.name.result.<question>}` for conditions; see `gated-build`
 - **Variable resolution** -- `${inputs.name}`, `${steps.stepname.stdout}`, `${steps.stepname.status}`
 - **Session reuse** -- Pass native session IDs between compatible steps (Claude, Gemini, and Codex; automatic extraction is not yet implemented for OpenCode/KiloCode)
 - **Cost tracking** -- Per-step and aggregate cost/token tracking where the underlying CLI reports usage
 
-Step types are selected by their fields: `tool` executes one CLI, `parallel` runs nested steps concurrently, `merge` combines named outputs (`concat`, `union`, or `dedupe`), `vote` selects among named outputs (`majority`, `unanimous`, or `ranked`), and `if` with `then`/`else` selects a branch. See `pkg/bundle/builtin/` for complete examples.
+Step types are selected by their fields: `tool` executes one CLI, `parallel` runs nested steps concurrently, `merge` combines named outputs (`concat`, `union`, or `dedupe`), `vote` selects among named outputs (`majority`, `unanimous`, or `ranked`), `decide` evaluates typed questions through Jev, and `if` with `then`/`else` selects a branch. See `pkg/bundle/builtin/` for complete examples.
 
 ## Reports
 
@@ -371,7 +373,8 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
       "provider": "deepinfra"
     },
     "ollama": { "base_url": "http://localhost:11434", "model": "", "timeout_seconds": 600, "allow_remote": false, "api_key": "" },
-    "lmstudio": { "base_url": "http://localhost:1234", "model": "", "timeout_seconds": 600, "allow_remote": false, "api_key": "" }
+    "lmstudio": { "base_url": "http://localhost:1234", "model": "", "timeout_seconds": 600, "allow_remote": false, "api_key": "" },
+    "jev": { "base_url": "https://api.typesafe.ai", "model": "jev-1.13.0", "timeout_seconds": 30, "max_concurrent": 8, "api_key": "" }
   },
   "tasks": {
     "my-custom-task": {
@@ -385,10 +388,12 @@ The `-D` flag keeps only the newest report for each task type, deleting older ve
 
 1. Hardcoded defaults
 2. `~/.rcodegen/settings.json`
-3. Environment variables (`RCODEGEN_CODE_DIR`, `RCODEGEN_OUTPUT_DIR`, `RCODEGEN_MODEL`, `RCODEGEN_BUDGET`, `RCODEGEN_EFFORT`, `RCODEGEN_LOG_LEVEL`, and the local-runtime variables documented below; the global model and effort variables do not override Ollama or LM Studio)
+3. Environment variables (`RCODEGEN_CODE_DIR`, `RCODEGEN_OUTPUT_DIR`, `RCODEGEN_MODEL`, `RCODEGEN_BUDGET`, `RCODEGEN_EFFORT`, `RCODEGEN_LOG_LEVEL`, and the local-runtime variables documented below; the global model and effort variables do not override Ollama, LM Studio, or Jev)
 4. CLI flags (highest priority)
 
 Local runtime overrides are `RCODEGEN_OLLAMA_BASE_URL`, `RCODEGEN_OLLAMA_MODEL`, `RCODEGEN_OLLAMA_API_KEY`, `RCODEGEN_LMSTUDIO_BASE_URL`, `RCODEGEN_LMSTUDIO_MODEL`, and `RCODEGEN_LMSTUDIO_API_KEY`.
+
+`TYPESAFE_API_KEY` overrides `defaults.jev.api_key` when a Jev client is created. The environment key is never copied into settings or persisted by automatic setup. `RCODEGEN_JEV_MODEL` and `RCODEGEN_JEV_BASE_URL` override the Jev model and origin.
 
 ### Task Template Variables
 
@@ -516,7 +521,7 @@ rcodegen/
 │   ├── bundle/                      # Workflow definitions
 │   │   ├── bundle.go                # Bundle/Step structs
 │   │   ├── loader.go                # Load from disk or builtin
-│   │   └── builtin/                 # 9 embedded JSON bundles
+│   │   └── builtin/                 # 10 embedded JSON bundles
 │   ├── server/                      # gRPC + HTTP server implementation
 │   │   ├── server.go                # RServe gRPC service handler
 │   │   ├── registry.go              # Run concurrency registry
@@ -705,6 +710,7 @@ The HTTP API on port+1 is compatible with the OpenAI chat-completions shape plus
 | `/v1/bundles` | GET | List available bundles with their inputs |
 | `/v1/bundles/{name}` | GET | Bundle detail: full step DAG (parallel groups, vote/merge, conditionals) |
 | `/v1/bundles/{name}` | POST | Run a bundle, return per-step results + inline artifacts (SSE streaming optional) |
+| `/v1/decisions` | POST | Typed Jev decisions with a server-held vendor key and independent capacity |
 | `/v1/files` | POST | Upload a file (multipart, 50MB limit) |
 | `/v1/files` | GET | List uploaded files |
 | `/v1/files/{id}` | GET | Get uploaded-file metadata |
@@ -879,6 +885,41 @@ curl -X POST http://127.0.0.1:14261/v1/bundles/ensemble \
 - **Bounds and confinement:** the artifact scan inspects at most 10,000 directory entries. Set `RSERVE_WORK_ROOT` to an absolute directory to require every `work_dir` to live beneath it. Rooted filesystem operations prevent pre-existing symlink components from escaping that directory, and symlinks, FIFOs, and other non-regular files are never collected.
 - Status mapping: missing required input → 400, unknown bundle → 404, bundle-logic failure → 200 with `"status": "failure"`. When all run slots are busy the request **queues** for a free slot; 503 is returned only if the client cancels or disconnects while waiting. In streaming mode all post-start outcomes (including errors) arrive as the `bundle_completed` event.
 
+### Jev Decisions
+
+Set `TYPESAFE_API_KEY` in the server environment, or configure `defaults.jev.api_key`, to enable `POST /v1/decisions`. It uses the same `RSERVE_TOKEN` authentication and correlation header as the other HTTP endpoints. The default model is pinned to `jev-1.13.0`; use `model: "jev-latest"` only when you want a moving alias.
+
+```bash
+curl -X POST http://127.0.0.1:14261/v1/decisions \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $RSERVE_TOKEN" \
+  -d '{"state":"OBJECTIVE: add retries\nREPORT: added retries; tests not run",
+       "questions":{"verdict":{"type":"choice","instructions":"Is the objective reported as built and verified?",
+       "criteria":{"complete":"built and verified","incomplete":"missing or unverified"}}}}'
+```
+
+Responses contain validated `answers`, the model used, token `usage`, `cost_usd`, scrubbed `state_bytes`, `latency_ms`, and an optional `correlation_id`. Question types are `noul` (probability), `choice` (one named option), and `score` (a fractional position across rubric levels). The endpoint has its own concurrency limit, default 8, with immediate retryable 503 responses when full; it does not occupy CLI run slots. `/health` reports its configuration, activity, failures, and reported cost. There is no streaming or gRPC decision endpoint.
+
+Request bodies are limited to 512 KiB. State has a byte budget of 64 KiB minus the longest question; one question is limited to 16 KiB of instructions plus criteria and all questions to 48 KiB combined. These local byte bounds are heuristics for the vendor's token limits. The server rejects oversized state; bundle steps preserve the head and tail with a truncation marker. State scrubbing masks the home directory and account name, including ordinary JSON-escaped home paths; it does not anonymize other identifiers or question text.
+
+A bundle step can branch on the same answers:
+
+```json
+{
+  "name": "gate",
+  "decide": {
+    "state": "OBJECTIVE: ${inputs.task}\nREPORT: ${steps.build.stdout}",
+    "questions": {
+      "done": {"type": "noul", "instructions": "Does the report state that every requirement was built and verified?"}
+    }
+  }
+}
+```
+
+Use `${steps.gate.result.done}` in an `if` condition, for example `${steps.gate.result.done} < 0.8`. Each question has its own result key, plus confidence/probabilities where available; there is no synthesized `decision` key. `${steps.gate.stdout}` contains JSON under an `answers` key. Reserved result names and derived suffixes are rejected. A `decide` step cannot appear inside `parallel`, combine with another executable step type, or carry its own `then`/`else` branches; it can be placed inside a conditional branch. Configuration errors, invalid vendor replies, and output-write failures stop the bundle.
+
+`gated-build` demonstrates report triage. It judges the builder's account of completion, and does not judge again after remediation. Jev's reliability on this workload is unmeasured; deterministic checks and independent verification remain necessary for consequential actions. See [API.md](API.md#post-v1decisions) for the full contract.
+
 ### Authentication
 
 Set the `RSERVE_TOKEN` environment variable before starting `rserve` to require a bearer token on **both** listeners. Unset means no authentication on either, which is the historical behavior.
@@ -999,6 +1040,6 @@ Only use on trusted codebases in controlled environments. Lock files are stored 
 
 ## Version
 
-Current version: **4.2.10**
+Current version: **4.4.3**
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.

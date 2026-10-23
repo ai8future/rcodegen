@@ -83,10 +83,10 @@ func (e *ParallelExecutor) Execute(step *bundle.Step, ctx *orchestrator.Context,
 	return &envelope.Envelope{
 		Status: status,
 		Result: map[string]interface{}{
-			"steps":        len(results),
-			"completed":    len(results),
-			"cost_usd":     totalCost,
-			"input_tokens": totalInput,
+			"steps":         len(results),
+			"completed":     len(results),
+			"cost_usd":      totalCost,
+			"input_tokens":  totalInput,
 			"output_tokens": totalOutput,
 		},
 	}, firstErr

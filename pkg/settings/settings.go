@@ -25,6 +25,11 @@ const (
 	DefaultOllamaBaseURL         = "http://localhost:11434"
 	DefaultLMStudioBaseURL       = "http://localhost:1234"
 	DefaultLocalAITimeoutSeconds = 600
+	DefaultJevBaseURL            = "https://api.typesafe.ai"
+	DefaultJevModel              = "jev-1.13.0"
+	DefaultJevTimeoutSeconds     = 30
+	DefaultJevMaxConcurrent      = 8
+	JevAPIKeyEnv                 = "TYPESAFE_API_KEY"
 )
 
 // TaskDef defines a task shortcut with its prompt
@@ -71,6 +76,28 @@ type LocalAIDefaults struct {
 	APIKey         string `json:"api_key,omitempty"`
 }
 
+// JevDefaults configures the TypeSafe Jev decision model behind
+// POST /v1/decisions and bundle "decide" steps. APIKey is the file-configured
+// key only; ResolveAPIKey consults TYPESAFE_API_KEY first. The environment
+// value is deliberately never copied into this struct, because LoadOrSetup
+// serializes the whole struct to disk when no settings file exists.
+type JevDefaults struct {
+	BaseURL        string `json:"base_url,omitempty"`
+	Model          string `json:"model,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	MaxConcurrent  int    `json:"max_concurrent,omitempty"`
+	APIKey         string `json:"api_key,omitempty"`
+}
+
+// ResolveAPIKey returns the key to use: TYPESAFE_API_KEY when set, else the
+// file-configured api_key. It never mutates the receiver.
+func (j JevDefaults) ResolveAPIKey() string {
+	if v := strings.TrimSpace(os.Getenv(JevAPIKeyEnv)); v != "" {
+		return v
+	}
+	return strings.TrimSpace(j.APIKey)
+}
+
 // Defaults holds default settings for all tools
 type Defaults struct {
 	Codex    CodexDefaults    `json:"codex"`
@@ -80,6 +107,7 @@ type Defaults struct {
 	KiloCode KiloCodeDefaults `json:"kilocode,omitempty"`
 	Ollama   LocalAIDefaults  `json:"ollama,omitempty"`
 	LMStudio LocalAIDefaults  `json:"lmstudio,omitempty"`
+	Jev      JevDefaults      `json:"jev,omitempty"`
 }
 
 // Settings holds all configuration for rcodegen tools
@@ -107,6 +135,8 @@ type EnvOverrides struct {
 	LMStudioBaseURL string `env:"RCODEGEN_LMSTUDIO_BASE_URL" required:"false"`
 	LMStudioModel   string `env:"RCODEGEN_LMSTUDIO_MODEL" required:"false"`
 	LMStudioAPIKey  string `env:"RCODEGEN_LMSTUDIO_API_KEY" required:"false"`
+	JevModel        string `env:"RCODEGEN_JEV_MODEL" required:"false"`
+	JevBaseURL      string `env:"RCODEGEN_JEV_BASE_URL" required:"false"`
 }
 
 // applyEnvOverrides loads environment variable overrides and merges them into settings.
@@ -151,6 +181,12 @@ func applyEnvOverrides(s *Settings) {
 	}
 	if env.LMStudioAPIKey != "" {
 		s.Defaults.LMStudio.APIKey = env.LMStudioAPIKey
+	}
+	if env.JevModel != "" {
+		s.Defaults.Jev.Model = env.JevModel
+	}
+	if env.JevBaseURL != "" {
+		s.Defaults.Jev.BaseURL = env.JevBaseURL
 	}
 }
 
@@ -297,6 +333,12 @@ func GetDefaultSettings() *Settings {
 				BaseURL:        DefaultLMStudioBaseURL,
 				TimeoutSeconds: DefaultLocalAITimeoutSeconds,
 			},
+			Jev: JevDefaults{
+				BaseURL:        DefaultJevBaseURL,
+				Model:          DefaultJevModel,
+				TimeoutSeconds: DefaultJevTimeoutSeconds,
+				MaxConcurrent:  DefaultJevMaxConcurrent,
+			},
 		},
 		Tasks: make(map[string]TaskDef),
 	}
@@ -344,6 +386,7 @@ func LoadWithFallback() (*Settings, bool, error) {
 	}
 	fillLocalAIDefaults(&settings.Defaults.Ollama, DefaultOllamaBaseURL)
 	fillLocalAIDefaults(&settings.Defaults.LMStudio, DefaultLMStudioBaseURL)
+	fillJevDefaults(&settings.Defaults.Jev)
 	if settings.DefaultBuildDir == "" {
 		settings.DefaultBuildDir = settings.CodeDir // Default to code_dir if not set
 	}
@@ -370,6 +413,21 @@ func fillLocalAIDefaults(defaults *LocalAIDefaults, baseURL string) {
 	}
 	if defaults.TimeoutSeconds <= 0 {
 		defaults.TimeoutSeconds = DefaultLocalAITimeoutSeconds
+	}
+}
+
+func fillJevDefaults(defaults *JevDefaults) {
+	if defaults.BaseURL == "" {
+		defaults.BaseURL = DefaultJevBaseURL
+	}
+	if defaults.Model == "" {
+		defaults.Model = DefaultJevModel
+	}
+	if defaults.TimeoutSeconds <= 0 {
+		defaults.TimeoutSeconds = DefaultJevTimeoutSeconds
+	}
+	if defaults.MaxConcurrent <= 0 {
+		defaults.MaxConcurrent = DefaultJevMaxConcurrent
 	}
 }
 
@@ -798,6 +856,7 @@ func RunInteractiveSetup() (*Settings, bool) {
 func LoadOrSetup() (*Settings, bool, error) {
 	settings, err := Load()
 	if err == nil {
+		fillJevDefaults(&settings.Defaults.Jev)
 		// Apply environment variable overrides (RCODEGEN_* vars override settings.json)
 		applyEnvOverrides(settings)
 

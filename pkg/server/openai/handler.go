@@ -32,6 +32,7 @@ type Handler struct {
 	sessions       *server.SessionStore
 	authToken      string        // optional bearer token from RSERVE_TOKEN; empty = no auth
 	runBundleFn    bundleRunFunc // bundle execution, replaceable in tests
+	decisions      *decisionGate // POST /v1/decisions gateway
 	// async holds the runs that outlive their request: their lifecycle
 	// contexts, their retained results, and the callback dispatcher.
 	async *asyncRuns
@@ -74,6 +75,7 @@ func NewHandler(s *settings.Settings, toolFactories map[string]server.ToolFactor
 		sessions:       sessions,
 		authToken:      os.Getenv("RSERVE_TOKEN"),
 		runBundleFn:    defaultBundleRun(s),
+		decisions:      newDecisionGate(s),
 		async:          newAsyncRuns(cfg.asyncLimits),
 	}
 	h.mux.HandleFunc("/v1/chat/completions", h.handleChatCompletions)
@@ -82,6 +84,7 @@ func NewHandler(s *settings.Settings, toolFactories map[string]server.ToolFactor
 	h.mux.HandleFunc("/v1/bundles/", h.handleBundleByName)
 	h.mux.HandleFunc("/v1/runs", h.handleRuns)
 	h.mux.HandleFunc("/v1/runs/", h.handleRunByID)
+	h.mux.HandleFunc("/v1/decisions", h.handleDecisions)
 	h.mux.HandleFunc("/health", h.handleHealth)
 	if fileStore != nil {
 		h.mux.HandleFunc("/v1/files", h.handleFiles)
@@ -177,6 +180,7 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 		AsyncMaxLive:  async.maxLive,
 		AsyncBytes:    async.bytes,
 		AsyncMaxBytes: async.maxBytes,
+		Decisions:     h.decisions.health(),
 	})
 }
 

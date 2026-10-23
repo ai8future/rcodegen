@@ -508,6 +508,58 @@ List available CLI tools whose binary is found on `PATH`, plus the always-regist
 - `POST /v1/bundles/{name}` runs a bundle with optional `inputs`, absolute `work_dir`, `options`, and SSE `stream`. Responses include per-step results, final output, usage, correlation ID, and bounded inline text artifacts.
 - `X-Correlation-ID` is sanitized, echoed, and attached to the run registry entry — the same handling chat completions get. `RSERVE_WORK_ROOT` can confine `work_dir` values and must be absolute.
 
+### POST /v1/decisions
+
+Ask TypeSafe Jev typed questions about text. This is a non-streaming extension endpoint with no gRPC counterpart. The server resolves `TYPESAFE_API_KEY` before `defaults.jev.api_key`; requests cannot supply a vendor key. The usual bearer authentication and `X-Correlation-ID` handling apply.
+
+```json
+{
+  "state": "OBJECTIVE: add retries\nREPORT: retries implemented, tests not run",
+  "model": "jev-1.13.0",
+  "questions": {
+    "verdict": {
+      "type": "choice",
+      "instructions": "Is the objective reported as built and verified?",
+      "criteria": {"complete": "built and verified", "incomplete": "missing or unverified"}
+    },
+    "has_gaps": {"type": "noul", "instructions": "Does the report mention missing implementation or verification?"}
+  }
+}
+```
+
+`state` must be non-empty. `model` is optional, defaults to the configured model, and an override must equal that default or start with `jev-`. There must be 1–32 questions with names matching `^[A-Za-z][A-Za-z0-9_-]{0,63}$`; instructions are required and limited to 4096 bytes.
+
+| Type | Criteria | Answer |
+|------|----------|--------|
+| `noul` | Optional object with only `true` / `false` descriptions | Numeric probability from 0 to 1 |
+| `choice` | Object of 2–255 option names to descriptions | Selected option, probabilities for every option, confidence |
+| `score` | Array of 2–10 level descriptions | Fractional score from 0 to the last level index, legend, probabilities for every level index, confidence |
+
+Requests contain exactly one JSON value and are capped at 512 KiB. A question's instructions plus criteria are capped at 16 KiB; all questions together at 48 KiB. After scrubbing, state must fit in 64 KiB minus the longest question. These are local byte bounds, not exact token counts. The server masks its home path and account name in state; other identifying data and question text remain the caller's responsibility.
+
+Success returns `object: "decision"`, the actual `model`, `answers`, `usage` (`prompt_tokens`, `completion_tokens`, `total_tokens`), `cost_usd`, `state_bytes`, `latency_ms`, and optional `correlation_id`. Jev input usage is priced at $0.042 per million tokens; output tokens are free. Answers must match requested types and options, have valid numeric values, and include the expected probability keys with a normalized distribution. Null probability entries are rejected.
+
+The endpoint has an independent `defaults.jev.max_concurrent` semaphore (default 8). A full semaphore rejects immediately; it never queues behind a CLI run. Requests inherit cancellation, retry transient upstream failures up to three attempts with cancellation-aware backoff, and use `defaults.jev.timeout_seconds` (default 30) per attempt.
+
+| Error code | HTTP | Retryable |
+|------------|------|-----------|
+| `invalid_json` | 400 | No |
+| `invalid_decision` | 400 | No |
+| `invalid_model` | 400 | No |
+| `state_too_large` | 413 | No |
+| `decisions_unconfigured` | 503 | No |
+| `decision_capacity` | 503 | Yes |
+| `decision_upstream` | 503 | Yes |
+| `decision_upstream_invalid` | 502 | Yes |
+| `decision_upstream_auth` | 502 | No |
+| `decision_upstream_rejected` | 502 | No |
+
+`state_too_large` also covers a body over 512 KiB, including trailing whitespace. `invalid_decision` covers local question validation and upstream 422. `decision_upstream_auth` covers vendor 401/403; other permanent upstream failures retain their non-retryable classification. Invalid upstream answers are an upstream fault, not a malformed caller request.
+
+Bundle `decide` steps share the client. They resolve templates, scrub state, and preserve the head and tail when capping it. Answers appear at `${steps.<name>.result.<question>}`, with optional `<question>_confidence` and `<question>_probabilities`; `${steps.<name>.stdout}` is `{"answers":{...}}`. There is no synthetic `decision` key. Bundle question names cannot use `stdout`, `stderr`, `model`, `decision`, `cost_usd`, `total_cost_usd`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `output_length`, `output_truncated`, `state_truncated`, `steps`, `completed`, `merged`, or `votes`, or end with `_confidence` / `_probabilities`. A decision cannot be inside a parallel group or combined on the same step with `tool`, `parallel`, `merge`, `vote`, or `then`/`else`. Invalid decisions and output-write failures fail the bundle.
+
+The `gated-build` demonstration is completion triage based on the builder's report. It does not independently prove correctness or recheck the report after remediation. Its accuracy on real project reports is unmeasured.
+
 ### GET /health
 
 ```json
@@ -520,13 +572,24 @@ List available CLI tools whose binary is found on `PATH`, plus the always-regist
   "async_live": 5,
   "async_max_live": 12,
   "async_bytes": 41984,
-  "async_max_bytes": 67108864
+  "async_max_bytes": 67108864,
+  "decisions": {
+    "configured": true,
+    "model": "jev-1.13.0",
+    "total": 4,
+    "failed": 1,
+    "in_flight": 0,
+    "max_concurrent": 8,
+    "cost_usd": 0.00006
+  }
 }
 ```
 
 `queued` is the number of requests waiting for a run slot — the difference between a server that is busy and one that is saturated. It counts waiters from every entry point (HTTP chat completions, HTTP bundles, and gRPC).
 
 `async_live` and `async_bytes` are what async admission currently holds, against the `async_max_live` and `async_max_bytes` ceilings. They are the two numbers that explain an `async_capacity` refusal, and the way to tell a genuinely full server from one whose limits were configured too low for its workload.
+
+`decisions` describes only the HTTP decision gateway. `total` / `failed` count admitted calls that finished; `in_flight` counts occupied decision slots, and `cost_usd` accumulates reported successful-call cost. Bundle decision steps report their usage through normal bundle events and totals.
 
 ### POST /v1/files
 
@@ -802,7 +865,8 @@ Valid tools are `claude`, `codex`, `gemini`, `opencode`, `kilocode`, `ollama`, a
     "claude": { "model": "sonnet", "budget": "10.00" },
     "gemini": { "model": "gemini-3.1-pro-preview" },
     "ollama": { "base_url": "http://localhost:11434", "model": "", "timeout_seconds": 600, "allow_remote": false, "api_key": "" },
-    "lmstudio": { "base_url": "http://localhost:1234", "model": "", "timeout_seconds": 600, "allow_remote": false, "api_key": "" }
+    "lmstudio": { "base_url": "http://localhost:1234", "model": "", "timeout_seconds": 600, "allow_remote": false, "api_key": "" },
+    "jev": { "base_url": "https://api.typesafe.ai", "model": "jev-1.13.0", "timeout_seconds": 30, "max_concurrent": 8, "api_key": "" }
   },
   "tasks": {
     "my-custom-task": {
@@ -818,12 +882,14 @@ Valid tools are `claude`, `codex`, `gemini`, `opencode`, `kilocode`, `ollama`, a
 |----------|-------------|
 | `RCODEGEN_CODE_DIR` | Override `code_dir` |
 | `RCODEGEN_OUTPUT_DIR` | Override `output_dir` |
-| `RCODEGEN_MODEL` | Override model for CLI tools; local runtimes use their dedicated variables |
+| `RCODEGEN_MODEL` | Override model for CLI tools; local runtimes and Jev use dedicated variables |
 | `RCODEGEN_BUDGET` | Override Claude budget |
 | `RCODEGEN_EFFORT` | Override Claude/Codex effort (Codex support is model-specific) |
 | `RCODEGEN_OLLAMA_BASE_URL` / `RCODEGEN_LMSTUDIO_BASE_URL` | Override the runtime origin |
 | `RCODEGEN_OLLAMA_MODEL` / `RCODEGEN_LMSTUDIO_MODEL` | Override the runtime's configured default model |
 | `RCODEGEN_OLLAMA_API_KEY` / `RCODEGEN_LMSTUDIO_API_KEY` | Add bearer authentication without storing the key in settings JSON |
+| `TYPESAFE_API_KEY` | Jev vendor key; resolved when a client is created, overrides the file key without being persisted |
+| `RCODEGEN_JEV_MODEL` / `RCODEGEN_JEV_BASE_URL` | Override Jev model (default `jev-1.13.0`) / HTTPS origin (default `https://api.typesafe.ai`) |
 | `RSERVE_TOKEN` | Require bearer authentication on native HTTP except `/health`, and on gRPC from non-loopback peers (reflection and health stay open) |
 | `RSERVE_WORK_ROOT` | Absolute root that confines HTTP bundle `work_dir` values |
 | `RSERVE_ALLOW_INSECURE_REMOTE` | Set to `1` to permit an explicitly unsafe non-loopback native bind |
@@ -864,6 +930,7 @@ Local runtime base URLs must be origin-only `http` or `https` URLs without embed
 | Claude Code CLI (`claude`) | Subprocess | Must be installed and authenticated |
 | OpenAI Codex CLI (`codex`) | Subprocess | Must be installed and authenticated |
 | Google Gemini CLI (`gemini`) | Subprocess | Must be installed and authenticated |
+| TypeSafe Jev | HTTPS `POST /v1/systemone` | `defaults.jev` / `TYPESAFE_API_KEY` |
 | OpenTelemetry Collector | OTLP gRPC | `OTEL_EXPORTER_OTLP_ENDPOINT` |
 | Kafka / Redpanda | TCP | `KAFKAKIT_BOOTSTRAP_SERVERS` |
 | xyops Monitoring | HTTP | `XYOPS_BASE_URL` + `XYOPS_API_KEY` |

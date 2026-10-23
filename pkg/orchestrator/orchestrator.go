@@ -134,7 +134,7 @@ func stepCompletedEvent(i int, step bundle.Step, env *envelope.Envelope, d time.
 		Type:       StepEventCompleted,
 		Index:      i,
 		Name:       step.Name,
-		Tool:       step.Tool,
+		Tool:       step.ToolLabel(),
 		DurationMs: d.Milliseconds(),
 		Envelope:   env,
 	}
@@ -227,6 +227,9 @@ func New(s *settings.Settings) *Orchestrator {
 	var dispatcher StepExecutor
 	if DispatcherFactory != nil {
 		dispatcher = DispatcherFactory(tools)
+		if aware, ok := dispatcher.(runner.SettingsAware); ok {
+			aware.SetSettings(s)
+		}
 	}
 	if dispatcher == nil {
 		fmt.Fprintf(os.Stderr, "Warning: no step dispatcher registered — bundle execution will fail\n")
@@ -252,6 +255,12 @@ func (o *Orchestrator) getStepModel(toolName, stepModel string) string {
 	// Use step's model if specified
 	if stepModel != "" {
 		return stepModel
+	}
+	if toolName == "jev" {
+		if o.settings == nil {
+			return ""
+		}
+		return o.settings.Defaults.Jev.Model
 	}
 	// Use the configured tool default.
 	if tool, ok := o.tools[toolName]; ok {
@@ -334,7 +343,7 @@ func (o *Orchestrator) RunWithContext(parent context.Context, b *bundle.Bundle, 
 
 	// Set models for ALL steps upfront so they show immediately
 	for i, step := range b.Steps {
-		display.SetStepModel(i, o.getStepModel(step.Tool, step.Model))
+		display.SetStepModel(i, o.getStepModel(step.ToolLabel(), step.ModelHint()))
 	}
 
 	display.Start()
@@ -400,19 +409,19 @@ func (o *Orchestrator) RunWithContext(parent context.Context, b *bundle.Bundle, 
 		}
 
 		display.SetStepRunning(i)
-		display.SetStepModel(i, o.getStepModel(execStep.Tool, execStep.Model))
+		display.SetStepModel(i, o.getStepModel(execStep.ToolLabel(), execStep.ModelHint()))
 		o.emitStep(StepEvent{
 			Type:  StepEventStarted,
 			Index: i,
 			Name:  step.Name,
-			Tool:  execStep.Tool,
-			Model: o.getStepModel(execStep.Tool, execStep.Model),
+			Tool:  execStep.ToolLabel(),
+			Model: o.getStepModel(execStep.ToolLabel(), execStep.ModelHint()),
 		})
 
 		if skip {
 			display.SetStepSkipped(i)
 			ctx.SetResult(step.Name, &envelope.Envelope{Status: envelope.StatusSkipped})
-			o.emitStep(StepEvent{Type: StepEventSkipped, Index: i, Name: step.Name, Tool: execStep.Tool})
+			o.emitStep(StepEvent{Type: StepEventSkipped, Index: i, Name: step.Name, Tool: execStep.ToolLabel()})
 			continue
 		}
 
@@ -459,7 +468,7 @@ func (o *Orchestrator) RunWithContext(parent context.Context, b *bundle.Bundle, 
 		isParallel := len(step.Parallel) > 0
 		stepStats = append(stepStats, StepStats{
 			Name:         step.Name,
-			Tool:         execStep.Tool,
+			Tool:         execStep.ToolLabel(),
 			Model:        stepModel,
 			Parallel:     isParallel,
 			Cost:         stepCost,

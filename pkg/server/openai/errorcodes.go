@@ -20,41 +20,49 @@ const (
 	// Not retryable: the request itself is wrong or asks for something the
 	// server refuses on policy grounds. Sending it again changes nothing.
 
-	codeMethodNotAllowed       ErrorCode = "method_not_allowed"
-	codeUnauthorized           ErrorCode = "unauthorized"
-	codeInvalidJSON            ErrorCode = "invalid_json"
-	codeUnknownTool            ErrorCode = "unknown_tool"
-	codeEmptyTask              ErrorCode = "empty_task"
-	codeInvalidModel           ErrorCode = "invalid_model"
-	codeInvalidEffort          ErrorCode = "invalid_effort"
-	codeInvalidWorkDir         ErrorCode = "invalid_work_dir"
-	codeUnsafeSymlink          ErrorCode = "unsafe_symlink"
-	codeUnsupportedGitWorktree ErrorCode = "unsupported_git_worktree"
-	codeUnknownBundle          ErrorCode = "unknown_bundle"
-	codeMissingInput           ErrorCode = "missing_input"
-	codeInvalidUpload          ErrorCode = "invalid_upload"
-	codeMissingFile            ErrorCode = "missing_file"
-	codeInvalidID              ErrorCode = "invalid_id"
-	codeNotFound               ErrorCode = "not_found"
-	codeNoFileStore            ErrorCode = "no_file_store"
-	codeInvalidCallbackURL     ErrorCode = "invalid_callback_url"
-	codeInvalidCallbackHeaders ErrorCode = "invalid_callback_headers"
-	codeCallbackStreamConflict ErrorCode = "callback_stream_conflict"
-	codeArtifactsRequireClone  ErrorCode = "artifacts_require_clone"
-	codeRunCancelled           ErrorCode = "run_cancelled"
+	codeMethodNotAllowed         ErrorCode = "method_not_allowed"
+	codeUnauthorized             ErrorCode = "unauthorized"
+	codeInvalidJSON              ErrorCode = "invalid_json"
+	codeUnknownTool              ErrorCode = "unknown_tool"
+	codeEmptyTask                ErrorCode = "empty_task"
+	codeInvalidModel             ErrorCode = "invalid_model"
+	codeInvalidEffort            ErrorCode = "invalid_effort"
+	codeInvalidWorkDir           ErrorCode = "invalid_work_dir"
+	codeUnsafeSymlink            ErrorCode = "unsafe_symlink"
+	codeUnsupportedGitWorktree   ErrorCode = "unsupported_git_worktree"
+	codeUnknownBundle            ErrorCode = "unknown_bundle"
+	codeMissingInput             ErrorCode = "missing_input"
+	codeInvalidUpload            ErrorCode = "invalid_upload"
+	codeMissingFile              ErrorCode = "missing_file"
+	codeInvalidID                ErrorCode = "invalid_id"
+	codeNotFound                 ErrorCode = "not_found"
+	codeNoFileStore              ErrorCode = "no_file_store"
+	codeInvalidCallbackURL       ErrorCode = "invalid_callback_url"
+	codeInvalidCallbackHeaders   ErrorCode = "invalid_callback_headers"
+	codeCallbackStreamConflict   ErrorCode = "callback_stream_conflict"
+	codeArtifactsRequireClone    ErrorCode = "artifacts_require_clone"
+	codeRunCancelled             ErrorCode = "run_cancelled"
+	codeInvalidDecision          ErrorCode = "invalid_decision"
+	codeStateTooLarge            ErrorCode = "state_too_large"
+	codeDecisionsUnconfigured    ErrorCode = "decisions_unconfigured"
+	codeDecisionUpstreamAuth     ErrorCode = "decision_upstream_auth"
+	codeDecisionUpstreamRejected ErrorCode = "decision_upstream_rejected"
 
 	// Retryable: a transient server-side or environmental failure. The same
 	// request can succeed later.
 
-	codeConcurrencyLimit    ErrorCode = "concurrency_limit"
-	codeAsyncCapacity       ErrorCode = "async_capacity"
-	codeCloneFailed         ErrorCode = "clone_failed"
-	codeWorkDirFailed       ErrorCode = "work_dir_failed"
-	codeBundleFailed        ErrorCode = "bundle_failed"
-	codeBundleListFailed    ErrorCode = "bundle_list_failed"
-	codeSaveFailed          ErrorCode = "save_failed"
-	codeServerShutdown      ErrorCode = "server_shutdown"
-	codeToolExecutionFailed ErrorCode = "tool_execution_failed"
+	codeConcurrencyLimit        ErrorCode = "concurrency_limit"
+	codeAsyncCapacity           ErrorCode = "async_capacity"
+	codeDecisionCapacity        ErrorCode = "decision_capacity"
+	codeDecisionUpstream        ErrorCode = "decision_upstream"
+	codeDecisionUpstreamInvalid ErrorCode = "decision_upstream_invalid"
+	codeCloneFailed             ErrorCode = "clone_failed"
+	codeWorkDirFailed           ErrorCode = "work_dir_failed"
+	codeBundleFailed            ErrorCode = "bundle_failed"
+	codeBundleListFailed        ErrorCode = "bundle_list_failed"
+	codeSaveFailed              ErrorCode = "save_failed"
+	codeServerShutdown          ErrorCode = "server_shutdown"
+	codeToolExecutionFailed     ErrorCode = "tool_execution_failed"
 )
 
 // errorRetryable classifies every declared error code. The mapping is the
@@ -97,6 +105,14 @@ var errorRetryable = map[ErrorCode]bool{
 	// The caller cancelled this run through DELETE /v1/runs/{id}. Retrying is a
 	// new decision, not a recovery.
 	codeRunCancelled: false,
+	// Decisions API request/configuration failures. Resending the same body
+	// cannot fix malformed questions, an oversized state, a missing vendor key,
+	// or a non-retryable rejection from the vendor.
+	codeInvalidDecision:          false,
+	codeStateTooLarge:            false,
+	codeDecisionsUnconfigured:    false,
+	codeDecisionUpstreamAuth:     false,
+	codeDecisionUpstreamRejected: false,
 
 	// --- retryable ----------------------------------------------------------
 	// The slot wait was interrupted (shutdown or a disconnected client); the
@@ -106,6 +122,11 @@ var errorRetryable = map[ErrorCode]bool{
 	// request payload — as its admission limits allow. Nothing was accepted, so
 	// the same submission is the right thing to send once capacity frees up.
 	codeAsyncCapacity: true,
+	// Decision capacity, transient upstream failures, and invalid vendor
+	// replies are server-side conditions from the caller's perspective.
+	codeDecisionCapacity:        true,
+	codeDecisionUpstream:        true,
+	codeDecisionUpstreamInvalid: true,
 	// Filesystem failures while cloning or preparing a work directory. These
 	// are not policy rejections — those are classified above — so they are the
 	// transient kind: a source that moved during the slot wait, a full disk, a

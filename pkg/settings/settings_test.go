@@ -3,6 +3,7 @@ package settings
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	chassis "github.com/ai8future/chassis-go/v11"
@@ -278,6 +279,83 @@ func TestGlobalModelDoesNotPoisonLocalAI(t *testing.T) {
 	applyEnvOverrides(s)
 	if s.Defaults.Ollama.Model != "" || s.Defaults.LMStudio.Model != "" {
 		t.Fatalf("global model leaked into local runtimes: %+v %+v", s.Defaults.Ollama, s.Defaults.LMStudio)
+	}
+}
+
+func TestDefaultSettingsJev(t *testing.T) {
+	s := GetDefaultSettings()
+	j := s.Defaults.Jev
+	if j.BaseURL != DefaultJevBaseURL || j.Model != DefaultJevModel ||
+		j.TimeoutSeconds != DefaultJevTimeoutSeconds || j.MaxConcurrent != DefaultJevMaxConcurrent {
+		t.Fatalf("jev defaults = %+v", j)
+	}
+	if j.APIKey != "" {
+		t.Fatalf("default settings must not carry an API key, got %q", j.APIKey)
+	}
+}
+
+func TestFillJevDefaultsPreservesOperatorFields(t *testing.T) {
+	j := JevDefaults{Model: "jev-latest", TimeoutSeconds: 5, MaxConcurrent: 2, APIKey: "k"}
+	fillJevDefaults(&j)
+	if j.BaseURL != DefaultJevBaseURL {
+		t.Fatalf("base url not filled: %+v", j)
+	}
+	if j.Model != "jev-latest" || j.TimeoutSeconds != 5 || j.MaxConcurrent != 2 || j.APIKey != "k" {
+		t.Fatalf("operator fields overwritten: %+v", j)
+	}
+	empty := JevDefaults{}
+	fillJevDefaults(&empty)
+	if empty.Model != DefaultJevModel || empty.TimeoutSeconds != DefaultJevTimeoutSeconds || empty.MaxConcurrent != DefaultJevMaxConcurrent {
+		t.Fatalf("empty not filled: %+v", empty)
+	}
+}
+
+func TestApplyEnvOverridesJev(t *testing.T) {
+	testkit.SetEnv(t, map[string]string{
+		JevAPIKeyEnv:            "env-key",
+		"RCODEGEN_JEV_MODEL":    "jev-latest",
+		"RCODEGEN_JEV_BASE_URL": "https://example.test",
+	})
+	s := GetDefaultSettings()
+	s.Defaults.Jev.APIKey = "file-key"
+	applyEnvOverrides(s)
+	j := s.Defaults.Jev
+	if j.Model != "jev-latest" || j.BaseURL != "https://example.test" {
+		t.Fatalf("jev overrides = %+v", j)
+	}
+	if j.APIKey != "file-key" {
+		t.Fatalf("env key must not be copied into the struct, got %q", j.APIKey)
+	}
+	if got := j.ResolveAPIKey(); got != "env-key" {
+		t.Fatalf("ResolveAPIKey = %q, want env value", got)
+	}
+	testkit.SetEnv(t, map[string]string{JevAPIKeyEnv: ""})
+	if got := j.ResolveAPIKey(); got != "file-key" {
+		t.Fatalf("ResolveAPIKey without env = %q, want file value", got)
+	}
+}
+
+func TestLoadOrSetupNeverPersistsEnvKey(t *testing.T) {
+	home := t.TempDir()
+	testkit.SetEnv(t, map[string]string{"HOME": home, JevAPIKeyEnv: "must-not-land-on-disk"})
+	if _, _, err := LoadOrSetup(); err != nil {
+		t.Fatalf("LoadOrSetup: %v", err)
+	}
+	data, err := os.ReadFile(GetConfigPath())
+	if err != nil {
+		t.Fatalf("settings file not auto-created: %v", err)
+	}
+	if strings.Contains(string(data), "must-not-land-on-disk") {
+		t.Fatalf("env key persisted to %s", GetConfigPath())
+	}
+}
+
+func TestGlobalModelDoesNotPoisonJev(t *testing.T) {
+	testkit.SetEnv(t, map[string]string{"RCODEGEN_MODEL": "global-model"})
+	s := GetDefaultSettings()
+	applyEnvOverrides(s)
+	if s.Defaults.Jev.Model != DefaultJevModel {
+		t.Fatalf("global model leaked into jev: %+v", s.Defaults.Jev)
 	}
 }
 
